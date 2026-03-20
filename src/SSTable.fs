@@ -3,194 +3,130 @@ namespace LsmTree
 open System
 open System.IO
 open System.Text
-open System.Collections.Generic
-
-type BloomFilter(bits: byte[], numHashFunctions: int) =
-    let bitSize = bits.Length * 8
-
-    let hash (key: string) (seed: int) =
-        let mutable h = uint32 seed
-
-        for i = 0 to key.Length - 1 do
-            h <- h * 31u + uint32 key.[i]
-
-        int (h % uint32 bitSize)
-
-    member this.Add(key: string) =
-        if bitSize > 0 then
-            for i = 0 to numHashFunctions - 1 do
-                let idx = hash key i
-                let byteIdx = idx / 8
-                let bitIdx = idx % 8
-                bits.[byteIdx] <- bits.[byteIdx] ||| (1uy <<< bitIdx)
-
-    member this.MightContain(key: string) =
-        if bitSize = 0 then
-            true
-        else
-            let rec check i =
-                if i >= numHashFunctions then
-                    true
-                else
-                    let idx = hash key i
-                    let byteIdx = idx / 8
-                    let bitIdx = idx % 8
-
-                    if (bits.[byteIdx] &&& (1uy <<< bitIdx)) = 0uy then
-                        false
-                    else
-                        check (i + 1)
-
-            check 0
-
-    member this.Bytes = bits
-
-    static member Create(numEntries: int) =
-        let bitsPerItem = 10
-        let bitSize = max 64 (numEntries * bitsPerItem)
-        let byteSize = (bitSize + 7) / 8
-        BloomFilter(Array.zeroCreate<byte> byteSize, 7)
 
 type SSTable(path: string) =
-    let mutable numEntries = 0
-    let mutable indexOffset = 0L
     let mutable offsets: int64[] = [||]
     let mutable bloomFilter = BloomFilter([||], 0)
 
-    let loadOffsets () =
+    let load path =
         use fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
         use br = new BinaryReader(fs)
 
+        let loadOffsets offset =
+            fs.Seek(offset, SeekOrigin.Begin) |> ignore
+            Array.init (br.ReadInt32()) (fun _ -> br.ReadInt64())
+
+        let loadBloomFilter offset =
+            fs.Seek(offset, SeekOrigin.Begin) |> ignore
+            let bfBytes = br.ReadInt32() |> br.ReadBytes
+            BloomFilter(bfBytes, 7)
+
         if fs.Length >= 16L then
             fs.Seek(-16L, SeekOrigin.End) |> ignore
-            indexOffset <- br.ReadInt64()
+            let indexOffset = br.ReadInt64()
             let bloomOffset = br.ReadInt64()
-
-            fs.Seek(indexOffset, SeekOrigin.Begin) |> ignore
-            numEntries <- br.ReadInt32()
-
-            offsets <- Array.zeroCreate numEntries
-
-            for i = 0 to numEntries - 1 do
-                offsets.[i] <- br.ReadInt64()
-
-            fs.Seek(bloomOffset, SeekOrigin.Begin) |> ignore
-            let bfLength = br.ReadInt32()
-            let bfBytes = br.ReadBytes(bfLength)
-            bloomFilter <- BloomFilter(bfBytes, 7)
+            offsets <- loadOffsets indexOffset
+            bloomFilter <- loadBloomFilter bloomOffset
 
     do
-        if File.Exists(path) then
-            loadOffsets ()
+        if File.Exists path then
+            load path
 
-    member this.Path = path
+    let readValue (br: BinaryReader) =
+        br.ReadInt32() |> br.ReadBytes |> Encoding.UTF8.GetString
 
-    member this.GetAll() =
+    let readItem (br: BinaryReader) =
+        if br.ReadBoolean() then None else Some(readValue br)
+
+    let search key snapshot =
+        use fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
+        use br = new BinaryReader(fs)
+
+        let rec binSearch left right bestMatch =
+            if left > right then
+                bestMatch
+            else
+                let mid = left + (right - left) / 2
+                fs.Seek(offsets.[mid], SeekOrigin.Begin) |> ignore
+
+                let currentSeq = br.ReadInt64()
+                let currentKey = readValue br
+                let comp = String.CompareOrdinal(key, currentKey)
+
+                if comp = 0 then
+                    if currentSeq <= snapshot then
+                        binSearch left (mid - 1) (readItem br |> Some)
+                    else
+                        binSearch (mid + 1) right bestMatch
+                elif comp < 0 then
+                    binSearch left (mid - 1) bestMatch
+                else
+                    binSearch (mid + 1) right bestMatch
+
+        binSearch 0 (offsets.Length - 1) None
+
+    member _.Path = path
+
+    member _.GetAll() =
         seq {
             use fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
             use br = new BinaryReader(fs)
 
-            for i = 0 to numEntries - 1 do
-                fs.Seek(offsets.[i], SeekOrigin.Begin) |> ignore
+            for offset in offsets do
+                fs.Seek(offset, SeekOrigin.Begin) |> ignore
                 let currentSeq = br.ReadInt64()
-                let keyLen = br.ReadInt32()
-                let keyBytes = br.ReadBytes(keyLen)
-                let key = Encoding.UTF8.GetString(keyBytes)
-
-                let isTombstone = br.ReadBoolean()
-
-                if isTombstone then
-                    yield (key, currentSeq, None)
-                else
-                    let valLen = br.ReadInt32()
-                    let valBytes = br.ReadBytes(valLen)
-                    yield (key, currentSeq, Some(Encoding.UTF8.GetString(valBytes)))
+                let key = readValue br
+                yield key, currentSeq, readItem br
         }
 
-    member this.Get(key: string, snapshot: int64) : string option option =
-        if numEntries = 0 then
-            None
-        elif not (bloomFilter.MightContain(key)) then
-            None
-        else
-            use fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
-            use br = new BinaryReader(fs)
+    member _.Get(key: string, snapshot: int64) =
+        if offsets.Length = 0 then None
+        elif not (bloomFilter.MightContain key) then None
+        else search key snapshot
 
-            let rec binSearch left right bestMatch =
-                if left > right then
-                    bestMatch
-                else
-                    let mid = left + (right - left) / 2
-                    fs.Seek(offsets.[mid], SeekOrigin.Begin) |> ignore
+module SSTableWriter =
+    let writeBytes (bw: BinaryWriter) (bytes: byte[]) =
+        bw.Write bytes.Length
+        bw.Write bytes
 
-                    let currentSeq = br.ReadInt64()
-                    let keyLen = br.ReadInt32()
-                    let keyBytes = br.ReadBytes(keyLen)
-                    let currentKey = Encoding.UTF8.GetString(keyBytes)
+    let writeValue (bw: BinaryWriter) (value: string) =
+        Encoding.UTF8.GetBytes value |> writeBytes bw
 
-                    let comp = String.CompareOrdinal(key, currentKey)
+    let writeItem (bw: BinaryWriter) item =
+        match item with
+        | None -> bw.Write true
+        | Some v ->
+            bw.Write false
+            writeValue bw v
 
-                    if comp = 0 then
-                        if currentSeq <= snapshot then
-                            let isTombstone = br.ReadBoolean()
+    let writeOffsets (bw: BinaryWriter) (offsets: int64 list) =
+        bw.Write offsets.Length
+        offsets |> List.iter bw.Write
 
-                            let rv =
-                                if isTombstone then
-                                    Some None
-                                else
-                                    let valLen = br.ReadInt32()
-                                    let valBytes = br.ReadBytes(valLen)
-                                    Some(Some(Encoding.UTF8.GetString(valBytes)))
-                            // Even if we matched, check if there's a newer valid one to the "left" (since seq is desc)
-                            binSearch left (mid - 1) rv
-                        else
-                            // Seq is too new (> snapshot). The older sequences wait to the "right"
-                            binSearch (mid + 1) right bestMatch
-                    elif comp < 0 then
-                        binSearch left (mid - 1) bestMatch
-                    else
-                        binSearch (mid + 1) right bestMatch
+    let write outPath (memTableEntries: (string * int64 * string option) list) =
+        use fs = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.None)
+        use bw = new BinaryWriter(fs)
+        let bf = BloomFilter.create memTableEntries.Length
 
-            binSearch 0 (numEntries - 1) None
+        let offsets =
+            memTableEntries
+            |> List.map (fun (key, seq, value) ->
+                bf.Add key
+                let offset = fs.Position
+                bw.Write seq
+                writeValue bw key
+                writeItem bw value
+                offset)
 
-module SSTableBuilder =
-    let flush (memTableEntries: (string * int64 * string option) list) (outPath: string) =
-        let write () =
-            use fs = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.None)
-            use bw = new BinaryWriter(fs)
+        let indexOffset = fs.Position
+        writeOffsets bw offsets
 
-            let offsets = List<int64>()
-            let bf = BloomFilter.Create(memTableEntries.Length)
+        let bloomOffset = fs.Position
+        writeBytes bw bf.Bytes
 
-            for (key, seq, valueOpt) in memTableEntries do
-                bf.Add(key)
-                offsets.Add(fs.Position)
-                bw.Write(seq)
-                let keyBytes = Encoding.UTF8.GetBytes(key)
-                bw.Write(keyBytes.Length)
-                bw.Write(keyBytes)
+        bw.Write indexOffset
+        bw.Write bloomOffset
 
-                match valueOpt with
-                | None -> bw.Write(true) // isTombstone
-                | Some v ->
-                    bw.Write(false)
-                    let valBytes = Encoding.UTF8.GetBytes(v)
-                    bw.Write(valBytes.Length)
-                    bw.Write(valBytes)
-
-            let indexOffset = fs.Position
-            bw.Write(offsets.Count)
-
-            for offset in offsets do
-                bw.Write(offset)
-
-            let bloomOffset = fs.Position
-            let bfBytes = bf.Bytes
-            bw.Write(bfBytes.Length)
-            bw.Write(bfBytes)
-
-            bw.Write(indexOffset)
-            bw.Write(bloomOffset)
-
-        write ()
-        SSTable(outPath)
+    let flush memTableEntries outPath =
+        write outPath memTableEntries
+        SSTable outPath

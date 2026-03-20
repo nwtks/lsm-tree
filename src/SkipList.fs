@@ -1,22 +1,23 @@
 namespace LsmTree
 
 open System
-open System.Collections.Generic
 
 [<AllowNullLiteral>]
 type SkipListNode(key: string, seq: int64, value: string option, level: int) =
-    let next = Array.zeroCreate<SkipListNode> (level)
+    let next = Array.zeroCreate<SkipListNode> level
     member val Key = key
     member val Seq = seq
     member val Value = value with get, set
     member val Next = next
 
 type SkipList() =
+    [<Literal>]
     let MAX_LEVEL = 16
-    let P = 0.5
-    let rand = Random()
 
-    // Sentinel node
+    [<Literal>]
+    let P = 0.5
+
+    let rand = Random()
     let head = SkipListNode("", Int64.MaxValue, None, MAX_LEVEL)
     let mutable currentLevel = 1
 
@@ -28,42 +29,33 @@ type SkipList() =
 
         lvl
 
-    let compare (k1: string) (s1: int64) (k2: string) (s2: int64) =
-        let c = String.CompareOrdinal(k1, k2)
-        if c <> 0 then c else s2.CompareTo(s1) // descending seq
+    let next (next: SkipListNode) key seq =
+        not (isNull next)
+        && (String.CompareOrdinal(next.Key, key) < 0 || next.Key = key && next.Seq > seq)
 
-    member this.Find(key: string, snapshot: int64) =
-        let mutable current = head
+    let nextNode (node: SkipListNode) i key seq =
+        let mutable current = node
+
+        while next current.Next.[i] key seq do
+            current <- current.Next.[i]
+
+        current
+
+    member _.Find(key: string, snapshot: int64) =
+        let mutable search = head
 
         for i = currentLevel - 1 downto 0 do
-            while not (isNull current.Next.[i])
-                  && (String.CompareOrdinal(current.Next.[i].Key, key) < 0
-                      || (current.Next.[i].Key = key && current.Next.[i].Seq > snapshot)) do
-                current <- current.Next.[i]
+            search <- nextNode search i key snapshot
 
-        current <- current.Next.[0]
+        let current = search.Next.[0]
 
         if not (isNull current) && current.Key = key && current.Seq <= snapshot then
             Some current.Value
         else
             None
 
-    member this.Put(key: string, seq: int64, value: string option) =
-        let update = Array.zeroCreate<SkipListNode> (MAX_LEVEL)
-        let mutable current = head
-
-        for i = currentLevel - 1 downto 0 do
-            while not (isNull current.Next.[i])
-                  && compare current.Next.[i].Key current.Next.[i].Seq key seq < 0 do
-                current <- current.Next.[i]
-
-            update.[i] <- current
-
-        current <- current.Next.[0]
-
-        if not (isNull current) && current.Key = key && current.Seq = seq then
-            current.Value <- value
-        else
+    member _.Put(key: string, seq: int64, ?value: string) =
+        let addNode (update: SkipListNode[]) =
             let lvl = randomLevel ()
 
             if lvl > currentLevel then
@@ -78,17 +70,31 @@ type SkipList() =
                 newNode.Next.[i] <- update.[i].Next.[i]
                 update.[i].Next.[i] <- newNode
 
-    member this.Entries() =
+        let update = Array.zeroCreate<SkipListNode> MAX_LEVEL
+        let mutable search = head
+
+        for i = currentLevel - 1 downto 0 do
+            search <- nextNode search i key seq
+            update.[i] <- search
+
+        let current = search.Next.[0]
+
+        if not (isNull current) && current.Key = key && current.Seq = seq then
+            current.Value <- value
+        else
+            addNode update
+
+    member _.Entries() =
+        let mutable entries = []
         let mutable current = head.Next.[0]
-        let entries = List<string * int64 * string option>()
 
         while not (isNull current) do
-            entries.Add(current.Key, current.Seq, current.Value)
+            entries <- (current.Key, current.Seq, current.Value) :: entries
             current <- current.Next.[0]
 
-        entries |> Seq.toList
+        entries |> List.rev
 
-    member this.Clear() =
+    member _.Clear() =
         for i = 0 to MAX_LEVEL - 1 do
             head.Next.[i] <- null
 

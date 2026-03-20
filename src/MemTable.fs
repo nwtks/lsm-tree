@@ -1,23 +1,33 @@
 namespace LsmTree
 
+open System.Text
+
 type MemTable() =
-    let mutable data = SkipList()
+    [<Literal>]
+    let SEQ_LENGTH = 8
+
+    let data = SkipList()
     let mutable sizeBytes = 0
 
-    member this.Put(key: string, seq: int64, value: string) =
-        sizeBytes <- sizeBytes + key.Length + value.Length + 8 // 8 for int64 seq
-        data.Put(key, seq, Some value)
+    member _.Put(key: string, seq: int64, value: string) =
+        sizeBytes <-
+            sizeBytes
+            + Encoding.UTF8.GetByteCount key
+            + SEQ_LENGTH
+            + Encoding.UTF8.GetByteCount value
 
-    member this.Delete(key: string, seq: int64) =
-        sizeBytes <- sizeBytes + key.Length + 8
-        data.Put(key, seq, None)
+        data.Put(key, seq, value)
 
-    member this.Get(key: string, snapshot: int64) = data.Find(key, snapshot)
+    member _.Delete(key: string, seq: int64) =
+        sizeBytes <- sizeBytes + Encoding.UTF8.GetByteCount key + SEQ_LENGTH
+        data.Put(key, seq)
 
-    member this.SizeBytes = sizeBytes
+    member _.Get(key: string, snapshot: int64) = data.Find(key, snapshot)
 
-    member this.Clear() =
+    member _.SizeBytes = sizeBytes
+
+    member _.Clear() =
         data.Clear()
         sizeBytes <- 0
 
-    member this.Entries = data.Entries()
+    member _.Entries = data.Entries()

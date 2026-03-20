@@ -7,6 +7,7 @@
     <Compile Include="src/WAL.fs" />
     <Compile Include="src/SkipList.fs" />
     <Compile Include="src/MemTable.fs" />
+    <Compile Include="src/BloomFilter.fs" />
     <Compile Include="src/SSTable.fs" />
     <Compile Include="src/LsmTree.fs" />
     <Compile Include="src/Tests.fs" />

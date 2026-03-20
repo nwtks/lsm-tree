@@ -21,7 +21,8 @@ This project demonstrates the core architectural concepts behind modern top-tier
 ## 🔧 Project Structure
 
 * `src/LsmTree.fs`: The primary Coordinator. Exposes `.Put(key, value)`, `.Get(key, ?snapshot)`, `.Delete(key)`, `.Snapshot()`, manages Thread locks, handles background Async Compaction, and orchestrates MemTable flushes.
-* `src/SSTable.fs`: Contains binary `BinaryWriter` / `BinaryReader` flushing arrays, localized offset scanning, Bloom Filter definitions, and recursive disk Binary Search capabilities.
+* `src/SSTable.fs`: Contains binary `BinaryWriter` / `BinaryReader` flushing arrays, localized offset scanning, and recursive disk Binary Search capabilities.
+* `src/BloomFilter.fs`: Probabilistic hashing and bitmask logic to instantly block useless disk reads without triggering exhaustive binary searches.
 * `src/MemTable.fs` & `src/SkipList.fs`: Purely in-memory multi-version buffering logic powered by probabilistic balancing.
 * `src/WAL.fs`: Log recording and text-based crash recovery logic.
 * `src/Tests.fs`: Contains the **XUnit** Test Suite mathematically asserting the engine's MVCC, Compaction, and structure recovery capabilities sequentially without process blocking.
@@ -69,5 +70,5 @@ db.Put("config:theme", "light")
 let current = db.Get("config:theme") // Returns: Some "light"
 
 // Query the past (Time-Travel via Snapshot)
-let past = db.Get("config:theme", snapshot = version1Snapshot) // Returns: Some "dark"
+let past = db.Get("config:theme", version1Snapshot) // Returns: Some "dark"
 ```
