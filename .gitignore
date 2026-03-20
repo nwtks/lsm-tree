@@ -52,3 +52,19 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# IDE specific files
+.idea/
+.vscode/
+*.user
+*.suo
+
+# OS generated files
+.DS_Store
+.DS_STORE
+Thumbs.db
+Desktop.ini
+
+# Database files
+*.sst
+*.log
