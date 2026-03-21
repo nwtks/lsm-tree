@@ -8,12 +8,12 @@ open System.Threading
 type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
     let memTableLimit = defaultArg memTableSizeLimit (1024 * 1024)
     let walPath = Path.Combine(dataDir, "wal.log")
-    let memTable = MemTable()
-    let mainLock = obj ()
+    let mutable memTable = MemTable()
+    let mutable immutableMemTable: MemTable option = None
+    let mainLock = new ReaderWriterLockSlim()
 
-    let maxLevels = 4
     let compactLevelLimits = [| 4; 10; 100; 1000 |]
-    let ssTables = Array.init maxLevels (fun _ -> List<SSTable>())
+    let ssTables = Array.init compactLevelLimits.Length (fun _ -> List<SSTable>())
     let ssTablesLock = obj ()
 
     let mutable globalSeq = 0L
@@ -43,7 +43,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
             sst.Clear()
             sst.AddRange sorted)
 
-        WALRecovery.recover walPath
+        let logs = Directory.GetFiles(dataDir, "wal*.log")
+        let olds = Directory.GetFiles(dataDir, "wal*.old")
+
+        Array.append logs olds
+        |> Seq.sort
+        |> Seq.collect WALRecovery.recover
+        |> Seq.sortBy (fun (seq, _, _) -> seq)
         |> Seq.iter (function
             | seq, k, Some v ->
                 memTable.Put(k, seq, v)
@@ -137,38 +143,75 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
                     lock ssTablesLock (fun () -> isCompacting <- false))
             |> ignore
 
-    let flushMemTable () =
-        lock ssTablesLock (fun () ->
+    let swapMemTableAndWal () =
+        mainLock.EnterWriteLock()
+
+        try
             if memTable.SizeBytes > 0 then
-                let sst = SSTableWriter.flush memTable.Entries (sstPath 0)
-                ssTables.[0].Insert(0, sst)
+                let oldMemTable = memTable
+                wal.Close()
+                let oldWalPath = Path.Combine(dataDir, sprintf "wal_%s.old" (newGuid ()))
+                File.Move(walPath, oldWalPath)
 
-                memTable.Clear()
-                wal.Clear()
-                wal <- WAL walPath)
+                memTable <- MemTable()
+                wal <- WAL walPath
+                immutableMemTable <- Some oldMemTable
+                Some(oldMemTable, oldWalPath)
+            else
+                None
+        finally
+            mainLock.ExitWriteLock()
 
-        triggerCompaction ()
+    let addSSTable (oldMemTable: MemTable) =
+        let sst = SSTableWriter.flush oldMemTable.Entries (sstPath 0)
+        lock ssTablesLock (fun () -> ssTables.[0].Insert(0, sst))
+
+        mainLock.EnterWriteLock()
+
+        try
+            immutableMemTable <- None
+        finally
+            mainLock.ExitWriteLock()
+
+    let flushMemTable () =
+        match swapMemTableAndWal () with
+        | Some(oldMemTable, oldWalPath) ->
+            addSSTable oldMemTable
+
+            if File.Exists oldWalPath then
+                File.Delete oldWalPath
+
+            triggerCompaction ()
+        | None -> ()
 
     member _.Snapshot() = Interlocked.Read(&globalSeq)
 
     member this.Put(key: string, value: string) =
         let shouldFlush =
-            lock mainLock (fun () ->
+            mainLock.EnterReadLock()
+
+            try
                 let seq = Interlocked.Increment(&globalSeq)
                 wal.Put(seq, key, value)
                 memTable.Put(key, seq, value)
-                memTable.SizeBytes >= memTableLimit)
+                memTable.SizeBytes >= memTableLimit
+            finally
+                mainLock.ExitReadLock()
 
         if shouldFlush then
             this.Flush()
 
     member this.Delete(key: string) =
         let shouldFlush =
-            lock mainLock (fun () ->
+            mainLock.EnterReadLock()
+
+            try
                 let seq = Interlocked.Increment(&globalSeq)
                 wal.Delete(seq, key)
                 memTable.Delete(key, seq)
-                memTable.SizeBytes >= memTableLimit)
+                memTable.SizeBytes >= memTableLimit
+            finally
+                mainLock.ExitReadLock()
 
         if shouldFlush then
             this.Flush()
@@ -194,17 +237,30 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
                 | Some res -> Some res
                 | None -> searchLevel (level + 1)
 
-        let memRes = lock mainLock (fun () -> memTable.Get(key, snap))
+        let memRes, immRes =
+            mainLock.EnterReadLock()
+
+            try
+                memTable.Get(key, snap),
+                match immutableMemTable with
+                | Some m -> m.Get(key, snap)
+                | None -> None
+            finally
+                mainLock.ExitReadLock()
 
         match memRes with
         | Some(Some v) -> Some v
         | Some None -> None
         | None ->
-            match searchLevel 0 with
+            match immRes with
             | Some(Some v) -> Some v
-            | _ -> None
+            | Some None -> None
+            | None ->
+                match searchLevel 0 with
+                | Some(Some v) -> Some v
+                | _ -> None
 
-    member _.Flush() = lock mainLock flushMemTable
+    member _.Flush() = flushMemTable ()
 
     member _.WaitForCompaction() =
         let rec wait () =

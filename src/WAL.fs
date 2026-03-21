@@ -41,20 +41,19 @@ module WALRecovery =
 type WAL(path: string) =
     let stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read)
     let writer = new StreamWriter(stream, Encoding.UTF8)
+    let walLock = obj ()
     do writer.AutoFlush <- true
 
     member _.Put(seq: int64, key: string, value: string) =
         let k = WALRecovery.utf8ToBase64 key
         let v = WALRecovery.utf8ToBase64 value
-        sprintf "%s %d %s %s" WALRecovery.PUT seq k v |> writer.WriteLine
+        let log = sprintf "%s %d %s %s" WALRecovery.PUT seq k v
+        lock walLock (fun () -> writer.WriteLine log)
 
     member _.Delete(seq: int64, key: string) =
         let k = WALRecovery.utf8ToBase64 key
-        sprintf "%s %d %s" WALRecovery.DEL seq k |> writer.WriteLine
-
-    member this.Clear() =
-        this.Close()
-        File.Delete path
+        let log = sprintf "%s %d %s" WALRecovery.DEL seq k
+        lock walLock (fun () -> writer.WriteLine log)
 
     member _.Close() =
         writer.Close()

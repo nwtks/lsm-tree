@@ -7,14 +7,16 @@ This project demonstrates the core architectural concepts behind modern top-tier
 
 * **Write-Ahead Log (WAL)**
   Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted sequentially to a `.log` file before memory allocation, guaranteeing 100% recovery upon engine restart.
-* **MemTable (Custom SkipList)**
-  In-memory mutations are buffered within a highly performant, custom-built mutable **SkipList**. This achieves stable $O(\log N)$ probabilistic insertions and lookups, perfectly matched for high throughput and rapid memory ingestion.
+* **MemTable (Lock-Free SkipList)**
+  In-memory mutations are buffered within a highly performant, custom-built mutable **SkipList**. This achieves stable $O(\log N)$ probabilistic insertions and lookups. 
+  * **Extreme Concurrency**: The SkipList natively employs **Lock-Free** `Interlocked.CompareExchange` CAS loops to securely splice nodes without blocking, seamlessly supporting massive multi-threaded `Put` operations simultaneously.
 * **SSTable (Sorted String Table)**
   When the MemTable exceeds its size limit, it flushes to immutable on-disk `SSTable` files featuring:
   * **True Binary Search (Footer Indexing)**: Instead of loading entire datasets into `.NET Dictionary` instances, SSTables only load a compressed array of `int64` offsets. The engine accurately jumps and skips through the disk via raw binary search, heavily minimizing RAM footprint.
   * **Bloom Filters**: Each SSTable calculates and embeds a probabilistic byte-array bitmask at its footer. This filter runs entirely in memory at $O(1)$ time, instantly blocking useless disk reads when a key isn't stored in the segment.
-* **Background Multi-Level Compaction**
-  Dynamically tracks hierarchical limits (`L0` max 4 files, `L1` max 10 files...). When limits are exceeded, older tables are K-way merged via a separate `System.Threading.Tasks.Task`. Active user operations (`Put` / `Get`) remain completely unblocked during heavy disk flushes. 
+* **Background Multi-Level Compaction & Zero-Block Flushing**
+  Dynamically tracks hierarchical limits (`L0` max 4 files, `L1` max 10 files...). When limits are exceeded, older tables are K-way merged via a separate `System.Threading.Tasks.Task`. 
+  * **Zero-Block Flushes**: When memory hits its limit, the engine swaps an isolated immutable pointer in microseconds. Active user operations (`Put` / `Get`) remain completely decoupled and unobstructed from both Memory-to-Disk flushing and background Compactions.
 * **MVCC (Multi-Version Concurrency Control) & Time-Travel**
   All mutations inherently track an atomic incremental Sequence Number. The engine natively supports **Snapshot Isolation**, permitting strict time-travel execution where querying an older snapshot reliably reconstructs the database exactly as it was at that coordinate—seamlessly crossing boundaries between MemTables and Flushed SSTables on disk.
 

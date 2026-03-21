@@ -1,6 +1,7 @@
 namespace LsmTree
 
 open System
+open System.Threading
 
 [<AllowNullLiteral>]
 type SkipListNode(key: string, seq: int64, value: string option, level: int) =
@@ -33,21 +34,21 @@ type SkipList() =
         not (isNull next)
         && (String.CompareOrdinal(next.Key, key) < 0 || next.Key = key && next.Seq > seq)
 
-    let nextNode (node: SkipListNode) i key seq =
-        let mutable current = node
+    let search key seq currLvl toLvl =
+        let mutable pred = head
 
-        while next current.Next.[i] key seq do
-            current <- current.Next.[i]
+        for i = currLvl - 1 downto toLvl do
+            let mutable nxt = pred.Next.[i]
 
-        current
+            while next nxt key seq do
+                pred <- nxt
+                nxt <- pred.Next.[i]
+
+        pred, pred.Next.[toLvl]
 
     member _.Find(key: string, snapshot: int64) =
-        let mutable search = head
-
-        for i = currentLevel - 1 downto 0 do
-            search <- nextNode search i key snapshot
-
-        let current = search.Next.[0]
+        let currLvl = Volatile.Read(&currentLevel)
+        let _, current = search key snapshot currLvl 0
 
         if not (isNull current) && current.Key = key && current.Seq <= snapshot then
             Some current.Value
@@ -55,34 +56,25 @@ type SkipList() =
             None
 
     member _.Put(key: string, seq: int64, ?value: string) =
-        let addNode (update: SkipListNode[]) =
-            let lvl = randomLevel ()
+        let lvl = randomLevel ()
+        let mutable currLvl = Volatile.Read(&currentLevel)
 
-            if lvl > currentLevel then
-                for i = currentLevel to lvl - 1 do
-                    update.[i] <- head
+        while lvl > currLvl do
+            Interlocked.CompareExchange(&currentLevel, lvl, currLvl) |> ignore
+            currLvl <- Volatile.Read(&currentLevel)
 
-                currentLevel <- lvl
+        let newNode = SkipListNode(key, seq, value, lvl)
 
-            let newNode = SkipListNode(key, seq, value, lvl)
+        for i = 0 to lvl - 1 do
+            let mutable success = false
 
-            for i = 0 to lvl - 1 do
-                newNode.Next.[i] <- update.[i].Next.[i]
-                update.[i].Next.[i] <- newNode
+            while not success do
+                let pred, current = search key seq currLvl i
+                newNode.Next.[i] <- current
+                let actual = Interlocked.CompareExchange(&pred.Next.[i], newNode, current)
 
-        let update = Array.zeroCreate<SkipListNode> MAX_LEVEL
-        let mutable search = head
-
-        for i = currentLevel - 1 downto 0 do
-            search <- nextNode search i key seq
-            update.[i] <- search
-
-        let current = search.Next.[0]
-
-        if not (isNull current) && current.Key = key && current.Seq = seq then
-            current.Value <- value
-        else
-            addNode update
+                if obj.ReferenceEquals(actual, current) then
+                    success <- true
 
     member _.Entries() =
         let mutable entries = []
