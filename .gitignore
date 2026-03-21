@@ -68,3 +68,6 @@ Desktop.ini
 # Database files
 *.sst
 *.log
+
+# Benchmark files
+BenchmarkDotNet.Artifacts/
