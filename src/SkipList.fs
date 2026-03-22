@@ -22,6 +22,8 @@ type SkipList() =
     let head = SkipListNode("", Int64.MaxValue, None, MAX_LEVEL)
     let mutable currentLevel = 1
 
+    let getCurrentLevel () = Volatile.Read(&currentLevel)
+
     let randomLevel () =
         let mutable lvl = 1
 
@@ -47,7 +49,7 @@ type SkipList() =
         pred, pred.Next.[toLvl]
 
     member _.Find(key: string, snapshot: int64) =
-        let currLvl = Volatile.Read(&currentLevel)
+        let currLvl = getCurrentLevel ()
         let _, current = search key snapshot currLvl 0
 
         if not (isNull current) && current.Key = key && current.Seq <= snapshot then
@@ -57,11 +59,11 @@ type SkipList() =
 
     member _.Put(key: string, seq: int64, ?value: string) =
         let lvl = randomLevel ()
-        let mutable currLvl = Volatile.Read(&currentLevel)
+        let mutable currLvl = getCurrentLevel ()
 
         while lvl > currLvl do
             Interlocked.CompareExchange(&currentLevel, lvl, currLvl) |> ignore
-            currLvl <- Volatile.Read(&currentLevel)
+            currLvl <- getCurrentLevel ()
 
         let newNode = SkipListNode(key, seq, value, lvl)
 
@@ -88,6 +90,6 @@ type SkipList() =
 
     member _.Clear() =
         for i = 0 to MAX_LEVEL - 1 do
-            head.Next.[i] <- null
+            head.Next.[i] <- Unchecked.defaultof<_>
 
         currentLevel <- 1

@@ -13,7 +13,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
     let mainLock = new ReaderWriterLockSlim()
 
     let compactLevelLimits = [| 4; 10; 100; 1000 |]
-    let ssTables = Array.init compactLevelLimits.Length (fun _ -> List<SSTable>())
+    let ssTables = Array.init (compactLevelLimits.Length + 1) (fun _ -> List<SSTable>())
     let ssTablesLock = obj ()
 
     let mutable globalSeq = 0L
@@ -26,10 +26,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
         else
             0
 
-    let startup dataDir =
-        if not (Directory.Exists dataDir) then
-            Directory.CreateDirectory dataDir |> ignore
-
+    let loadSSTables () =
         Directory.GetFiles(dataDir, "*.sst")
         |> Array.iter (fun path ->
             let level = parseSstLevel path
@@ -38,11 +35,12 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
                 ssTables.[level].Add(SSTable path))
 
         ssTables
-        |> Array.iter (fun sst ->
-            let sorted = sst |> Seq.sortByDescending (fun t -> t.Path)
-            sst.Clear()
-            sst.AddRange sorted)
+        |> Array.iter (fun ssts ->
+            let sorted = ssts |> Seq.sortByDescending (fun t -> t.Path)
+            ssts.Clear()
+            ssts.AddRange sorted)
 
+    let loadWal () =
         let logs = Directory.GetFiles(dataDir, "wal*.log")
         let olds = Directory.GetFiles(dataDir, "wal*.old")
 
@@ -58,6 +56,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
                 memTable.Delete(k, seq)
                 globalSeq <- max globalSeq seq)
 
+    let startup dataDir =
+        if not (Directory.Exists dataDir) then
+            Directory.CreateDirectory dataDir |> ignore
+
+        loadSSTables ()
+        loadWal ()
+
     do startup dataDir
     let mutable wal = WAL walPath
 
@@ -66,8 +71,32 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
 
     let newGuid () = System.Guid.NewGuid().ToString "N"
 
-    let sstPath level =
+    let ssTablePath level =
         Path.Combine(dataDir, sprintf "L%d_%d_%s.sst" level (timestamp ()) (newGuid ()))
+
+    let mergeSSTables level (tablesToCompact: SSTable list) =
+        // To support MVCC perfectly, we don't drop shadow versions unless we do GC against lowest active snapshot.
+        // For now, we write out ALL versions, grouping by key.
+        let mergedData = Dictionary<string, List<int64 * string option>>()
+
+        tablesToCompact
+        |> List.rev
+        |> Seq.collect (fun t -> t.GetAll())
+        |> Seq.iter (fun (key, seq, value) ->
+            if not (mergedData.ContainsKey key) then
+                mergedData.[key] <- List<int64 * string option>()
+
+            mergedData.[key].Add((seq, value)))
+
+        let finalEntries =
+            mergedData
+            |> Seq.collect (fun kv -> kv.Value |> Seq.map (fun (s, v) -> kv.Key, s, v))
+            |> Seq.sortWith (fun (k1, s1, _) (k2, s2, _) ->
+                let c = System.String.CompareOrdinal(k1, k2)
+                if c <> 0 then c else s2.CompareTo s1)
+            |> Seq.toList
+
+        SSTableWriter.flush finalEntries (ssTablePath (level + 1))
 
     let rec compact level =
         let tablesToCompact =
@@ -81,31 +110,10 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
                     [])
 
         if tablesToCompact.Length > 0 then
-            // To support MVCC perfectly, we don't drop shadow versions unless we do GC against lowest active snapshot.
-            // For now, we write out ALL versions, grouping by key.
-            let mergedData = Dictionary<string, List<int64 * string option>>()
-
-            tablesToCompact
-            |> List.rev
-            |> Seq.collect (fun t -> t.GetAll())
-            |> Seq.iter (fun (key, seq, valOpt) ->
-                if not (mergedData.ContainsKey key) then
-                    mergedData.[key] <- List<int64 * string option>()
-
-                mergedData.[key].Add((seq, valOpt)))
-
-            let finalEntries =
-                mergedData
-                |> Seq.collect (fun kv -> kv.Value |> Seq.map (fun (s, v) -> kv.Key, s, v))
-                |> Seq.sortWith (fun (k1, s1, _) (k2, s2, _) ->
-                    let c = System.String.CompareOrdinal(k1, k2)
-                    if c <> 0 then c else s2.CompareTo s1)
-                |> Seq.toList
-
-            let newSst = SSTableWriter.flush finalEntries (sstPath (level + 1))
+            let newSSTable = mergeSSTables level tablesToCompact
 
             lock ssTablesLock (fun () ->
-                ssTables.[level + 1].Insert(0, newSst)
+                ssTables.[level + 1].Insert(0, newSSTable)
 
                 let remaining =
                     ssTables.[level]
@@ -163,7 +171,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
             mainLock.ExitWriteLock()
 
     let addSSTable (oldMemTable: MemTable) =
-        let sst = SSTableWriter.flush oldMemTable.Entries (sstPath 0)
+        let sst = SSTableWriter.flush oldMemTable.Entries (ssTablePath 0)
         lock ssTablesLock (fun () -> ssTables.[0].Insert(0, sst))
 
         mainLock.EnterWriteLock()

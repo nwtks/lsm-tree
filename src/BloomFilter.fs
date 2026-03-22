@@ -36,9 +36,10 @@ type BloomFilter(bits: byte[], numHashFunctions: int) =
     member _.Bytes = bits
 
 module BloomFilter =
+    let numHashFunctions = 7
     let bitsPerItem = 10
 
     let create numEntries =
         let bitSize = max 64 (numEntries * bitsPerItem)
         let byteSize = (bitSize + 7) / 8
-        BloomFilter(Array.zeroCreate<byte> byteSize, 7)
+        BloomFilter(Array.zeroCreate<byte> byteSize, numHashFunctions)
