@@ -116,3 +116,87 @@ let ``MVCC_Multi_Version_Concurrency_Control`` () =
     assertEqual None (tree.Get "mvcc_key") "Post-flush: Current timeline should have key deleted"
     assertEqual (Some "version3") (tree.Get("mvcc_key", snap3)) "Post-flush: Snapshot 3 should read version 3"
     assertEqual (Some "version1") (tree.Get("mvcc_key", snap1)) "Post-flush: Snapshot 1 should read version 1"
+
+[<Fact>]
+let ``Transaction_Commit_Visibility`` () =
+    let testDataDir = getTestDir "tx1"
+    let tree = LsmTree testDataDir
+    let tx = tree.BeginTransaction()
+    tx.Put("tx_k1", "tx_v1")
+    assertEqual None (tree.Get "tx_k1") "Should not see uncommitted write"
+    tx.Commit()
+    assertEqual (Some "tx_v1") (tree.Get "tx_k1") "Should see committed write"
+
+[<Fact>]
+let ``Transaction_Rollback_Visibility`` () =
+    let testDataDir = getTestDir "tx2"
+    let tree = LsmTree testDataDir
+    let tx = tree.BeginTransaction()
+    tx.Put("tx_k2", "tx_v2")
+    tx.Rollback()
+    assertEqual None (tree.Get "tx_k2") "Should not see rolled back write"
+
+[<Fact>]
+let ``Transaction_Read_Own_Writes`` () =
+    let testDataDir = getTestDir "tx3"
+    let tree = LsmTree testDataDir
+    let tx = tree.BeginTransaction()
+    tx.Put("tx_k3", "tx_v3")
+    assertEqual (Some "tx_v3") (tx.Get "tx_k3") "Should see its own uncommitted write"
+    tx.Delete "tx_k3"
+    assertEqual None (tx.Get "tx_k3") "Should see its own delete"
+
+[<Fact>]
+let ``Transaction_Snapshot_Isolation`` () =
+    let testDataDir = getTestDir "tx4"
+    let tree = LsmTree testDataDir
+    tree.Put("k", "v1")
+    let tx = tree.BeginTransaction()
+    tree.Put("k", "v2")
+    assertEqual (Some "v1") (tx.Get "k") "Transaction should see the snapshot at its start"
+    tx.Commit()
+    assertEqual (Some "v2") (tree.Get "k") "Final value should be v2"
+
+[<Fact>]
+let ``Transaction_Single_Sequence_Commit`` () =
+    let testDataDir = getTestDir "tx5"
+    let tree = LsmTree testDataDir
+    let tx = tree.BeginTransaction()
+    tx.Put("k1", "v1")
+    tx.Put("k2", "v2")
+    tx.Commit()
+
+    let tree2 = LsmTree testDataDir
+    let snap = tree2.Snapshot()
+    assertEqual (Some "v1") (tree2.Get "k1") "k1 should be v1"
+    assertEqual (Some "v2") (tree2.Get "k2") "k2 should be v2"
+    assertEqual 1L snap "Both writes should share sequence 1"
+
+[<Fact>]
+let ``WAL_Atomic_Recovery`` () =
+    let testDataDir = getTestDir "tx_wal_atomicity"
+
+    if not (Directory.Exists testDataDir) then
+        Directory.CreateDirectory testDataDir |> ignore
+
+    let walPath = Path.Combine(testDataDir, "wal.log")
+
+    // Manually write a partial transaction to WAL
+    let k1 = WALRecovery.utf8ToBase64 "k1"
+    let v1 = WALRecovery.utf8ToBase64 "v1"
+    use sw = new StreamWriter(walPath)
+    sw.WriteLine "BEGIN 1"
+    sw.WriteLine(sprintf "PUT 1 %s %s" k1 v1)
+    // No COMMIT 1
+    sw.Close()
+
+    let tree = LsmTree testDataDir
+    assertEqual None (tree.Get "k1") "Should not recover k1 because transaction was not committed"
+
+    // Append COMMIT 1
+    use sw2 = File.AppendText walPath
+    sw2.WriteLine "COMMIT 1"
+    sw2.Close()
+
+    let tree2 = LsmTree testDataDir
+    assertEqual (Some "v1") (tree2.Get "k1") "Should recover k1 after COMMIT marker is present"

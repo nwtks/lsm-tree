@@ -5,6 +5,13 @@ open System.Collections.Generic
 open System.Threading.Tasks
 open System.Threading
 
+type ITransaction =
+    abstract member Put: key: string * value: string -> unit
+    abstract member Delete: key: string -> unit
+    abstract member Get: key: string -> string option
+    abstract member Commit: unit -> unit
+    abstract member Rollback: unit -> unit
+
 type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
     let memTableLimit = defaultArg memTableSizeLimit (1024 * 1024)
     let walPath = Path.Combine(dataDir, "wal.log")
@@ -194,38 +201,21 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
 
     member _.Snapshot() = Interlocked.Read(&globalSeq)
 
+    member this.BeginTransaction() =
+        new LsmTransaction(this, this.Snapshot()) :> ITransaction
+
     member this.Put(key: string, value: string) =
-        let shouldFlush =
-            mainLock.EnterReadLock()
-
-            try
-                let seq = Interlocked.Increment(&globalSeq)
-                wal.Put(seq, key, value)
-                memTable.Put(key, seq, value)
-                memTable.SizeBytes >= memTableLimit
-            finally
-                mainLock.ExitReadLock()
-
-        if shouldFlush then
-            this.Flush()
+        let tx = this.BeginTransaction()
+        tx.Put(key, value)
+        tx.Commit()
 
     member this.Delete(key: string) =
-        let shouldFlush =
-            mainLock.EnterReadLock()
+        let tx = this.BeginTransaction()
+        tx.Delete key
+        tx.Commit()
 
-            try
-                let seq = Interlocked.Increment(&globalSeq)
-                wal.Delete(seq, key)
-                memTable.Delete(key, seq)
-                memTable.SizeBytes >= memTableLimit
-            finally
-                mainLock.ExitReadLock()
-
-        if shouldFlush then
-            this.Flush()
-
-    member _.Get(key: string, ?snapshot: int64) =
-        let snap = defaultArg snapshot (Interlocked.Read(&globalSeq))
+    member this.Get(key: string, ?snapshot: int64) =
+        let snap = defaultArg snapshot (this.Snapshot())
 
         let rec search tbls =
             match tbls with
@@ -279,3 +269,67 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
                 wait ()
 
         wait ()
+
+    member internal this.CommitTransaction(ops: (string * string option) list) =
+        let shouldFlush =
+            mainLock.EnterReadLock()
+
+            try
+                if not ops.IsEmpty then
+                    let commitSeq = Interlocked.Increment(&globalSeq)
+                    wal.Begin commitSeq
+
+                    ops
+                    |> List.iter (fun (k, vOpt) ->
+                        match vOpt with
+                        | Some v ->
+                            wal.Put(commitSeq, k, v)
+                            memTable.Put(k, commitSeq, v)
+                        | None ->
+                            wal.Delete(commitSeq, k)
+                            memTable.Delete(k, commitSeq))
+
+                    wal.Commit commitSeq
+
+                memTable.SizeBytes >= memTableLimit
+            finally
+                mainLock.ExitReadLock()
+
+        if shouldFlush then
+            this.Flush()
+
+and LsmTransaction(lsm: LsmTree, snapshot: int64) =
+    let mutable ops = []
+    let mutable finished = false
+
+    let checkFinished () =
+        if finished then
+            failwith "Transaction already finished"
+
+    interface ITransaction with
+        member _.Put(key, value) =
+            checkFinished ()
+            ops <- (key, Some value) :: ops
+
+        member _.Delete key =
+            checkFinished ()
+            ops <- (key, None) :: ops
+
+        member _.Get key =
+            checkFinished ()
+            let local = ops |> Seq.tryFind (fun (k, _) -> k = key)
+
+            match local with
+            | Some(_, Some v) -> Some v
+            | Some(_, None) -> None
+            | None -> lsm.Get(key, snapshot)
+
+        member _.Commit() =
+            checkFinished ()
+            lsm.CommitTransaction(ops |> Seq.rev |> Seq.toList)
+            finished <- true
+
+        member _.Rollback() =
+            checkFinished ()
+            ops <- []
+            finished <- true

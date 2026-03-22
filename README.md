@@ -17,8 +17,12 @@ This project demonstrates the core architectural concepts behind modern top-tier
 * **Background Multi-Level Compaction & Zero-Block Flushing**
   Dynamically tracks hierarchical limits (`L0` max 4 files, `L1` max 10 files...). When limits are exceeded, older tables are K-way merged via a separate `System.Threading.Tasks.Task`. 
   * **Zero-Block Flushes**: When memory hits its limit, the engine swaps an isolated immutable pointer in microseconds. Active user operations (`Put` / `Get`) remain completely decoupled and unobstructed from both Memory-to-Disk flushing and background Compactions.
+* **Atomic ACID Transactions**
+  Supports multi-key atomic updates via a dedicated `Transaction` API. 
+  * **Atomicity**: Guaranteed by `BEGIN`/`COMMIT` markers in the WAL. Partial transactions are automatically discarded during recovery.
+  * **Snapshot Isolation**: Every transaction operates on a stable snapshot of the database, ensuring consistent reads even during concurrent writes.
 * **MVCC (Multi-Version Concurrency Control) & Time-Travel**
-  All mutations inherently track an atomic incremental Sequence Number. The engine natively supports **Snapshot Isolation**, permitting strict time-travel execution where querying an older snapshot reliably reconstructs the database exactly as it was at that coordinate—seamlessly crossing boundaries between MemTables and Flushed SSTables on disk.
+  All mutations track an atomic Sequence Number. The engine enables strict time-travel execution, permitting queries against any historical point in time across both memory and disk.
 
 ## 🔧 Project Structure
 
@@ -75,15 +79,18 @@ let unknown = db.Get("user:99") // Returns: None
 db.Delete("user:2")
 let bob = db.Get("user:2") // Returns: None
 
-// 3. MVCC Snapshot Isolation (Time-Travel)
+// 3. Atomic Transactions
+let tx = db.BeginTransaction()
+tx.Put("acc:1", "100")
+tx.Put("acc:2", "200")
+tx.Delete("acc:temp")
+tx.Commit() // Atomically applies all changes with a single sequence number
+
+// 4. MVCC Snapshot Isolation (Time-Travel)
 db.Put("config:theme", "dark")
-let version1Snapshot = db.Snapshot()
+let v1 = db.Snapshot()
 
 db.Put("config:theme", "light")
-
-// Query newest state
-let current = db.Get("config:theme") // Returns: Some "light"
-
-// Query the past (Time-Travel via Snapshot)
-let past = db.Get("config:theme", version1Snapshot) // Returns: Some "dark"
+let current = db.Get("config:theme") // Some "light"
+let past = db.Get("config:theme", v1) // Some "dark"
 ```
