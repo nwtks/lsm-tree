@@ -87,9 +87,3 @@ type SkipList() =
             current <- current.Next.[0]
 
         entries |> List.rev
-
-    member _.Clear() =
-        for i = 0 to MAX_LEVEL - 1 do
-            head.Next.[i] <- Unchecked.defaultof<_>
-
-        currentLevel <- 1

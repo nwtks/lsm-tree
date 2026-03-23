@@ -42,23 +42,28 @@ This engine is built as a generic `Library (.dll)`, making it universally import
 - .NET SDK (8.0 or newer recommended)
 
 ### Running the XUnit Test Suite
-The project comes embedded with high-coverage XUnit tests covering all components and Snapshot MVCC assertions. Run the following command at the root to efficiently build and dynamically test the entire multi-threaded data lifecycle:
-
+The project comes embedded with high-coverage XUnit tests covering all components and Snapshot MVCC assertions:
 ```bash
 dotnet test
 ```
 
+### Code Coverage
+Measure code coverage with `coverlet` (MSBuild integration is recommended for F#):
+```bash
+dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura
+```
+The summary will be displayed in the terminal, and a report will be generated as `coverage.cobertura.xml`.
+
 ### Running Benchmarks
 To measure the performance of the lock-free SkipList and Bloom Filters, run the benchmark suite in Release mode:
-
 ```bash
 dotnet run -c Release --project benchmark
 ```
 
 Results demonstrate:
-- **Bloom Filter Efficiency**: Non-existent key lookups (Misses) are **25-30x faster** than hits (1.2μs vs 30μs) as they are blocked in-memory by the Bloom bitmask.
-- **Extreme Concurrent Read/Write**: The combination of `ReaderWriterLockSlim` and micro-second **Immutable MemTable swapping** ensures that `Put` and `Get` operations remain unobstructed even during heavy disk flushing or background compactions.
-- **Write Throughput**: In standard setups, `Put` performance is strictly bounded by sequential **WAL (Write-Ahead Log) synchronization** for durability. However, the in-memory **Lock-Free SkipList** ensures that memory mutations themselves never suffer from thread contention.
+- **Bloom Filter Efficiency**: Non-existent key lookups (Misses) are **25-30x faster** than hits.
+- **Extreme Concurrent Read/Write**: Operations remain unobstructed even during heavy disk flushing or background compactions.
+- **Write Throughput**: Currently bounded by sequential WAL synchronization, while the Lock-Free SkipList ensures memory mutations are contention-free.
 
 ### Usage Example (F#)
 
