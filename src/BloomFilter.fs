@@ -3,36 +3,45 @@ namespace LsmTree
 type BloomFilter(bits: byte[], numHashFunctions: int) =
     let bitSize = bits.Length * 8
 
-    let hash (key: string) seed =
-        let h = key |> Seq.fold (fun acc c -> acc * 31u + uint32 c) (uint32 seed)
-        int (h % uint32 bitSize)
+    let hash (key: string) =
+        let h =
+            key
+            |> Seq.fold (fun acc c -> (acc ^^^ uint64 c) * 1099511628211uL) 14695981039346656037uL
 
-    let keyIndex key seed =
-        let idx = hash key seed
-        let byteIdx = idx / 8
-        let bitIdx = idx % 8
+        uint32 (h >>> 32), uint32 (h &&& 0xFFFFFFFFuL)
+
+    let keyIndex h1 h2 seed =
+        let idx = (h1 + uint32 seed * h2) % uint32 bitSize
+        let byteIdx = int (idx / 8u)
+        let bitIdx = int (idx % 8u)
         byteIdx, bitIdx
 
     [<TailCall>]
-    let rec check key i =
-        if i >= numHashFunctions then
+    let rec check h1 h2 seed =
+        if seed >= numHashFunctions then
             true
         else
-            let byteIdx, bitIdx = keyIndex key i
+            let byteIdx, bitIdx = keyIndex h1 h2 seed
 
             if bits.[byteIdx] &&& (1uy <<< bitIdx) = 0uy then
                 false
             else
-                check key (i + 1)
+                check h1 h2 (seed + 1)
 
     member _.Add(key: string) =
         if bitSize > 0 then
+            let h1, h2 = hash key
+
             for i = 0 to numHashFunctions - 1 do
-                let byteIdx, bitIdx = keyIndex key i
+                let byteIdx, bitIdx = keyIndex h1 h2 i
                 bits.[byteIdx] <- bits.[byteIdx] ||| (1uy <<< bitIdx)
 
     member _.MightContain(key: string) =
-        if bitSize > 0 then check key 0 else true
+        if bitSize > 0 then
+            let h1, h2 = hash key
+            check h1 h2 0
+        else
+            true
 
     member _.Bytes = bits
 
