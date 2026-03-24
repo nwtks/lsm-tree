@@ -21,7 +21,6 @@ let ``Put_and_Get_from_MemTable`` () =
     let testDataDir = getTestDir "1"
     let tree = LsmTree testDataDir
     tree.Put("k1", "v1")
-
     assertEqual (Some "v1") (tree.Get "k1") "k1 should be v1"
     assertEqual None (tree.Get "k2") "k2 should be None"
 
@@ -30,8 +29,7 @@ let ``Delete_a_key_Tombstone`` () =
     let testDataDir = getTestDir "2"
     let tree = LsmTree testDataDir
     tree.Put("k1", "v1")
-    tree.Delete("k1")
-
+    tree.Delete "k1"
     assertEqual None (tree.Get "k1") "k1 should be deleted (Tombstone applied)"
 
 [<Fact>]
@@ -41,7 +39,6 @@ let ``Flush_to_SSTable_and_Read`` () =
     tree.Put("key1", "value1")
     tree.Put("key2", "value2")
     tree.Flush()
-
     assertEqual (Some "value1") (tree.Get "key1") "Should read key1 from flushed SSTable"
     assertEqual (Some "value2") (tree.Get "key2") "Should read key2 from flushed SSTable"
 
@@ -63,7 +60,6 @@ let ``SkipList_Properties_Sorting_by_Keys`` () =
     sl.Put("k3", 1L, "v3")
     sl.Put("k1", 2L, "v1")
     sl.Put("k2", 3L, "v2")
-
     let entries = sl.Entries()
 
     assertEqual
@@ -92,19 +88,13 @@ let ``Multi_Level_Compaction_L0_L1`` () =
 let ``MVCC_Multi_Version_Concurrency_Control`` () =
     let testDataDir = getTestDir "7"
     let tree = LsmTree testDataDir
-
     tree.Put("mvcc_key", "version1")
     let snap1 = tree.Snapshot()
-
     tree.Put("mvcc_key", "version2")
     let snap2 = tree.Snapshot()
-
     tree.Put("mvcc_key", "version3")
     let snap3 = tree.Snapshot()
-
     tree.Delete "mvcc_key"
-    let snap4 = tree.Snapshot()
-
     assertEqual None (tree.Get "mvcc_key") "Current timeline should have key deleted"
     assertEqual (Some "version3") (tree.Get("mvcc_key", snap3)) "Snapshot 3 should read version 3"
     assertEqual (Some "version2") (tree.Get("mvcc_key", snap2)) "Snapshot 2 should read version 2"
@@ -112,7 +102,6 @@ let ``MVCC_Multi_Version_Concurrency_Control`` () =
 
     tree.Flush()
     tree.WaitForCompaction()
-
     assertEqual None (tree.Get "mvcc_key") "Post-flush: Current timeline should have key deleted"
     assertEqual (Some "version3") (tree.Get("mvcc_key", snap3)) "Post-flush: Snapshot 3 should read version 3"
     assertEqual (Some "version1") (tree.Get("mvcc_key", snap1)) "Post-flush: Snapshot 1 should read version 1"
@@ -121,9 +110,10 @@ let ``MVCC_Multi_Version_Concurrency_Control`` () =
 let ``Transaction_Commit_Visibility`` () =
     let testDataDir = getTestDir "tx1"
     let tree = LsmTree testDataDir
-    let tx = tree.BeginTransaction()
+    use tx = tree.BeginTransaction()
     tx.Put("tx_k1", "tx_v1")
     assertEqual None (tree.Get "tx_k1") "Should not see uncommitted write"
+
     tx.Commit()
     assertEqual (Some "tx_v1") (tree.Get "tx_k1") "Should see committed write"
 
@@ -131,7 +121,7 @@ let ``Transaction_Commit_Visibility`` () =
 let ``Transaction_Rollback_Visibility`` () =
     let testDataDir = getTestDir "tx2"
     let tree = LsmTree testDataDir
-    let tx = tree.BeginTransaction()
+    use tx = tree.BeginTransaction()
     tx.Put("tx_k2", "tx_v2")
     tx.Rollback()
     assertEqual None (tree.Get "tx_k2") "Should not see rolled back write"
@@ -140,9 +130,10 @@ let ``Transaction_Rollback_Visibility`` () =
 let ``Transaction_Read_Own_Writes`` () =
     let testDataDir = getTestDir "tx3"
     let tree = LsmTree testDataDir
-    let tx = tree.BeginTransaction()
+    use tx = tree.BeginTransaction()
     tx.Put("tx_k3", "tx_v3")
     assertEqual (Some "tx_v3") (tx.Get "tx_k3") "Should see its own uncommitted write"
+
     tx.Delete "tx_k3"
     assertEqual None (tx.Get "tx_k3") "Should see its own delete"
 
@@ -151,9 +142,10 @@ let ``Transaction_Snapshot_Isolation`` () =
     let testDataDir = getTestDir "tx4"
     let tree = LsmTree testDataDir
     tree.Put("k", "v1")
-    let tx = tree.BeginTransaction()
+    use tx = tree.BeginTransaction()
     tree.Put("k", "v2")
     assertEqual (Some "v1") (tx.Get "k") "Transaction should see the snapshot at its start"
+
     tx.Commit()
     assertEqual (Some "v2") (tree.Get "k") "Final value should be v2"
 
@@ -161,7 +153,7 @@ let ``Transaction_Snapshot_Isolation`` () =
 let ``Transaction_Single_Sequence_Commit`` () =
     let testDataDir = getTestDir "tx5"
     let tree = LsmTree testDataDir
-    let tx = tree.BeginTransaction()
+    use tx = tree.BeginTransaction()
     tx.Put("k1", "v1")
     tx.Put("k2", "v2")
     tx.Commit()
@@ -180,7 +172,6 @@ let ``WAL_Atomic_Recovery`` () =
         Directory.CreateDirectory testDataDir |> ignore
 
     let walPath = Path.Combine(testDataDir, "wal.log")
-
     let k1 = WALRecovery.utf8ToBase64 "k1"
     let v1 = WALRecovery.utf8ToBase64 "v1"
     use sw = new StreamWriter(walPath)
@@ -203,11 +194,9 @@ let ``Transaction_Isolation_Across_Flush`` () =
     let testDataDir = getTestDir "tx_flush"
     let tree = LsmTree(testDataDir, 1024)
     tree.Put("k1", "initial")
-    let tx = tree.BeginTransaction()
-
+    use tx = tree.BeginTransaction()
     tree.Put("k1", "updated")
     tree.Flush()
-
     assertEqual (Some "initial") (tx.Get "k1") "Transaction must see its snapshot even after background flush"
     tx.Commit()
 
@@ -240,7 +229,6 @@ let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
     let l1Path = Path.Combine(testDataDir, "L1_data.sst")
     let l0Path = Path.Combine(testDataDir, "L0_data.sst")
     let legacyPath = Path.Combine(testDataDir, "legacy.sst")
-
     SSTableWriter.write l1Path [ "k1", 1L, Some "v1_L1" ]
     SSTableWriter.write l0Path [ "k1", 200L, Some "v1_L0" ]
     SSTableWriter.write legacyPath [ "k9", 10L, Some "v9" ]
@@ -262,7 +250,6 @@ let ``WAL_Edge_Cases_Corruption_and_Orphans`` () =
         Directory.CreateDirectory testDataDir |> ignore
 
     let walPath = Path.Combine(testDataDir, "wal.log")
-
     let k = WALRecovery.utf8ToBase64 "k"
     let v = WALRecovery.utf8ToBase64 "v"
     File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; sprintf "PUT 2 %s %s" k v; "COMMIT 2" ])
@@ -283,11 +270,11 @@ let ``WAL_Edge_Cases_Corruption_and_Orphans`` () =
 let ``Transaction_Already_Finished_Errors`` () =
     let testDataDir = getTestDir "tx_errors"
     let tree = LsmTree testDataDir
-    let tx = tree.BeginTransaction()
+    use tx = tree.BeginTransaction()
     tx.Commit()
 
     Assert.Throws<Exception>(fun () -> tx.Put("k", "v") |> ignore) |> ignore
-    Assert.Throws<Exception>(fun () -> tx.Delete("k") |> ignore) |> ignore
+    Assert.Throws<Exception>(fun () -> tx.Delete "k" |> ignore) |> ignore
     Assert.Throws<Exception>(fun () -> tx.Commit() |> ignore) |> ignore
     Assert.Throws<Exception>(fun () -> tx.Rollback() |> ignore) |> ignore
 
@@ -317,6 +304,55 @@ let ``WAL_Recover_NonExistent_File`` () =
     assertEqual [] ops "Recovering non-existent file path"
 
 [<Fact>]
+let ``Test_MergeSSTables_Coverage`` () =
+    let testDataDir = getTestDir "merge_cov"
+    let limits = [| 1; 1 |]
+    let tree = LsmTree(testDataDir, 1, limits)
+    tree.Put("km", "v1")
+    tree.Flush()
+    tree.Put("km", "v2")
+    tree.Flush()
+
+    use tx = tree.BeginTransaction()
+    tree.Put("km", "v3")
+    tree.Flush()
+    tree.WaitForCompaction()
+    tree.Delete "kd"
+    tree.Flush()
+
+    for i = 1 to 10 do
+        tree.Put(sprintf "other_%d" i, "data")
+        tree.Flush()
+
+    tree.WaitForCompaction()
+    assertEqual (Some "v3") (tree.Get "km") "Current km = v3"
+    assertEqual None (tree.Get "kd") "kd is deleted"
+
+[<Fact>]
+let ``Snapshot_Pruning_Verification`` () =
+    let testDataDir = getTestDir "pruning"
+    let tree = LsmTree(testDataDir, 10)
+    tree.Put("kp", "v1")
+    tree.Flush()
+    tree.Put("kp", "v2")
+    tree.Flush()
+    tree.Put("kp", "v3")
+    tree.Flush()
+
+    use tx = tree.BeginTransaction()
+    tree.WaitForCompaction()
+    tree.Put("other", "data")
+    tree.Flush()
+    tree.Put("other2", "data")
+    tree.Flush()
+    tree.Put("other3", "data")
+    tree.Flush()
+    tree.Put("other4", "data")
+    tree.Flush()
+    tree.WaitForCompaction()
+    assertEqual (Some "v3") (tree.Get "kp") "Current should be v3"
+
+[<Fact>]
 let ``Get_from_ImmutableMemTable_Race`` () =
     let testDataDir = getTestDir "imm_race"
     let tree = LsmTree(testDataDir, 1000)
@@ -326,5 +362,7 @@ let ``Get_from_ImmutableMemTable_Race`` () =
         System.Threading.Tasks.Task.Run(fun () -> tree.Flush()) |> ignore
         tree.Get "race_k" |> ignore
         tree.Put("race_k", "race_v")
+        tree.Get "race_k" |> ignore
+        tree.Delete "race_k"
 
     Assert.True(true, "Should not crash during concurrent flush/get")
