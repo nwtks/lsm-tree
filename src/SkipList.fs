@@ -18,7 +18,6 @@ type SkipList() =
     [<Literal>]
     let P = 0.5
 
-    let rand = Random()
     let head = SkipListNode("", Int64.MaxValue, None, MAX_LEVEL)
     let mutable currentLevel = 1
 
@@ -27,7 +26,7 @@ type SkipList() =
     let randomLevel () =
         let mutable lvl = 1
 
-        while rand.NextDouble() < P && lvl < MAX_LEVEL do
+        while Random.Shared.NextDouble() < P && lvl < MAX_LEVEL do
             lvl <- lvl + 1
 
         lvl
@@ -48,6 +47,21 @@ type SkipList() =
 
         pred, pred.Next.[toLvl]
 
+    let searchPreds key seq currLvl =
+        let preds = Array.create MAX_LEVEL head
+        let mutable pred = head
+
+        for i = currLvl - 1 downto 0 do
+            let mutable nxt = pred.Next.[i]
+
+            while next nxt key seq do
+                pred <- nxt
+                nxt <- pred.Next.[i]
+
+            preds.[i] <- pred
+
+        preds
+
     member _.Find(key: string, snapshot: int64) =
         let currLvl = getCurrentLevel ()
         let _, current = search key snapshot currLvl 0
@@ -65,18 +79,23 @@ type SkipList() =
             Interlocked.CompareExchange(&currentLevel, lvl, currLvl) |> ignore
             currLvl <- getCurrentLevel ()
 
+        let preds = searchPreds key seq currLvl
         let newNode = SkipListNode(key, seq, value, lvl)
 
         for i = 0 to lvl - 1 do
             let mutable success = false
+            let mutable p = preds.[i]
 
             while not success do
-                let pred, current = search key seq currLvl i
+                let current = p.Next.[i]
                 newNode.Next.[i] <- current
-                let actual = Interlocked.CompareExchange(&pred.Next.[i], newNode, current)
+                let actual = Interlocked.CompareExchange(&p.Next.[i], newNode, current)
 
                 if obj.ReferenceEquals(actual, current) then
                     success <- true
+                else
+                    let newP, _ = search key seq currLvl i
+                    p <- newP
 
     member _.Entries() =
         let mutable entries = []

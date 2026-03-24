@@ -417,3 +417,23 @@ let ``Get_from_ImmutableMemTable_Race`` () =
         tree.Delete "race_k"
 
     Assert.True(true, "Should not crash during concurrent flush/get")
+
+[<Fact>]
+let ``SkipList_Concurrency_Stress`` () =
+    let list = SkipList()
+    let numThreads = 20
+    let numOps = 2000
+
+    let tasks =
+        [| for i = 1 to numThreads do
+               yield
+                   System.Threading.Tasks.Task.Run(fun () ->
+                       for j = 1 to numOps do
+                           list.Put(sprintf "key%d" (j % 50), int64 (i * numOps + j), sprintf "val%d" j)
+
+                           if j % 10 = 0 then
+                               list.Find(sprintf "key%d" (j % 50), Int64.MaxValue) |> ignore) |]
+
+    System.Threading.Tasks.Task.WaitAll tasks
+    let entries = list.Entries()
+    Assert.True(entries.Length > 0)
