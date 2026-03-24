@@ -43,7 +43,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
 
         ssTables
         |> Array.iter (fun ssts ->
-            let sorted = ssts |> Seq.sortByDescending (fun t -> t.Path)
+            let sorted = ssts |> Seq.sortByDescending (fun t -> t.Path) |> Seq.toArray
             ssts.Clear()
             ssts.AddRange sorted)
 
@@ -105,6 +105,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
 
         SSTableWriter.flush finalEntries (ssTablePath (level + 1))
 
+    [<TailCall>]
     let rec compact level =
         let tablesToCompact =
             lock ssTablesLock (fun () ->
@@ -199,6 +200,34 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
             triggerCompaction ()
         | None -> ()
 
+    [<TailCall>]
+    let rec search key snap tables =
+        match tables with
+        | [] -> None
+        | t: SSTable :: rest ->
+            match t.Get(key, snap) with
+            | Some res -> Some res
+            | None -> search key snap rest
+
+    [<TailCall>]
+    let rec searchLevel key snap level =
+        if level >= ssTables.Length then
+            None
+        else
+            let tables = lock ssTablesLock (fun () -> ssTables.[level] |> Seq.toList)
+
+            match search key snap tables with
+            | Some res -> Some res
+            | None -> searchLevel key snap (level + 1)
+
+    [<TailCall>]
+    let rec wait () =
+        let active = lock ssTablesLock (fun () -> isCompacting)
+
+        if active then
+            Thread.Sleep 50
+            wait ()
+
     member _.Snapshot() = Interlocked.Read(&globalSeq)
 
     member this.BeginTransaction() =
@@ -216,24 +245,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
 
     member this.Get(key: string, ?snapshot: int64) =
         let snap = defaultArg snapshot (this.Snapshot())
-
-        let rec search tbls =
-            match tbls with
-            | [] -> None
-            | t: SSTable :: rest ->
-                match t.Get(key, snap) with
-                | Some res -> Some res
-                | None -> search rest
-
-        let rec searchLevel level =
-            if level >= ssTables.Length then
-                None
-            else
-                let tables = lock ssTablesLock (fun () -> ssTables.[level] |> Seq.toList)
-
-                match search tables with
-                | Some res -> Some res
-                | None -> searchLevel (level + 1)
 
         let memRes, immRes =
             mainLock.EnterReadLock()
@@ -254,21 +265,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int) =
             | Some(Some v) -> Some v
             | Some None -> None
             | None ->
-                match searchLevel 0 with
+                match searchLevel key snap 0 with
                 | Some(Some v) -> Some v
                 | _ -> None
 
     member _.Flush() = flushMemTable ()
 
-    member _.WaitForCompaction() =
-        let rec wait () =
-            let active = lock ssTablesLock (fun () -> isCompacting)
-
-            if active then
-                Thread.Sleep 50
-                wait ()
-
-        wait ()
+    member _.WaitForCompaction() = wait ()
 
     member internal this.CommitTransaction(ops: (string * string option) list) =
         let shouldFlush =

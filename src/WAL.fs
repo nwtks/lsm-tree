@@ -50,6 +50,29 @@ module WALRecovery =
             Some(seq, Commit)
         | _ -> None
 
+    let collectEntries
+        (buffered: Dictionary<int64, (string * string option) list>)
+        (seq: int64)
+        (entry: RecoveryEntry)
+        =
+        match entry with
+        | Begin ->
+            buffered.[seq] <- []
+            Seq.empty
+        | Op(k, v) ->
+            if buffered.ContainsKey seq then
+                buffered.[seq] <- buffered.[seq] @ [ k, v ]
+                Seq.empty
+            else
+                Seq.singleton (seq, k, v)
+        | Commit ->
+            if buffered.ContainsKey seq then
+                let ops = buffered.[seq]
+                buffered.Remove seq |> ignore
+                ops |> Seq.map (fun (k, v) -> seq, k, v)
+            else
+                Seq.empty
+
     let recover path =
         if not (File.Exists path) then
             Seq.empty
@@ -58,24 +81,7 @@ module WALRecovery =
 
             File.ReadLines path
             |> Seq.choose parseEntry
-            |> Seq.collect (fun (seq, entry) ->
-                match entry with
-                | Begin ->
-                    buffered.[seq] <- []
-                    Seq.empty
-                | Op(k, v) ->
-                    if buffered.ContainsKey seq then
-                        buffered.[seq] <- buffered.[seq] @ [ k, v ]
-                        Seq.empty
-                    else
-                        Seq.singleton (seq, k, v)
-                | Commit ->
-                    if buffered.ContainsKey seq then
-                        let ops = buffered.[seq]
-                        buffered.Remove seq |> ignore
-                        ops |> Seq.map (fun (k, v) -> seq, k, v)
-                    else
-                        Seq.empty)
+            |> Seq.collect (fun (seq, entry) -> collectEntries buffered seq entry)
 
 type WAL(path: string) =
     let stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read)

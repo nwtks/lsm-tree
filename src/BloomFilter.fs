@@ -13,6 +13,7 @@ type BloomFilter(bits: byte[], numHashFunctions: int) =
         let bitIdx = idx % 8
         byteIdx, bitIdx
 
+    [<TailCall>]
     let rec check key i =
         if i >= numHashFunctions then
             true
@@ -31,7 +32,7 @@ type BloomFilter(bits: byte[], numHashFunctions: int) =
                 bits.[byteIdx] <- bits.[byteIdx] ||| (1uy <<< bitIdx)
 
     member _.MightContain(key: string) =
-        if bitSize = 0 then true else check key 0
+        if bitSize > 0 then check key 0 else true
 
     member _.Bytes = bits
 
@@ -40,6 +41,11 @@ module BloomFilter =
     let bitsPerItem = 10
 
     let create numEntries =
-        let bitSize = max 64 (numEntries * bitsPerItem)
+        let bitSize =
+            if numEntries > 0 then
+                max 64 (numEntries * bitsPerItem)
+            else
+                0
+
         let byteSize = (bitSize + 7) / 8
         BloomFilter(Array.zeroCreate<byte> byteSize, numHashFunctions)

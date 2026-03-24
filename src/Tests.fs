@@ -181,19 +181,16 @@ let ``WAL_Atomic_Recovery`` () =
 
     let walPath = Path.Combine(testDataDir, "wal.log")
 
-    // Manually write a partial transaction to WAL
     let k1 = WALRecovery.utf8ToBase64 "k1"
     let v1 = WALRecovery.utf8ToBase64 "v1"
     use sw = new StreamWriter(walPath)
     sw.WriteLine "BEGIN 1"
     sw.WriteLine(sprintf "PUT 1 %s %s" k1 v1)
-    // No COMMIT 1
     sw.Close()
 
     let tree = LsmTree testDataDir
     assertEqual None (tree.Get "k1") "Should not recover k1 because transaction was not committed"
 
-    // Append COMMIT 1
     use sw2 = File.AppendText walPath
     sw2.WriteLine "COMMIT 1"
     sw2.Close()
@@ -207,11 +204,10 @@ let ``Transaction_Isolation_Across_Flush`` () =
     let tree = LsmTree(testDataDir, 1024)
     tree.Put("k1", "initial")
     let tx = tree.BeginTransaction()
-    
-    // Concurrent update and flush
+
     tree.Put("k1", "updated")
-    tree.Flush() 
-    
+    tree.Flush()
+
     assertEqual (Some "initial") (tx.Get "k1") "Transaction must see its snapshot even after background flush"
     tx.Commit()
 
@@ -223,7 +219,7 @@ let ``Overwrite_Key_Multiple_Times`` () =
     tree.Put("k", "v2")
     tree.Put("k", "v3")
     assertEqual (Some "v3") (tree.Get "k") "Should see the latest version"
-    
+
     tree.Flush()
     assertEqual (Some "v3") (tree.Get "k") "Should see the latest version after flush"
 
@@ -231,5 +227,104 @@ let ``Overwrite_Key_Multiple_Times`` () =
 let ``Delete_NonExistent_Key`` () =
     let testDataDir = getTestDir "del_none"
     let tree = LsmTree testDataDir
-    tree.Delete "no_such_key" // Should not throw
+    tree.Delete "no_such_key"
     assertEqual None (tree.Get "no_such_key") "Deleting non-existent key should be a no-op/tombstone but result in None"
+
+[<Fact>]
+let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
+    let testDataDir = getTestDir "sst_levels"
+
+    if not (Directory.Exists testDataDir) then
+        Directory.CreateDirectory testDataDir |> ignore
+
+    let l1Path = Path.Combine(testDataDir, "L1_data.sst")
+    let l0Path = Path.Combine(testDataDir, "L0_data.sst")
+    let legacyPath = Path.Combine(testDataDir, "legacy.sst")
+
+    SSTableWriter.write l1Path [ "k1", 1L, Some "v1_L1" ]
+    SSTableWriter.write l0Path [ "k1", 200L, Some "v1_L0" ]
+    SSTableWriter.write legacyPath [ "k9", 10L, Some "v9" ]
+
+    let tree = LsmTree testDataDir
+
+    assertEqual
+        (Some "v1_L0")
+        (tree.Get("k1", 300L))
+        "Should prefer L0 over L1 (using high snapshot for manual recovery)"
+
+    assertEqual (Some "v9") (tree.Get("k9", 100L)) "legacy.sst should be at level 0"
+
+[<Fact>]
+let ``WAL_Edge_Cases_Corruption_and_Orphans`` () =
+    let testDataDir = getTestDir "wal_edge"
+
+    if not (Directory.Exists testDataDir) then
+        Directory.CreateDirectory testDataDir |> ignore
+
+    let walPath = Path.Combine(testDataDir, "wal.log")
+
+    let k = WALRecovery.utf8ToBase64 "k"
+    let v = WALRecovery.utf8ToBase64 "v"
+    File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; sprintf "PUT 2 %s %s" k v; "COMMIT 2" ])
+    let tree1 = LsmTree testDataDir
+    assertEqual (Some "v") (tree1.Get "k") "Should recover valid transaction even if unknown entry present"
+
+    let k_orphan = WALRecovery.utf8ToBase64 "key_orphan"
+    let v_orphan = WALRecovery.utf8ToBase64 "val_orphan"
+    File.AppendAllLines(walPath, [ sprintf "PUT 3 %s %s" k_orphan v_orphan ])
+    let tree2 = LsmTree testDataDir
+    assertEqual (Some "val_orphan") (tree2.Get "key_orphan") "Orphaned Ops recovered"
+
+    File.AppendAllLines(walPath, [ "COMMIT 4" ])
+    let tree3 = LsmTree testDataDir
+    assertEqual None (tree3.Get "non_existent") "Should not crash on orphaned commit"
+
+[<Fact>]
+let ``Transaction_Already_Finished_Errors`` () =
+    let testDataDir = getTestDir "tx_errors"
+    let tree = LsmTree testDataDir
+    let tx = tree.BeginTransaction()
+    tx.Commit()
+
+    Assert.Throws<Exception>(fun () -> tx.Put("k", "v") |> ignore) |> ignore
+    Assert.Throws<Exception>(fun () -> tx.Delete("k") |> ignore) |> ignore
+    Assert.Throws<Exception>(fun () -> tx.Commit() |> ignore) |> ignore
+    Assert.Throws<Exception>(fun () -> tx.Rollback() |> ignore) |> ignore
+
+[<Fact>]
+let ``BloomFilter_Empty_Behavior`` () =
+    let bf = BloomFilter([||], 0)
+    assertEqual true (bf.MightContain "any") "Empty BloomFilter true"
+
+    let bf2 = BloomFilter.create 0
+    assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
+
+[<Fact>]
+let ``SSTable_Load_Short_File_Handling`` () =
+    let testDataDir = getTestDir "sst_short"
+
+    if not (Directory.Exists testDataDir) then
+        Directory.CreateDirectory testDataDir |> ignore
+
+    let sstPath = Path.Combine(testDataDir, "L0_short.sst")
+    File.WriteAllBytes(sstPath, [| 1uy; 2uy; 3uy |])
+    let sst = SSTable sstPath
+    assertEqual None (sst.Get("any", 0L)) "Should handle short/invalid SSTable file gracefully"
+
+[<Fact>]
+let ``WAL_Recover_NonExistent_File`` () =
+    let ops = WALRecovery.recover "/tmp/non_existent_wal_path_xyz" |> Seq.toList
+    assertEqual [] ops "Recovering non-existent file path"
+
+[<Fact>]
+let ``Get_from_ImmutableMemTable_Race`` () =
+    let testDataDir = getTestDir "imm_race"
+    let tree = LsmTree(testDataDir, 1000)
+    tree.Put("race_k", "race_v")
+
+    for i = 1 to 100 do
+        System.Threading.Tasks.Task.Run(fun () -> tree.Flush()) |> ignore
+        tree.Get "race_k" |> ignore
+        tree.Put("race_k", "race_v")
+
+    Assert.True(true, "Should not crash during concurrent flush/get")

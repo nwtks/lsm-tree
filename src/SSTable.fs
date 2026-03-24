@@ -19,7 +19,7 @@ type SSTable(path: string) =
         let loadBloomFilter offset =
             fs.Seek(offset, SeekOrigin.Begin) |> ignore
             let bfBytes = br.ReadInt32() |> br.ReadBytes
-            BloomFilter(bfBytes, 7)
+            BloomFilter(bfBytes, BloomFilter.numHashFunctions)
 
         if fs.Length >= 16L then
             fs.Seek(-16L, SeekOrigin.End) |> ignore
@@ -38,32 +38,32 @@ type SSTable(path: string) =
     let readItem (br: BinaryReader) =
         if br.ReadBoolean() then None else Some(readValue br)
 
+    [<TailCall>]
+    let rec binSearch (fs: FileStream) (br: BinaryReader) key snap left right bestMatch =
+        if left > right then
+            bestMatch
+        else
+            let mid = left + (right - left) / 2
+            fs.Seek(offsets.[mid], SeekOrigin.Begin) |> ignore
+
+            let currentSeq = br.ReadInt64()
+            let currentKey = readValue br
+            let comp = String.CompareOrdinal(key, currentKey)
+
+            if comp = 0 then
+                if currentSeq <= snap then
+                    binSearch fs br key snap left (mid - 1) (readItem br |> Some)
+                else
+                    binSearch fs br key snap (mid + 1) right bestMatch
+            elif comp < 0 then
+                binSearch fs br key snap left (mid - 1) bestMatch
+            else
+                binSearch fs br key snap (mid + 1) right bestMatch
+
     let search key snapshot =
         use fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
         use br = new BinaryReader(fs)
-
-        let rec binSearch left right bestMatch =
-            if left > right then
-                bestMatch
-            else
-                let mid = left + (right - left) / 2
-                fs.Seek(offsets.[mid], SeekOrigin.Begin) |> ignore
-
-                let currentSeq = br.ReadInt64()
-                let currentKey = readValue br
-                let comp = String.CompareOrdinal(key, currentKey)
-
-                if comp = 0 then
-                    if currentSeq <= snapshot then
-                        binSearch left (mid - 1) (readItem br |> Some)
-                    else
-                        binSearch (mid + 1) right bestMatch
-                elif comp < 0 then
-                    binSearch left (mid - 1) bestMatch
-                else
-                    binSearch (mid + 1) right bestMatch
-
-        binSearch 0 (offsets.Length - 1) None
+        binSearch fs br key snapshot 0 (offsets.Length - 1) None
 
     member _.Path = path
 
