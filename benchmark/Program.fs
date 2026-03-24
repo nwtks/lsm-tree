@@ -23,7 +23,7 @@ type PutBenchmark() =
             with _ ->
                 ()
 
-        db <- LsmTree testDir
+        db <- new LsmTree(testDir)
 
     [<IterationCleanup>]
     member _.Cleanup() =
@@ -59,7 +59,7 @@ type GetBenchmark() =
             with _ ->
                 ()
 
-        db <- LsmTree testDir
+        db <- new LsmTree(testDir)
 
         for i = 1 to this.N do
             db.Put(sprintf "k%d" i, "v")

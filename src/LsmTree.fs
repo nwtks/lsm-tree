@@ -83,7 +83,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         loadWal ()
 
     do startup dataDir
-    let mutable wal = WAL walPath
+    let mutable wal = new WAL(walPath)
 
     let timestamp () =
         System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
@@ -197,7 +197,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
                 File.Move(walPath, oldWalPath)
 
                 memTable <- MemTable()
-                wal <- WAL walPath
+                wal <- new WAL(walPath)
                 immutableMemTable <- Some oldMemTable
                 Some(oldMemTable, oldWalPath)
             else
@@ -303,6 +303,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
     member _.WaitForCompaction() = wait ()
 
     member _.ReleaseSnapshot(snapshot: int64) = releaseSnapshot snapshot
+
+    member this.Close() = (this :> System.IDisposable).Dispose()
+
+    interface System.IDisposable with
+        member _.Dispose() =
+            wal.Close()
+            mainLock.Dispose()
 
     member internal this.CommitTransaction(ops: (string * string option) list) =
         let shouldFlush =

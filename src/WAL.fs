@@ -32,23 +32,23 @@ module WALRecovery =
     let parseEntry (item: string) =
         let parts = item.Split ' '
 
-        match parts.[0] with
-        | PUT when parts.Length = 4 ->
-            let seq = Int64.Parse parts.[1]
-            let k = base64ToUtf8 parts.[2]
-            let v = base64ToUtf8 parts.[3]
-            Some(seq, Op(k, Some v))
-        | DEL when parts.Length = 3 ->
-            let seq = Int64.Parse parts.[1]
-            let k = base64ToUtf8 parts.[2]
-            Some(seq, Op(k, None))
-        | BEGIN when parts.Length = 2 ->
-            let seq = Int64.Parse parts.[1]
-            Some(seq, Begin)
-        | COMMIT when parts.Length = 2 ->
-            let seq = Int64.Parse parts.[1]
-            Some(seq, Commit)
-        | _ -> None
+        if parts.Length < 2 then
+            None
+        else
+            match Int64.TryParse parts.[1] with
+            | true, seq ->
+                match parts.[0] with
+                | PUT when parts.Length = 4 ->
+                    let k = base64ToUtf8 parts.[2]
+                    let v = base64ToUtf8 parts.[3]
+                    Some(seq, Op(k, Some v))
+                | DEL when parts.Length = 3 ->
+                    let k = base64ToUtf8 parts.[2]
+                    Some(seq, Op(k, None))
+                | BEGIN when parts.Length = 2 -> Some(seq, Begin)
+                | COMMIT when parts.Length = 2 -> Some(seq, Commit)
+                | _ -> None
+            | _ -> None
 
     let collectEntries
         (buffered: Dictionary<int64, (string * string option) list>)
@@ -61,7 +61,7 @@ module WALRecovery =
             Seq.empty
         | Op(k, v) ->
             if buffered.ContainsKey seq then
-                buffered.[seq] <- buffered.[seq] @ [ k, v ]
+                buffered.[seq] <- (k, v) :: buffered.[seq]
                 Seq.empty
             else
                 Seq.singleton (seq, k, v)
@@ -69,7 +69,7 @@ module WALRecovery =
             if buffered.ContainsKey seq then
                 let ops = buffered.[seq]
                 buffered.Remove seq |> ignore
-                ops |> Seq.map (fun (k, v) -> seq, k, v)
+                ops |> List.rev |> Seq.map (fun (k, v) -> seq, k, v)
             else
                 Seq.empty
 
@@ -87,6 +87,7 @@ type WAL(path: string) =
     let stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read)
     let writer = new StreamWriter(stream, Encoding.UTF8)
     let walLock = obj ()
+    let mutable disposed = false
     do writer.AutoFlush <- true
 
     member _.Put(seq: int64, key: string, value: string) =
@@ -106,8 +107,21 @@ type WAL(path: string) =
 
     member _.Commit(seq: int64) =
         let log = sprintf "%s %d" WALRecovery.COMMIT seq
-        lock walLock (fun () -> writer.WriteLine log)
 
-    member _.Close() =
-        writer.Close()
-        stream.Close()
+        lock walLock (fun () ->
+            writer.WriteLine log
+            stream.Flush true)
+
+    member _.Flush(forceDisk: bool) =
+        lock walLock (fun () ->
+            writer.Flush()
+            stream.Flush forceDisk)
+
+    member this.Close() = (this :> IDisposable).Dispose()
+
+    interface IDisposable with
+        member _.Dispose() =
+            if not disposed then
+                writer.Dispose()
+                stream.Dispose()
+                disposed <- true
