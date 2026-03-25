@@ -12,21 +12,26 @@ type PutBenchmark() =
     let testDir = Path.Combine(Environment.CurrentDirectory, "bench_put")
     let mutable db: LsmTree = Unchecked.defaultof<_>
 
-    [<Params(10000, 30000)>]
+    [<Params(10000)>]
     member val N = 0 with get, set
 
+    [<Params(false, true)>]
+    member val Sync = true with get, set
+
     [<IterationSetup>]
-    member _.Setup() =
+    member this.Setup() =
         if Directory.Exists testDir then
             try
                 Directory.Delete(testDir, true)
             with _ ->
                 ()
 
-        db <- new LsmTree(testDir)
+        db <- new LsmTree(testDir, syncOnCommit = this.Sync)
 
     [<IterationCleanup>]
     member _.Cleanup() =
+        db.Close()
+
         if Directory.Exists testDir then
             try
                 Directory.Delete(testDir, true)
@@ -41,6 +46,13 @@ type PutBenchmark() =
     [<Benchmark>]
     member this.ConcurrentPut() =
         Parallel.For(1, this.N + 1, fun i -> db.Put(sprintf "ck%d" i, "v")) |> ignore
+
+    [<Benchmark>]
+    member this.TransactionPut() =
+        use tx = db.BeginTransaction()
+        for i = 1 to this.N do
+            tx.Put(sprintf "tk%d" i, "v")
+        tx.Commit()
 
 [<MemoryDiagnoser>]
 type GetBenchmark() =
@@ -60,14 +72,17 @@ type GetBenchmark() =
                 ()
 
         db <- new LsmTree(testDir)
+        use tx = db.BeginTransaction()
 
         for i = 1 to this.N do
-            db.Put(sprintf "k%d" i, "v")
+            tx.Put(sprintf "k%d" i, "v")
 
-        db.Flush()
+        tx.Commit()
 
     [<GlobalCleanup>]
     member _.Cleanup() =
+        db.Close()
+
         if Directory.Exists testDir then
             try
                 Directory.Delete(testDir, true)

@@ -105,12 +105,15 @@ type WAL(path: string) =
         let log = sprintf "%s %d" WALRecovery.BEGIN seq
         lock walLock (fun () -> writer.WriteLine log)
 
-    member _.Commit(seq: int64) =
+    member _.Commit(seq: int64, ?sync: bool) =
+        let sync = defaultArg sync true
         let log = sprintf "%s %d" WALRecovery.COMMIT seq
 
         lock walLock (fun () ->
             writer.WriteLine log
-            stream.Flush true)
+
+            if sync then
+                stream.Flush true)
 
     member this.Close() = (this :> IDisposable).Dispose()
 

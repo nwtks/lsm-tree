@@ -13,8 +13,9 @@ type ITransaction =
     abstract member Commit: unit -> unit
     abstract member Rollback: unit -> unit
 
-type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[]) =
+type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?compactLevelLimits: int[]) =
     let memTableLimit = defaultArg memTableSizeLimit (1024 * 1024)
+    let mutable syncOnCommit = defaultArg syncOnCommit true
     let compactLevelLimits = defaultArg compactLevelLimits [| 4; 10; 100; 1000 |]
     let walPath = Path.Combine(dataDir, "wal.log")
     let mutable memTable = MemTable()
@@ -305,6 +306,10 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
 
     member _.WaitForCompaction() = wait ()
 
+    member _.SyncOnCommit
+        with get () = syncOnCommit
+        and set v = syncOnCommit <- v
+
     member _.ReleaseSnapshot(snapshot: int64) = releaseSnapshot snapshot
 
     member this.Close() = (this :> System.IDisposable).Dispose()
@@ -336,7 +341,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
                             wal.Delete(commitSeq, k)
                             memTable.Delete(k, commitSeq))
 
-                    wal.Commit commitSeq
+                    wal.Commit(commitSeq, sync = syncOnCommit)
 
                 memTable.SizeBytes >= memTableLimit
             finally

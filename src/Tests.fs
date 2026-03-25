@@ -25,6 +25,7 @@ let ``Put_and_Get_from_MemTable`` () =
     tree.Put("k1", "v1")
     assertEqual (Some "v1") (tree.Get "k1") "k1 should be v1"
     assertEqual None (tree.Get "k2") "k2 should be None"
+    tree.Close()
 
 [<Fact>]
 let ``Delete_a_key_Tombstone`` () =
@@ -33,6 +34,7 @@ let ``Delete_a_key_Tombstone`` () =
     tree.Put("k1", "v1")
     tree.Delete "k1"
     assertEqual None (tree.Get "k1") "k1 should be deleted (Tombstone applied)"
+    tree.Close()
 
 [<Fact>]
 let ``Flush_to_SSTable_and_Read`` () =
@@ -43,6 +45,7 @@ let ``Flush_to_SSTable_and_Read`` () =
     tree.Flush()
     assertEqual (Some "value1") (tree.Get "key1") "Should read key1 from flushed SSTable"
     assertEqual (Some "value2") (tree.Get "key2") "Should read key2 from flushed SSTable"
+    tree.Close()
 
 [<Fact>]
 let ``Auto_recovery_from_WAL`` () =
@@ -55,19 +58,6 @@ let ``Auto_recovery_from_WAL`` () =
     use tree2 = new LsmTree(testDataDir)
     assertEqual None (tree2.Get "wal_key1") "wal_key1 should be deleted after recovery"
     assertEqual (Some "wal_val2") (tree2.Get "wal_key2") "wal_key2 should be recovered from WAL log"
-
-[<Fact>]
-let ``SkipList_Properties_Sorting_by_Keys`` () =
-    let sl = SkipList()
-    sl.Put("k3", 1L, "v3")
-    sl.Put("k1", 2L, "v1")
-    sl.Put("k2", 3L, "v2")
-    let entries = sl.Entries()
-
-    assertEqual
-        [ "k1", 2L, Some "v1"; "k2", 3L, Some "v2"; "k3", 1L, Some "v3" ]
-        entries
-        "SkipList should maintain sorted order"
 
 [<Fact>]
 let ``Multi_Level_Compaction_L0_L1`` () =
@@ -167,6 +157,17 @@ let ``Transaction_Single_Sequence_Commit`` () =
     assertEqual 1L snap "Both writes should share sequence 1"
 
 [<Fact>]
+let ``Transaction_Isolation_Across_Flush`` () =
+    let testDataDir = getTestDir "tx_flush"
+    use tree = new LsmTree(testDataDir, 1024)
+    tree.Put("k1", "initial")
+    use tx = tree.BeginTransaction()
+    tree.Put("k1", "updated")
+    tree.Flush()
+    assertEqual (Some "initial") (tx.Get "k1") "Transaction must see its snapshot even after background flush"
+    tx.Commit()
+
+[<Fact>]
 let ``WAL_Atomic_Recovery`` () =
     let testDataDir = getTestDir "tx_wal_atomicity"
     let walPath = Path.Combine(testDataDir, "wal.log")
@@ -186,17 +187,6 @@ let ``WAL_Atomic_Recovery`` () =
 
     use tree2 = new LsmTree(testDataDir)
     assertEqual (Some "v1") (tree2.Get "k1") "Should recover k1 after COMMIT marker is present"
-
-[<Fact>]
-let ``Transaction_Isolation_Across_Flush`` () =
-    let testDataDir = getTestDir "tx_flush"
-    use tree = new LsmTree(testDataDir, 1024)
-    tree.Put("k1", "initial")
-    use tx = tree.BeginTransaction()
-    tree.Put("k1", "updated")
-    tree.Flush()
-    assertEqual (Some "initial") (tx.Get "k1") "Transaction must see its snapshot even after background flush"
-    tx.Commit()
 
 [<Fact>]
 let ``Overwrite_Key_Multiple_Times`` () =
@@ -276,7 +266,7 @@ let ``Get_from_ImmutableMemTable_Race`` () =
 let ``Test_MergeSSTables_Coverage`` () =
     let testDataDir = getTestDir "merge_cov"
     let limits = [| 1; 1 |]
-    use tree = new LsmTree(testDataDir, 1, limits)
+    use tree = new LsmTree(testDataDir, 1, compactLevelLimits = limits)
     tree.Put("km", "v1")
     tree.Flush()
     tree.Put("km", "v2")
@@ -427,6 +417,19 @@ let ``BloomFilter_FalsePositiveRate`` () =
 
     let fpr = float falsePositives / float numTests
     Assert.True(fpr < 0.02, sprintf "False positive rate too high: %f" fpr)
+
+[<Fact>]
+let ``SkipList_Properties_Sorting_by_Keys`` () =
+    let sl = SkipList()
+    sl.Put("k3", 1L, "v3")
+    sl.Put("k1", 2L, "v1")
+    sl.Put("k2", 3L, "v2")
+    let entries = sl.Entries()
+
+    assertEqual
+        [ "k1", 2L, Some "v1"; "k2", 3L, Some "v2"; "k3", 1L, Some "v3" ]
+        entries
+        "SkipList should maintain sorted order"
 
 [<Fact>]
 let ``SkipList_Concurrency_Stress`` () =
