@@ -12,6 +12,7 @@ let getTestDir name =
     if Directory.Exists dir then
         Directory.Delete(dir, true)
 
+    Directory.CreateDirectory dir |> ignore
     dir
 
 let assertEqual expected actual msg =
@@ -168,10 +169,6 @@ let ``Transaction_Single_Sequence_Commit`` () =
 [<Fact>]
 let ``WAL_Atomic_Recovery`` () =
     let testDataDir = getTestDir "tx_wal_atomicity"
-
-    if not (Directory.Exists testDataDir) then
-        Directory.CreateDirectory testDataDir |> ignore
-
     let walPath = Path.Combine(testDataDir, "wal.log")
     let k1 = WALRecovery.utf8ToBase64 "k1"
     let v1 = WALRecovery.utf8ToBase64 "v1"
@@ -221,83 +218,6 @@ let ``Delete_NonExistent_Key`` () =
     assertEqual None (tree.Get "no_such_key") "Deleting non-existent key should be a no-op/tombstone but result in None"
 
 [<Fact>]
-let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
-    let testDataDir = getTestDir "sst_levels"
-
-    if not (Directory.Exists testDataDir) then
-        Directory.CreateDirectory testDataDir |> ignore
-
-    let l1Path = Path.Combine(testDataDir, "L1_data.sst")
-    let l0Path = Path.Combine(testDataDir, "L0_data.sst")
-    let legacyPath = Path.Combine(testDataDir, "legacy.sst")
-    SSTableWriter.write l1Path [ "k1", 1L, Some "v1_L1" ]
-    SSTableWriter.write l0Path [ "k1", 200L, Some "v1_L0" ]
-    SSTableWriter.write legacyPath [ "k9", 10L, Some "v9" ]
-
-    use tree = new LsmTree(testDataDir)
-
-    assertEqual
-        (Some "v1_L0")
-        (tree.Get("k1", 300L))
-        "Should prefer L0 over L1 (using high snapshot for manual recovery)"
-
-    assertEqual (Some "v9") (tree.Get("k9", 100L)) "legacy.sst should be at level 0"
-
-[<Fact>]
-let ``WAL_Edge_Cases_Corruption_and_Orphans`` () =
-    let testDataDir = getTestDir "wal_edge"
-
-    if not (Directory.Exists testDataDir) then
-        Directory.CreateDirectory testDataDir |> ignore
-
-    let walPath = Path.Combine(testDataDir, "wal.log")
-    let k = WALRecovery.utf8ToBase64 "k"
-    let v = WALRecovery.utf8ToBase64 "v"
-    File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; sprintf "PUT 2 %s %s" k v; "COMMIT 2" ])
-    use tree1 = new LsmTree(testDataDir)
-    assertEqual (Some "v") (tree1.Get "k") "Should recover valid transaction even if unknown entry present"
-
-    let k_orphan = WALRecovery.utf8ToBase64 "key_orphan"
-    let v_orphan = WALRecovery.utf8ToBase64 "val_orphan"
-    File.AppendAllLines(walPath, [ sprintf "PUT 3 %s %s" k_orphan v_orphan ])
-    use tree2 = new LsmTree(testDataDir)
-    assertEqual (Some "val_orphan") (tree2.Get "key_orphan") "Orphaned Ops recovered"
-
-    File.AppendAllLines(walPath, [ "COMMIT 4" ])
-    let tree3 = new LsmTree(testDataDir)
-    assertEqual None (tree3.Get "non_existent") "Should not crash on orphaned commit"
-
-[<Fact>]
-let ``WAL_Internal_Coverage`` () =
-    let testDataDir = getTestDir "wal_internal"
-    let walPath = Path.Combine(testDataDir, "wal.log")
-
-    if not (Directory.Exists testDataDir) then
-        Directory.CreateDirectory testDataDir |> ignore
-
-    let wal = new WAL(walPath)
-    wal.Put(1L, "k1", "v1")
-    wal.Flush(false)
-    wal.Flush(true)
-    wal.Close()
-    (wal :> IDisposable).Dispose()
-
-    let lines = [ ""; "invalid"; "PUT abc k v"; "UNKNOWN 1 k v" ]
-    File.WriteAllLines(walPath, lines)
-    let ops = WALRecovery.recover walPath |> Seq.toList
-    assertEqual [] ops "Should ignore invalid WAL entries"
-
-    let buffered = Dictionary<int64, (string * string option) list>()
-    WALRecovery.collectEntries buffered 10L WALRecovery.Begin |> ignore
-    WALRecovery.collectEntries buffered 11L WALRecovery.Commit |> ignore
-
-    let orphan =
-        WALRecovery.collectEntries buffered 12L (WALRecovery.Op("k", Some "v"))
-        |> Seq.toList
-
-    assertEqual [ 12L, "k", Some "v" ] orphan "Orphaned Op should be yielded"
-
-[<Fact>]
 let ``Transaction_Already_Finished_Errors`` () =
     let testDataDir = getTestDir "tx_errors"
     use tree = new LsmTree(testDataDir)
@@ -308,76 +228,6 @@ let ``Transaction_Already_Finished_Errors`` () =
     Assert.Throws<Exception>(fun () -> tx.Delete "k" |> ignore) |> ignore
     Assert.Throws<Exception>(fun () -> tx.Commit() |> ignore) |> ignore
     Assert.Throws<Exception>(fun () -> tx.Rollback() |> ignore) |> ignore
-
-[<Fact>]
-let ``BloomFilter_Empty_Behavior`` () =
-    let bf = BloomFilter([||], 0)
-    assertEqual true (bf.MightContain "any") "Empty BloomFilter true"
-
-    let bf2 = BloomFilter.create 0
-    assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
-
-[<Fact>]
-let ``BloomFilter_FalsePositiveRate`` () =
-    let numEntries = 1000
-    let bf = BloomFilter.create numEntries
-
-    for i = 1 to numEntries do
-        bf.Add(sprintf "key_%d" i)
-
-    let numTests = 10000
-    let mutable falsePositives = 0
-
-    for i = 1 to numTests do
-        let key = sprintf "miss_%d" i
-
-        if bf.MightContain key then
-            falsePositives <- falsePositives + 1
-
-    let fpr = float falsePositives / float numTests
-    Assert.True(fpr < 0.02, sprintf "False positive rate too high: %f" fpr)
-
-[<Fact>]
-let ``SSTable_Load_Short_File_Handling`` () =
-    let testDataDir = getTestDir "sst_short"
-
-    if not (Directory.Exists testDataDir) then
-        Directory.CreateDirectory testDataDir |> ignore
-
-    let sstPath = Path.Combine(testDataDir, "L0_short.sst")
-    File.WriteAllBytes(sstPath, [| 1uy; 2uy; 3uy |])
-    let sst = SSTable sstPath
-    assertEqual None (sst.Get("any", 0L)) "Should handle short/invalid SSTable file gracefully"
-
-[<Fact>]
-let ``WAL_Recover_NonExistent_File`` () =
-    let ops = WALRecovery.recover "/tmp/non_existent_wal_path_xyz" |> Seq.toList
-    assertEqual [] ops "Recovering non-existent file path"
-
-[<Fact>]
-let ``Test_MergeSSTables_Coverage`` () =
-    let testDataDir = getTestDir "merge_cov"
-    let limits = [| 1; 1 |]
-    use tree = new LsmTree(testDataDir, 1, limits)
-    tree.Put("km", "v1")
-    tree.Flush()
-    tree.Put("km", "v2")
-    tree.Flush()
-
-    use tx = tree.BeginTransaction()
-    tree.Put("km", "v3")
-    tree.Flush()
-    tree.WaitForCompaction()
-    tree.Delete "kd"
-    tree.Flush()
-
-    for i = 1 to 10 do
-        tree.Put(sprintf "other_%d" i, "data")
-        tree.Flush()
-
-    tree.WaitForCompaction()
-    assertEqual (Some "v3") (tree.Get "km") "Current km = v3"
-    assertEqual None (tree.Get "kd") "kd is deleted"
 
 [<Fact>]
 let ``Snapshot_Pruning_Verification`` () =
@@ -409,14 +259,174 @@ let ``Get_from_ImmutableMemTable_Race`` () =
     use tree = new LsmTree(testDataDir, 1000)
     tree.Put("race_k", "race_v")
 
-    for i = 1 to 100 do
-        System.Threading.Tasks.Task.Run(fun () -> tree.Flush()) |> ignore
-        tree.Get "race_k" |> ignore
-        tree.Put("race_k", "race_v")
-        tree.Get "race_k" |> ignore
-        tree.Delete "race_k"
+    let tasks =
+        [| for i = 1 to 100 do
+               yield
+                   System.Threading.Tasks.Task.Run(fun () ->
+                       tree.Flush()
+                       tree.Get "race_k" |> ignore
+                       tree.Put("race_k", "race_v")
+                       tree.Get "race_k" |> ignore
+                       tree.Delete "race_k") |]
 
+    System.Threading.Tasks.Task.WaitAll tasks
     Assert.True(true, "Should not crash during concurrent flush/get")
+
+[<Fact>]
+let ``Test_MergeSSTables_Coverage`` () =
+    let testDataDir = getTestDir "merge_cov"
+    let limits = [| 1; 1 |]
+    use tree = new LsmTree(testDataDir, 1, limits)
+    tree.Put("km", "v1")
+    tree.Flush()
+    tree.Put("km", "v2")
+    tree.Flush()
+
+    use tx = tree.BeginTransaction()
+    tree.Put("km", "v3")
+    tree.Flush()
+    tree.WaitForCompaction()
+    tree.Delete "kd"
+    tree.Flush()
+
+    for i = 1 to 10 do
+        tree.Put(sprintf "other_%d" i, "data")
+        tree.Flush()
+
+    tree.WaitForCompaction()
+    assertEqual (Some "v3") (tree.Get "km") "Current km = v3"
+    assertEqual None (tree.Get "kd") "kd is deleted"
+
+[<Fact>]
+let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
+    let testDataDir = getTestDir "sst_levels"
+    let l1Path = Path.Combine(testDataDir, "L1_data.sst")
+    let l0Path = Path.Combine(testDataDir, "L0_data.sst")
+    let legacyPath = Path.Combine(testDataDir, "legacy.sst")
+    SSTableWriter.write l1Path [ "k1", 1L, Some "v1_L1" ]
+    SSTableWriter.write l0Path [ "k1", 200L, Some "v1_L0" ]
+    SSTableWriter.write legacyPath [ "k9", 10L, Some "v9" ]
+
+    use tree = new LsmTree(testDataDir)
+
+    assertEqual
+        (Some "v1_L0")
+        (tree.Get("k1", 300L))
+        "Should prefer L0 over L1 (using high snapshot for manual recovery)"
+
+    assertEqual (Some "v9") (tree.Get("k9", 100L)) "legacy.sst should be at level 0"
+
+[<Fact>]
+let ``SSTable_Load_Short_File_Handling`` () =
+    let testDataDir = getTestDir "sst_short"
+    let sstPath = Path.Combine(testDataDir, "L0_short.sst")
+    File.WriteAllBytes(sstPath, [| 1uy; 2uy; 3uy |])
+    use sst = new SSTable(sstPath)
+    assertEqual None (sst.Get("any", 0L)) "Should handle short/invalid SSTable file gracefully"
+
+[<Fact>]
+let ``SSTable_Invalid_Magic`` () =
+    let testDataDir = getTestDir "sst_bad_magic"
+    let sstPath = Path.Combine(testDataDir, "bad.sst")
+    use fs = new FileStream(sstPath, FileMode.Create, FileAccess.Write)
+    use bw = new BinaryWriter(fs)
+    bw.Write [| 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy |] // data
+    bw.Write 0L // index offset
+    bw.Write 0L // bloom offset
+    bw.Write 0xFEEDFACEL // bad magic
+    bw.Flush()
+    fs.Flush()
+    bw.Close()
+
+    Assert.Throws<InvalidDataException>(fun () -> new SSTable(sstPath) |> ignore)
+
+[<Fact>]
+let ``SSTable_Double_Dispose`` () =
+    let testDataDir = getTestDir "sst_double_dispose"
+    let sstPath = Path.Combine(testDataDir, "double_dispose.sst")
+    SSTableWriter.flush [] sstPath |> ignore
+    use sst = new SSTable(sstPath)
+    (sst :> IDisposable).Dispose()
+
+    (sst :> IDisposable).Dispose()
+    Assert.True(true, "Should not throw")
+
+[<Fact>]
+let ``WAL_Edge_Cases_Corruption_and_Orphans`` () =
+    let testDataDir = getTestDir "wal_edge"
+    let walPath = Path.Combine(testDataDir, "wal.log")
+    let k = WALRecovery.utf8ToBase64 "k"
+    let v = WALRecovery.utf8ToBase64 "v"
+    File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; sprintf "PUT 2 %s %s" k v; "COMMIT 2" ])
+    use tree1 = new LsmTree(testDataDir)
+    assertEqual (Some "v") (tree1.Get "k") "Should recover valid transaction even if unknown entry present"
+
+    let k_orphan = WALRecovery.utf8ToBase64 "key_orphan"
+    let v_orphan = WALRecovery.utf8ToBase64 "val_orphan"
+    File.AppendAllLines(walPath, [ sprintf "PUT 3 %s %s" k_orphan v_orphan ])
+    use tree2 = new LsmTree(testDataDir)
+    assertEqual (Some "val_orphan") (tree2.Get "key_orphan") "Orphaned Ops recovered"
+
+    File.AppendAllLines(walPath, [ "COMMIT 4" ])
+    let tree3 = new LsmTree(testDataDir)
+    assertEqual None (tree3.Get "non_existent") "Should not crash on orphaned commit"
+
+[<Fact>]
+let ``WAL_Internal_Coverage`` () =
+    let testDataDir = getTestDir "wal_internal"
+    let walPath = Path.Combine(testDataDir, "wal.log")
+    let wal = new WAL(walPath)
+    wal.Put(1L, "k1", "v1")
+    wal.Close()
+    (wal :> IDisposable).Dispose()
+
+    let lines = [ ""; "invalid"; "PUT abc k v"; "UNKNOWN 1 k v" ]
+    File.WriteAllLines(walPath, lines)
+    let ops = WALRecovery.recover walPath |> Seq.toList
+    assertEqual [] ops "Should ignore invalid WAL entries"
+
+    let buffered = Dictionary<int64, (string * string option) list>()
+    WALRecovery.collectEntries buffered 10L WALRecovery.Begin |> ignore
+    WALRecovery.collectEntries buffered 11L WALRecovery.Commit |> ignore
+
+    let orphan =
+        WALRecovery.collectEntries buffered 12L (WALRecovery.Op("k", Some "v"))
+        |> Seq.toList
+
+    assertEqual [ 12L, "k", Some "v" ] orphan "Orphaned Op should be yielded"
+
+[<Fact>]
+let ``WAL_Recover_NonExistent_File`` () =
+    let ops = WALRecovery.recover "/tmp/non_existent_wal_path_xyz" |> Seq.toList
+    assertEqual [] ops "Recovering non-existent file path"
+
+[<Fact>]
+let ``BloomFilter_Empty_Behavior`` () =
+    let bf = BloomFilter([||], 0)
+    assertEqual true (bf.MightContain "any") "Empty BloomFilter true"
+
+    let bf2 = BloomFilter.create 0
+    assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
+
+[<Fact>]
+let ``BloomFilter_FalsePositiveRate`` () =
+    let numEntries = 1000
+    let bf = BloomFilter.create numEntries
+
+    for i = 1 to numEntries do
+        bf.Add(sprintf "key_%d" i)
+
+    let numTests = 10000
+    let mutable falsePositives = 0
+
+    for i = 1 to numTests do
+        let key = sprintf "miss_%d" i
+
+        if bf.MightContain key then
+            falsePositives <- falsePositives + 1
+
+    let fpr = float falsePositives / float numTests
+    Assert.True(fpr < 0.02, sprintf "False positive rate too high: %f" fpr)
 
 [<Fact>]
 let ``SkipList_Concurrency_Stress`` () =

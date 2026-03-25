@@ -51,7 +51,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             let level = parseSstLevel path
 
             if level < ssTables.Length then
-                ssTables.[level].Add(SSTable path))
+                ssTables.[level].Add(new SSTable(path)))
 
         ssTables
         |> Array.iter (fun ssts ->
@@ -161,7 +161,10 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             tablesToCompact
             |> Seq.iter (fun t ->
                 try
-                    File.Delete t.Path
+                    (t :> System.IDisposable).Dispose()
+
+                    if File.Exists t.Path then
+                        File.Delete t.Path
                 with _ ->
                     ())
 
@@ -310,6 +313,9 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         member _.Dispose() =
             wal.Close()
             mainLock.Dispose()
+
+            ssTables
+            |> Array.iter (fun level -> level |> Seq.iter (fun sst -> (sst :> System.IDisposable).Dispose()))
 
     member internal this.CommitTransaction(ops: (string * string option) list) =
         let shouldFlush =

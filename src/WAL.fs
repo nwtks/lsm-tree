@@ -112,16 +112,13 @@ type WAL(path: string) =
             writer.WriteLine log
             stream.Flush true)
 
-    member _.Flush(forceDisk: bool) =
-        lock walLock (fun () ->
-            writer.Flush()
-            stream.Flush forceDisk)
-
     member this.Close() = (this :> IDisposable).Dispose()
 
     interface IDisposable with
         member _.Dispose() =
             if not disposed then
+                writer.Flush()
+                stream.Flush true
                 writer.Dispose()
                 stream.Dispose()
                 disposed <- true
