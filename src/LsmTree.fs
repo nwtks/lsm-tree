@@ -160,14 +160,14 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                 ssTables.[level].AddRange remaining)
 
             tablesToCompact
-            |> Seq.iter (fun t ->
+            |> List.iter (fun t ->
                 try
                     (t :> System.IDisposable).Dispose()
 
                     if File.Exists t.Path then
                         File.Delete t.Path
-                with _ ->
-                    ())
+                with e ->
+                    printfn "Compaction: Failed to cleanup old SSTable %s: %s" t.Path e.Message)
 
             compact (level + 1)
 
@@ -231,23 +231,24 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
             triggerCompaction ()
         | None -> ()
 
-    [<TailCall>]
-    let rec search key snap tables =
-        match tables with
-        | [] -> None
-        | t: SSTable :: rest ->
-            match t.Get(key, snap) with
-            | Some res -> Some res
-            | None -> search key snap rest
+    let searchInTables key snap level =
+        let tables = lock ssTablesLock (fun () -> ssTables.[level].ToArray())
+        let mutable result = None
+        let mutable i = 0
+
+        while i < tables.Length && result.IsNone do
+            match tables.[i].Get(key, snap) with
+            | Some res -> result <- Some res
+            | None -> i <- i + 1
+
+        result
 
     [<TailCall>]
     let rec searchLevel key snap level =
         if level >= ssTables.Length then
             None
         else
-            let tables = lock ssTablesLock (fun () -> ssTables.[level] |> Seq.toList)
-
-            match search key snap tables with
+            match searchInTables key snap level with
             | Some res -> Some res
             | None -> searchLevel key snap (level + 1)
 
@@ -316,6 +317,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
     interface System.IDisposable with
         member _.Dispose() =
+            wait ()
             wal.Close()
             mainLock.Dispose()
 
