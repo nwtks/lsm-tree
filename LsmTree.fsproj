@@ -11,7 +11,7 @@
     <Compile Include="src/BloomFilter.fs" />
     <Compile Include="src/SSTable.fs" />
     <Compile Include="src/LsmTree.fs" />
-    <Compile Include="src/Tests.fs" />
+    <Compile Include="test/Tests.fs" />
   </ItemGroup>
 
   <ItemGroup>

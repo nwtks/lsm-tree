@@ -2,8 +2,8 @@ namespace LsmTree
 
 open System.IO
 open System.Collections.Generic
-open System.Threading.Tasks
 open System.Threading
+open System.Threading.Tasks
 
 type ITransaction =
     inherit System.IDisposable
