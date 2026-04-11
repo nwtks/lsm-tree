@@ -40,7 +40,8 @@ ScaffoldingReadMe.txt
 ~$*
 *~
 CodeCoverage/
-coverage.cobertura.xml
+coverage.*
+.fake
 
 # MSBuild Binary and Structured Log
 *.binlog

@@ -1,6 +1,5 @@
 namespace LsmTree
 
-open System
 open System.IO
 open System.Text
 
@@ -52,7 +51,7 @@ module SSTable =
             fs.Seek(offsets.[mid], SeekOrigin.Begin) |> ignore
             let currentSeq = br.ReadInt64()
             let currentKey = readValue br
-            let comp = String.CompareOrdinal(key, currentKey)
+            let comp = System.String.CompareOrdinal(key, currentKey)
 
             if comp = 0 then
                 if currentSeq <= snap then
@@ -86,7 +85,7 @@ type SSTable(path: string) =
         else
             lock fs (fun () -> SSTable.binSearch fs br offsets key snapshot 0 (offsets.Length - 1) None)
 
-    interface IDisposable with
+    interface System.IDisposable with
         member _.Dispose() =
             if not disposed then
                 br.Dispose()

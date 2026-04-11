@@ -1,6 +1,5 @@
 namespace LsmTree
 
-open System
 open System.Threading
 
 [<AllowNullLiteral>]
@@ -20,14 +19,15 @@ module SkipList =
 
     [<TailCall>]
     let rec randomLevel lvl =
-        if Random.Shared.NextDouble() < P && lvl < MAX_LEVEL then
+        if System.Random.Shared.NextDouble() < P && lvl < MAX_LEVEL then
             randomLevel (lvl + 1)
         else
             lvl
 
     let next (next: SkipListNode) key seq =
         not (isNull next)
-        && (String.CompareOrdinal(next.Key, key) < 0 || next.Key = key && next.Seq > seq)
+        && (System.String.CompareOrdinal(next.Key, key) < 0
+            || next.Key = key && next.Seq > seq)
 
     [<TailCall>]
     let rec findPredAtLevel key seq lvl (pred: SkipListNode) =
@@ -88,7 +88,7 @@ module SkipList =
             collectEntries current.Next.[0] ((current.Key, current.Seq, current.Value) :: acc)
 
 type SkipList() =
-    let head = SkipListNode("", Int64.MaxValue, None, SkipList.MAX_LEVEL)
+    let head = SkipListNode("", System.Int64.MaxValue, None, SkipList.MAX_LEVEL)
     let mutable currentLevel = 1
 
     member _.Find(key: string, snapshot: int64) =

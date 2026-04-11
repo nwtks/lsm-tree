@@ -24,13 +24,12 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let ssTables =
         Array.init (compactLevelLimits.Length + 1) (fun _ -> list<SSTable>.Empty)
 
+    let mutable isCompacting = false
     let ssTablesLock = obj ()
 
     let mutable globalSeq = 0L
     let mutable activeSnapshots = Set.empty<int64>
     let activeSnapshotsLock = obj ()
-
-    let mutable isCompacting = false
 
     let releaseSnapshot (snapshot: int64) =
         lock activeSnapshotsLock (fun () -> activeSnapshots <- Set.remove snapshot activeSnapshots)

@@ -1,6 +1,5 @@
 namespace LsmTree
 
-open System
 open System.IO
 open System.Text
 
@@ -23,10 +22,10 @@ module WALRecovery =
         | Commit
 
     let utf8ToBase64 (value: string) =
-        value |> Encoding.UTF8.GetBytes |> Convert.ToBase64String
+        value |> Encoding.UTF8.GetBytes |> System.Convert.ToBase64String
 
     let base64ToUtf8 value =
-        value |> Convert.FromBase64String |> Encoding.UTF8.GetString
+        value |> System.Convert.FromBase64String |> Encoding.UTF8.GetString
 
     let parseEntry (item: string) =
         let parts = item.Split ' '
@@ -34,7 +33,7 @@ module WALRecovery =
         if parts.Length < 2 then
             None
         else
-            match Int64.TryParse parts.[1] with
+            match System.Int64.TryParse parts.[1] with
             | true, seq ->
                 match parts.[0] with
                 | PUT when parts.Length = 4 ->
@@ -106,9 +105,9 @@ type WAL(path: string) =
             if sync then
                 stream.Flush true)
 
-    member this.Close() = (this :> IDisposable).Dispose()
+    member this.Close() = (this :> System.IDisposable).Dispose()
 
-    interface IDisposable with
+    interface System.IDisposable with
         member _.Dispose() =
             if not disposed then
                 writer.Flush()
