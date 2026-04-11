@@ -20,6 +20,8 @@ This project demonstrates the core architectural concepts behind modern top-tier
   * **Configurable Limits**: Hierarchical level limits (e.g., `L0`, `L1`, `L2`...) can be explicitly configured via the engine constructor to tune for specific read/write amplification profiles.
   * **Snapshot Pruning (GC)**: The engine automatically identifies and purges stale versions of keys that are no longer requested by any active transaction, effectively preventing storage bloat while maintaining strict MVCC correctness.
   * **Tombstone Removal**: In the final storage level, old deletion markers (Tombstones) are completely eliminated.
+* **Immutable Data Structures & Functional Design**
+  Employs native F# purely functional `Map`, `Set`, and `list` structures for deterministic, side-effect-free state transitions during WAL recovery and Snapshot management.
 * **Atomic ACID Transactions**
   Supports multi-key atomic updates via a dedicated `ITransaction` API. 
   * **Commit & Rollback**: Transactions can be committed atomically or rolled back to discard all pending changes.
@@ -36,7 +38,7 @@ This project demonstrates the core architectural concepts behind modern top-tier
 | `src/MemTable.fs` | Thin wrapper around the SkipList for in-memory buffering |
 | `src/SkipList.fs` | Lock-free concurrent SkipList with CAS-based insertion |
 | `src/WAL.fs` | Write-Ahead Log for crash recovery with atomic transaction support |
-| `test/Tests.fs` | XUnit test suite (39 tests across 9 categories) |
+| `test/Tests.fs` | XUnit test suite (37 tests across 9 categories) |
 | `benchmark/` | BenchmarkDotNet suite for performance measurement |
 
 ## ✅ Test Suite
@@ -48,8 +50,8 @@ This project demonstrates the core architectural concepts behind modern top-tier
 | SSTable Internals | 4 | Level parsing, double dispose, short/invalid file handling, magic validation |
 | MVCC | 1 | Multi-version concurrency control across MemTable and SSTable |
 | Transactions | 9 | Commit, rollback, snapshot isolation, read-own-writes, flush isolation, error handling |
-| WAL & Recovery | 7 | Auto-recovery, atomic commit, uncommitted rejection, orphaned ops, malformed lines |
-| Lifecycle & Config | 3 | Directory creation, restart data loading, `SyncOnCommit` toggle |
+| WAL & Recovery | 6 | Auto-recovery, atomic commit, uncommitted rejection, orphaned ops, malformed lines |
+| Lifecycle & Config | 2 | Directory creation, restart data loading |
 | Data Structures | 3 | BloomFilter (empty, false-positive rate), SkipList (sorted order) |
 | Concurrency | 2 | ImmutableMemTable race, SkipList stress |
 
@@ -101,5 +103,6 @@ let current = db.Get("config:theme") // Some "light"
 let past = db.Get("config:theme", v1) // Some "dark"
 
 // 5. Durability Configuration
-db.SyncOnCommit <- false // Disable fsync for throughput-optimized workloads
+// Disable fsync for throughput-optimized workloads by passing syncOnCommit = false to constructor
+let fastDb = new LsmTree("./fast_data", syncOnCommit = false)
 ```

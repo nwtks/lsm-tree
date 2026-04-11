@@ -11,60 +11,90 @@ type SkipListNode(key: string, seq: int64, value: string option, level: int) =
     member val Value = value with get, set
     member val Next = next
 
-type SkipList() =
+module SkipList =
     [<Literal>]
     let MAX_LEVEL = 16
 
     [<Literal>]
     let P = 0.5
 
-    let head = SkipListNode("", Int64.MaxValue, None, MAX_LEVEL)
-    let mutable currentLevel = 1
-
-    let getCurrentLevel () = Volatile.Read(&currentLevel)
-
-    let randomLevel () =
-        let mutable lvl = 1
-
-        while Random.Shared.NextDouble() < P && lvl < MAX_LEVEL do
-            lvl <- lvl + 1
-
-        lvl
+    [<TailCall>]
+    let rec randomLevel lvl =
+        if Random.Shared.NextDouble() < P && lvl < MAX_LEVEL then
+            randomLevel (lvl + 1)
+        else
+            lvl
 
     let next (next: SkipListNode) key seq =
         not (isNull next)
         && (String.CompareOrdinal(next.Key, key) < 0 || next.Key = key && next.Seq > seq)
 
-    let search key seq currLvl toLvl =
-        let mutable pred = head
+    [<TailCall>]
+    let rec findPredAtLevel key seq lvl (pred: SkipListNode) =
+        let nxt = pred.Next.[lvl]
 
-        for i = currLvl - 1 downto toLvl do
-            let mutable nxt = pred.Next.[i]
+        if next nxt key seq then
+            findPredAtLevel key seq lvl nxt
+        else
+            pred
 
-            while next nxt key seq do
-                pred <- nxt
-                nxt <- pred.Next.[i]
+    [<TailCall>]
+    let rec search head key seq toLvl lvl pred =
+        if lvl < toLvl then
+            pred
+        else
+            search head key seq toLvl (lvl - 1) (findPredAtLevel key seq lvl pred)
 
-        pred, pred.Next.[toLvl]
+    [<TailCall>]
+    let rec searchPreds head key seq (preds: SkipListNode[]) lvl pred =
+        if lvl < 0 then
+            preds
+        else
+            let p = findPredAtLevel key seq lvl pred
+            preds.[lvl] <- p
+            searchPreds head key seq preds (lvl - 1) p
 
-    let searchPreds key seq currLvl =
-        let preds = Array.create MAX_LEVEL head
-        let mutable pred = head
+    [<TailCall>]
+    let rec findCurrentLevel (currentLevel: int byref) lvl =
+        let currLvl = Volatile.Read(&currentLevel)
 
-        for i = currLvl - 1 downto 0 do
-            let mutable nxt = pred.Next.[i]
+        if lvl > currLvl then
+            Interlocked.CompareExchange(&currentLevel, lvl, currLvl) |> ignore
+            findCurrentLevel &currentLevel lvl
+        else
+            currLvl
 
-            while next nxt key seq do
-                pred <- nxt
-                nxt <- pred.Next.[i]
+    [<TailCall>]
+    let rec insertAtLevel head key seq currLvl (newNode: SkipListNode) (pred: SkipListNode) lvl =
+        let current = pred.Next.[lvl]
+        newNode.Next.[lvl] <- current
+        let actual = Interlocked.CompareExchange(&pred.Next.[lvl], newNode, current)
 
-            preds.[i] <- pred
+        if not (obj.ReferenceEquals(actual, current)) then
+            let nextPred = search head key seq lvl lvl pred
+            insertAtLevel head key seq currLvl newNode nextPred lvl
 
-        preds
+    [<TailCall>]
+    let rec insertAtLevels head key seq currLvl (newNode: SkipListNode) (preds: SkipListNode[]) maxLvl lvl =
+        if lvl < maxLvl then
+            insertAtLevel head key seq currLvl newNode preds.[lvl] lvl
+            insertAtLevels head key seq currLvl newNode preds maxLvl (lvl + 1)
+
+    [<TailCall>]
+    let rec collectEntries (current: SkipListNode) acc =
+        if isNull current then
+            acc |> List.rev
+        else
+            collectEntries current.Next.[0] ((current.Key, current.Seq, current.Value) :: acc)
+
+type SkipList() =
+    let head = SkipListNode("", Int64.MaxValue, None, SkipList.MAX_LEVEL)
+    let mutable currentLevel = 1
 
     member _.Find(key: string, snapshot: int64) =
-        let currLvl = getCurrentLevel ()
-        let _, current = search key snapshot currLvl 0
+        let currLvl = Volatile.Read(&currentLevel)
+        let pred = SkipList.search head key snapshot 0 (currLvl - 1) head
+        let current = pred.Next.[0]
 
         if not (isNull current) && current.Key = key && current.Seq <= snapshot then
             Some current.Value
@@ -72,37 +102,14 @@ type SkipList() =
             None
 
     member _.Put(key: string, seq: int64, ?value: string) =
-        let lvl = randomLevel ()
-        let mutable currLvl = getCurrentLevel ()
+        let lvl = SkipList.randomLevel 1
+        let currLvl = SkipList.findCurrentLevel &currentLevel lvl
 
-        while lvl > currLvl do
-            Interlocked.CompareExchange(&currentLevel, lvl, currLvl) |> ignore
-            currLvl <- getCurrentLevel ()
+        let preds =
+            SkipList.searchPreds head key seq (Array.create SkipList.MAX_LEVEL head) (currLvl - 1) head
 
-        let preds = searchPreds key seq currLvl
         let newNode = SkipListNode(key, seq, value, lvl)
-
-        for i = 0 to lvl - 1 do
-            let mutable success = false
-            let mutable p = preds.[i]
-
-            while not success do
-                let current = p.Next.[i]
-                newNode.Next.[i] <- current
-                let actual = Interlocked.CompareExchange(&p.Next.[i], newNode, current)
-
-                if obj.ReferenceEquals(actual, current) then
-                    success <- true
-                else
-                    let newP, _ = search key seq currLvl i
-                    p <- newP
+        SkipList.insertAtLevels head key seq currLvl newNode preds lvl 0
 
     member _.Entries() =
-        let mutable entries = []
-        let mutable current = head.Next.[0]
-
-        while not (isNull current) do
-            entries <- (current.Key, current.Seq, current.Value) :: entries
-            current <- current.Next.[0]
-
-        entries |> List.rev
+        SkipList.collectEntries head.Next.[0] []

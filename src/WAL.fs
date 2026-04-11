@@ -1,7 +1,6 @@
 namespace LsmTree
 
 open System
-open System.Collections.Generic
 open System.IO
 open System.Text
 
@@ -50,38 +49,30 @@ module WALRecovery =
                 | _ -> None
             | _ -> None
 
-    let collectEntries
-        (buffered: Dictionary<int64, (string * string option) list>)
-        (seq: int64)
-        (entry: RecoveryEntry)
-        =
+    let collectEntries (buffered, acc) (seq, entry) =
         match entry with
-        | Begin ->
-            buffered.[seq] <- []
-            Seq.empty
+        | Begin -> Map.add seq [] buffered, acc
         | Op(k, v) ->
-            if buffered.ContainsKey seq then
-                buffered.[seq] <- (k, v) :: buffered.[seq]
-                Seq.empty
-            else
-                Seq.singleton (seq, k, v)
+            match Map.tryFind seq buffered with
+            | Some ops -> Map.add seq ((k, v) :: ops) buffered, acc
+            | None -> buffered, (seq, k, v) :: acc
         | Commit ->
-            if buffered.ContainsKey seq then
-                let ops = buffered.[seq]
-                buffered.Remove seq |> ignore
-                ops |> List.rev |> Seq.map (fun (k, v) -> seq, k, v)
-            else
-                Seq.empty
+            match Map.tryFind seq buffered with
+            | Some ops ->
+                let folder a (k, v) = (seq, k, v) :: a
+                Map.remove seq buffered, List.fold folder acc (List.rev ops)
+            | None -> buffered, acc
 
     let recover path =
         if not (File.Exists path) then
             Seq.empty
         else
-            let buffered = Dictionary<int64, (string * string option) list>()
-
             File.ReadLines path
             |> Seq.choose parseEntry
-            |> Seq.collect (fun (seq, entry) -> collectEntries buffered seq entry)
+            |> Seq.fold collectEntries (Map.empty, [])
+            |> snd
+            |> List.rev
+            |> Seq.ofList
 
 type WAL(path: string) =
     let stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read)

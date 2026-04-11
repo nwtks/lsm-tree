@@ -7,14 +7,7 @@ open System.Text
 module SSTable =
     let MAGIC = 0x534D434CL
 
-type SSTable(path: string) =
-    let mutable offsets: int64[] = [||]
-    let mutable bloomFilter = BloomFilter([||], 0)
-    let fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
-    let br = new BinaryReader(fs)
-    let mutable disposed = false
-
-    let load () =
+    let load (fs: FileStream) (br: BinaryReader) =
         let loadOffsets offset =
             fs.Seek(offset, SeekOrigin.Begin) |> ignore
             Array.init (br.ReadInt32()) (fun _ -> br.ReadInt64())
@@ -30,13 +23,12 @@ type SSTable(path: string) =
             let bloomOffset = br.ReadInt64()
             let magic = br.ReadInt64()
 
-            if magic <> SSTable.MAGIC then
+            if magic <> MAGIC then
                 raise (InvalidDataException "Invalid SSTable magic number")
 
-            offsets <- loadOffsets indexOffset
-            bloomFilter <- loadBloomFilter bloomOffset
-
-    do load ()
+            loadOffsets indexOffset, loadBloomFilter bloomOffset
+        else
+            [||], BloomFilter([||], 0)
 
     let readValue (br: BinaryReader) =
         br.ReadInt32() |> br.ReadBytes |> Encoding.UTF8.GetString
@@ -44,8 +36,15 @@ type SSTable(path: string) =
     let readItem (br: BinaryReader) =
         if br.ReadBoolean() then None else Some(readValue br)
 
+    let readEntry (fs: FileStream) (br: BinaryReader) (offset: int64) =
+        fs.Seek(offset, SeekOrigin.Begin) |> ignore
+        let seq = br.ReadInt64()
+        let key = readValue br
+        let value = readItem br
+        key, seq, value
+
     [<TailCall>]
-    let rec binSearch key snap left right bestMatch =
+    let rec binSearch (fs: FileStream) (br: BinaryReader) (offsets: int64[]) key snap left right bestMatch =
         if left > right then
             bestMatch
         else
@@ -57,35 +56,35 @@ type SSTable(path: string) =
 
             if comp = 0 then
                 if currentSeq <= snap then
-                    binSearch key snap left (mid - 1) (readItem br |> Some)
+                    binSearch fs br offsets key snap left (mid - 1) (readItem br |> Some)
                 else
-                    binSearch key snap (mid + 1) right bestMatch
+                    binSearch fs br offsets key snap (mid + 1) right bestMatch
             elif comp < 0 then
-                binSearch key snap left (mid - 1) bestMatch
+                binSearch fs br offsets key snap left (mid - 1) bestMatch
             else
-                binSearch key snap (mid + 1) right bestMatch
+                binSearch fs br offsets key snap (mid + 1) right bestMatch
 
-    let search key snapshot =
-        lock fs (fun () -> binSearch key snapshot 0 (offsets.Length - 1) None)
+type SSTable(path: string) =
+    let fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
+    let br = new BinaryReader(fs)
+    let offsets, bloomFilter = SSTable.load fs br
+    let mutable disposed = false
 
     member _.Path = path
 
     member _.GetAll() =
         seq {
             for offset in offsets do
-                yield
-                    lock fs (fun () ->
-                        fs.Seek(offset, SeekOrigin.Begin) |> ignore
-                        let currentSeq = br.ReadInt64()
-                        let key = readValue br
-                        let value = readItem br
-                        key, currentSeq, value)
+                yield lock fs (fun () -> SSTable.readEntry fs br offset)
         }
 
     member _.Get(key: string, snapshot: int64) =
-        if offsets.Length = 0 then None
-        elif not (bloomFilter.MightContain key) then None
-        else search key snapshot
+        if offsets.Length = 0 then
+            None
+        elif not (bloomFilter.MightContain key) then
+            None
+        else
+            lock fs (fun () -> SSTable.binSearch fs br offsets key snapshot 0 (offsets.Length - 1) None)
 
     interface IDisposable with
         member _.Dispose() =
@@ -139,6 +138,6 @@ module SSTableWriter =
         bw.Write SSTable.MAGIC
         fs.Flush true
 
-    let flush memTableEntries outPath =
+    let flush outPath memTableEntries =
         write outPath memTableEntries
         new SSTable(outPath)

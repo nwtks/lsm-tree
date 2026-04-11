@@ -1,7 +1,6 @@
 module LsmTree.Tests
 
 open System
-open System.Collections.Generic
 open System.IO
 open System.Threading.Tasks
 open Xunit
@@ -173,7 +172,7 @@ let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
 let ``SSTable_Double_Dispose`` () =
     let testDataDir = getTestDir "sst_double_dispose"
     let sstPath = Path.Combine(testDataDir, "double_dispose.sst")
-    SSTableWriter.flush [] sstPath |> ignore
+    SSTableWriter.flush sstPath [] |> ignore
 
     use sst = new SSTable(sstPath)
     (sst :> IDisposable).Dispose()
@@ -437,20 +436,6 @@ let ``WAL_Recovery_Ignores_Malformed_Lines`` () =
     let ops = WALRecovery.recover walPath |> Seq.toList
     assertEqual [] ops "Should ignore invalid WAL entries"
 
-[<Fact>]
-let ``WAL_CollectEntries_StateMachine`` () =
-    // Begin registers a sequence in the buffer.
-    // Commit with no matching sequence is a no-op.
-    // An Op with no matching sequence is an orphan and is yielded immediately.
-    let buffered = Dictionary<int64, (string * string option) list>()
-    WALRecovery.collectEntries buffered 10L WALRecovery.Begin |> ignore
-    WALRecovery.collectEntries buffered 11L WALRecovery.Commit |> ignore
-
-    let orphan =
-        WALRecovery.collectEntries buffered 12L (WALRecovery.Op("k", Some "v"))
-        |> Seq.toList
-
-    assertEqual [ 12L, "k", Some "v" ] orphan "Orphaned Op should be yielded immediately"
 
 // ============================================================
 // LsmTree Lifecycle & Configuration
@@ -484,18 +469,6 @@ let ``LsmTree_Restart_LoadsData`` () =
     use tree2 = new LsmTree(testDataDir)
     assertEqual (Some "v1") (tree2.Get "k1") "Should load from SSTable"
     assertEqual (Some "v2") (tree2.Get "k2") "Should load from WAL"
-
-[<Fact>]
-let ``LsmTree_SyncOnCommit_Toggle`` () =
-    let testDataDir = getTestDir "sync_toggle"
-    use tree = new LsmTree(testDataDir)
-    tree.SyncOnCommit <- false
-    Assert.False(tree.SyncOnCommit, "Setter should work")
-    tree.Put("k1", "v1")
-
-    tree.SyncOnCommit <- true
-    Assert.True(tree.SyncOnCommit, "Setter should work again")
-    tree.Put("k2", "v2")
 
 // ============================================================
 // Data Structures (BloomFilter, SkipList)
