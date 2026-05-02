@@ -54,15 +54,20 @@ module SkipList =
             preds.[lvl] <- p
             searchPreds head key seq preds (lvl - 1) p
 
-    [<TailCall>]
-    let rec findCurrentLevel (currentLevel: int byref) lvl =
-        let currLvl = Volatile.Read(&currentLevel)
+    let findCurrentLevel (currentLevel: int byref) lvl =
+        let mutable cont = true
+        let mutable result = currentLevel
 
-        if lvl > currLvl then
-            Interlocked.CompareExchange(&currentLevel, lvl, currLvl) |> ignore
-            findCurrentLevel &currentLevel lvl
-        else
-            currLvl
+        while cont do
+            let currLvl = Volatile.Read(&currentLevel)
+
+            if lvl > currLvl then
+                Interlocked.CompareExchange(&currentLevel, lvl, currLvl) |> ignore
+            else
+                result <- currLvl
+                cont <- false
+
+        result
 
     [<TailCall>]
     let rec insertAtLevel head key seq currLvl (newNode: SkipListNode) (pred: SkipListNode) lvl =

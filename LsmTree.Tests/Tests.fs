@@ -1,4 +1,4 @@
-module LsmTree.Tests
+module LsmTree.Tests.Tests
 
 open System
 open System.IO

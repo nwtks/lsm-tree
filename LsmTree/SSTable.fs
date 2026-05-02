@@ -4,6 +4,7 @@ open System.IO
 open System.Text
 
 module SSTable =
+    [<Literal>]
     let MAGIC = 0x534D434CL
 
     let load (fs: FileStream) (br: BinaryReader) =

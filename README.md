@@ -32,14 +32,14 @@ This project demonstrates the core architectural concepts behind modern top-tier
 
 | File | Description |
 |------|-------------|
-| `src/LsmTree.fs` | Primary coordinator — snapshot tracking, background compaction, MemTable flush orchestration |
-| `src/SSTable.fs` | Binary SSTable format, offset indexing, disk-based binary search |
-| `src/BloomFilter.fs` | Probabilistic hashing and bitmask logic for read optimization |
-| `src/MemTable.fs` | Thin wrapper around the SkipList for in-memory buffering |
-| `src/SkipList.fs` | Lock-free concurrent SkipList with CAS-based insertion |
-| `src/WAL.fs` | Write-Ahead Log for crash recovery with atomic transaction support |
-| `test/Tests.fs` | XUnit test suite (37 tests across 9 categories) |
-| `benchmark/` | BenchmarkDotNet suite for performance measurement |
+| `LsmTree/LsmTree.fs` | Primary coordinator — snapshot tracking, background compaction, MemTable flush orchestration |
+| `LsmTree/SSTable.fs` | Binary SSTable format, offset indexing, disk-based binary search |
+| `LsmTree/BloomFilter.fs` | Probabilistic hashing and bitmask logic for read optimization |
+| `LsmTree/MemTable.fs` | Thin wrapper around the SkipList for in-memory buffering |
+| `LsmTree/SkipList.fs` | Lock-free concurrent SkipList with CAS-based insertion |
+| `LsmTree/WAL.fs` | Write-Ahead Log for crash recovery with atomic transaction support |
+| `LsmTree.Tests/Tests.fs` | XUnit test suite (37 tests across 9 categories) |
+| `benchmark/Program.fs` | BenchmarkDotNet suite for performance measurement |
 
 ## ✅ Test Suite
 

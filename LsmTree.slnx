@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="LsmTree/LsmTree.fsproj" />
+  <Project Path="LsmTree.Tests/LsmTree.Tests.fsproj" />
+</Solution>

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="WAL.fs" />
+    <Compile Include="SkipList.fs" />
+    <Compile Include="MemTable.fs" />
+    <Compile Include="BloomFilter.fs" />
+    <Compile Include="SSTable.fs" />
+    <Compile Include="LsmTree.fs" />
+  </ItemGroup>
+
+</Project>
