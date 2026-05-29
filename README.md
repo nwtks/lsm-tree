@@ -41,20 +41,6 @@ This project demonstrates the core architectural concepts behind modern top-tier
 | `LsmTree.Tests/Tests.fs` | XUnit test suite (37 tests across 9 categories) |
 | `benchmark/Program.fs` | BenchmarkDotNet suite for performance measurement |
 
-## ✅ Test Suite
-
-| Category | Tests | Description |
-|----------|------:|-------------|
-| Basic CRUD | 4 | Put, Get, Delete, Overwrite |
-| SSTable, Flush & Compaction | 4 | Flush to disk, multi-level compaction, snapshot pruning, deep merge |
-| SSTable Internals | 4 | Level parsing, double dispose, short/invalid file handling, magic validation |
-| MVCC | 1 | Multi-version concurrency control across MemTable and SSTable |
-| Transactions | 9 | Commit, rollback, snapshot isolation, read-own-writes, flush isolation, error handling |
-| WAL & Recovery | 6 | Auto-recovery, atomic commit, uncommitted rejection, orphaned ops, malformed lines |
-| Lifecycle & Config | 2 | Directory creation, restart data loading |
-| Data Structures | 3 | BloomFilter (empty, false-positive rate), SkipList (sorted order) |
-| Concurrency | 2 | ImmutableMemTable race, SkipList stress |
-
 ## 🏗️ Architecture & Internals
 
 ### Concurrency Model & Lock Ordering

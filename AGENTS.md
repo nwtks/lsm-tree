@@ -9,19 +9,9 @@ dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura
 dotnet run -c Release --project benchmark
 ```
 
-After any code change, run `dotnet test` and confirm **all 37+ tests pass**.
+After any code change, run `dotnet test` and confirm **all tests pass**.
 
----
-
-## Critical: F# Compilation Order
-
-F# compiles files in the order listed in `LsmTree.fsproj`. The enforced order is:
-
-```
-WAL.fs → SkipList.fs → MemTable.fs → BloomFilter.fs → SSTable.fs → LsmTree.fs
-```
-
-Lower-level modules cannot reference higher-level ones. Never violate this order.
+Maintain high unit test coverage (at least line ~80%).
 
 ---
 
