@@ -55,7 +55,65 @@ This project demonstrates the core architectural concepts behind modern top-tier
 | Data Structures | 3 | BloomFilter (empty, false-positive rate), SkipList (sorted order) |
 | Concurrency | 2 | ImmutableMemTable race, SkipList stress |
 
+## 🏗️ Architecture & Internals
+
+### Concurrency Model & Lock Ordering
+
+| Resource | Guard |
+|---|---|
+| `memTable` / `immutableMemTable` | `ReaderWriterLockSlim` (`mainLock`) |
+| `ssTables` array | `lock ssTablesLock` |
+| `activeSnapshots` set | `lock activeSnapshotsLock` |
+| `globalSeq` | `Interlocked.Increment` / `Interlocked.Read` |
+| SkipList nodes | Lock-free CAS (`Interlocked.CompareExchange`) |
+
+**Never hold `mainLock` (write) while acquiring `ssTablesLock`** — this ordering must stay consistent to prevent deadlocks. `isCompacting` is a boolean guarded by `ssTablesLock`; at most one compaction runs at a time.
+
+### WAL Format
+
+One operation per line; keys/values are base64-encoded:
+
+```
+BEGIN <seq>
+PUT <seq> <key_b64> <val_b64>
+DELETE <seq> <key_b64>
+COMMIT <seq>
+```
+
+`WALRecovery.recover` is fault-tolerant: malformed lines and orphaned `BEGIN`s (no matching `COMMIT`) are silently skipped.
+
+### SSTable Binary Format
+
+```
+[data bytes] [index_offset: int64] [bloom_offset: int64] [magic: int32]
+```
+
+- Magic value: `0xC0FFEE01`. Wrong magic raises `InvalidDataException`.
+- Bloom filter bits are stored inline; changing the hash function invalidates all existing files.
+
+**File naming convention:**
+
+```
+L{level}_{timestamp_ms}_{guid}.sst
+```
+
+- Level 0: produced by MemTable flush.
+- Level N+1: produced by compaction of Level N.
+- Legacy files without `L` prefix are treated as Level 0.
+
+## ⚠️ Known Limitations
+
+- Keys and values are `string` only (UTF-8; base64-encoded in WAL).
+- No range queries / iterators in the public API (`GetAll()` on SSTable is internal, used only during compaction).
+- Single WAL file per instance; renamed to `wal_<guid>.old` on MemTable swap.
+- `syncOnCommit = true` (default) calls `fsync` on every commit; set to `false` for higher throughput.
+
 ## 💻 How to Use and Test
+
+### Building
+```bash
+dotnet build
+```
 
 ### Running the XUnit Test Suite
 ```bash
