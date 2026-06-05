@@ -8,7 +8,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Tests.fs" />
+    <Compile Include="TestHelpers.fs" />
+    <Compile Include="BloomFilterTests.fs" />
+    <Compile Include="SkipListTests.fs" />
+    <Compile Include="SSTableTests.fs" />
+    <Compile Include="WALTests.fs" />
+    <Compile Include="TransactionTests.fs" />
+    <Compile Include="LsmTreeTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
