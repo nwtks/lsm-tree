@@ -17,7 +17,7 @@ This project demonstrates the core architectural concepts behind modern top-tier
   * **Bloom Filters**: Each SSTable calculates and embeds a probabilistic bitmask. This filter runs in memory at $O(1)$ time, instantly blocking useless disk reads when a key isn't stored in the segment.
 * **Background Multi-Level Compaction & Automatic Pruning**
   Dynamically tracks hierarchical limits and merges older tables.
-  * **Configurable Limits**: Hierarchical level limits (e.g., `L0`, `L1`, `L2`...) can be explicitly configured via the engine constructor to tune for specific read/write amplification profiles.
+  * **Configurable Limits**: Hierarchical level limits (e.g., `L0`, `L1`, `L2`...) can be explicitly configured via the engine constructor (default: `[| 4; 10; 100; 1000 |]`) to tune for specific read/write amplification profiles.
   * **Snapshot Pruning (GC)**: The engine automatically identifies and purges stale versions of keys that are no longer requested by any active transaction, effectively preventing storage bloat while maintaining strict MVCC correctness.
   * **Tombstone Removal**: In the final storage level, old deletion markers (Tombstones) are completely eliminated.
 * **Immutable Data Structures & Functional Design**
@@ -25,6 +25,7 @@ This project demonstrates the core architectural concepts behind modern top-tier
 * **Atomic ACID Transactions**
   Supports multi-key atomic updates via a dedicated `ITransaction` API. 
   * **Commit & Rollback**: Transactions can be committed atomically or rolled back to discard all pending changes.
+  * **Read Own Writes**: `ITransaction.Get` reads pending (uncommitted) writes within the same transaction before falling back to the snapshot view.
   * **IDisposable Lifecycle**: Transactions implement `IDisposable`, ensuring active snapshots are automatically released and reclaimed by the compaction engine once a task is complete.
   * **Snapshot Isolation**: Every transaction operates on a stable snapshot of the database, ensuring consistent reads even during concurrent writes.
 
@@ -62,7 +63,7 @@ One operation per line; keys/values are base64-encoded:
 ```
 BEGIN <seq>
 PUT <seq> <key_b64> <val_b64>
-DELETE <seq> <key_b64>
+DEL <seq> <key_b64>
 COMMIT <seq>
 ```
 
@@ -71,11 +72,13 @@ COMMIT <seq>
 ### SSTable Binary Format
 
 ```
-[data bytes] [index_offset: int64] [bloom_offset: int64] [magic: int32]
+[data bytes] [index_offset: int64] [bloom_offset: int64] [magic: int64]
 ```
 
-- Magic value: `0xC0FFEE01`. Wrong magic raises `InvalidDataException`.
-- Bloom filter bits are stored inline; changing the hash function invalidates all existing files.
+The footer is always 24 bytes (three `int64` fields).
+
+- Magic value: `0x534D434C` (`"SMCL"` in ASCII). Wrong magic raises `InvalidDataException`.
+- Bloom filter parameters: 10 bits/item, 7 hash functions (double-hashing, FNV-1a derived). Changing these invalidates all existing files.
 
 **File naming convention:**
 
@@ -101,14 +104,9 @@ L{level}_{timestamp_ms}_{guid}.sst
 dotnet build
 ```
 
-### Running the XUnit Test Suite
+### Running the XUnit Test Suite with Code Coverage
 ```bash
 dotnet test
-```
-
-### Code Coverage
-```bash
-dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura
 ```
 
 ### Running Benchmarks
@@ -122,7 +120,7 @@ dotnet run -c Release --project benchmark
 open LsmTree
 
 // 1. Initialize with optional Memory and Compaction limits
-let db = new LsmTree("./data", memTableSizeLimit = 1024*1024, compactLevelLimits = [| 4; 10; 100 |])
+let db = new LsmTree("./data", memTableSizeLimit = 1024*1024, compactLevelLimits = [| 4; 10; 100; 1000 |])
 
 // 2. Standard Operations
 db.Put("user:1", "Alice")
@@ -137,6 +135,7 @@ use tx = db.BeginTransaction()
 tx.Put("acc:1", "100")
 tx.Put("acc:2", "200")
 tx.Delete("acc:temp")
+let pending = tx.Get("acc:1") // Some "100" — sees own uncommitted writes
 tx.Commit() // or tx.Rollback() to discard changes
 
 // 4. MVCC Snapshot Isolation (Time-Travel)
