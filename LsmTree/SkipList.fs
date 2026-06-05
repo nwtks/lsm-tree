@@ -1,7 +1,5 @@
 namespace LsmTree
 
-open System.Threading
-
 [<AllowNullLiteral>]
 type SkipListNode(key: string, seq: int64, value: string option, level: int) =
     let next = Array.zeroCreate<SkipListNode> level
@@ -59,10 +57,11 @@ module SkipList =
         let mutable result = currentLevel
 
         while cont do
-            let currLvl = Volatile.Read(&currentLevel)
+            let currLvl = System.Threading.Volatile.Read(&currentLevel)
 
             if lvl > currLvl then
-                Interlocked.CompareExchange(&currentLevel, lvl, currLvl) |> ignore
+                System.Threading.Interlocked.CompareExchange(&currentLevel, lvl, currLvl)
+                |> ignore
             else
                 result <- currLvl
                 cont <- false
@@ -73,7 +72,9 @@ module SkipList =
     let rec insertAtLevel head key seq currLvl (newNode: SkipListNode) (pred: SkipListNode) lvl =
         let current = pred.Next.[lvl]
         newNode.Next.[lvl] <- current
-        let actual = Interlocked.CompareExchange(&pred.Next.[lvl], newNode, current)
+
+        let actual =
+            System.Threading.Interlocked.CompareExchange(&pred.Next.[lvl], newNode, current)
 
         if not (obj.ReferenceEquals(actual, current)) then
             let nextPred = search head key seq lvl lvl pred
@@ -97,7 +98,7 @@ type SkipList() =
     let mutable currentLevel = 1
 
     member _.Find(key: string, snapshot: int64) =
-        let currLvl = Volatile.Read(&currentLevel)
+        let currLvl = System.Threading.Volatile.Read(&currentLevel)
         let pred = SkipList.search head key snapshot 0 (currLvl - 1) head
         let current = pred.Next.[0]
 

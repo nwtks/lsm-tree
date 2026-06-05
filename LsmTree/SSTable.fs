@@ -1,55 +1,61 @@
 namespace LsmTree
 
-open System.IO
-open System.Text
-
 module SSTable =
     [<Literal>]
     let MAGIC = 0x534D434CL
 
-    let load (fs: FileStream) (br: BinaryReader) =
+    let load (fs: System.IO.FileStream) (br: System.IO.BinaryReader) =
         let loadOffsets offset =
-            fs.Seek(offset, SeekOrigin.Begin) |> ignore
+            fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
             Array.init (br.ReadInt32()) (fun _ -> br.ReadInt64())
 
         let loadBloomFilter offset =
-            fs.Seek(offset, SeekOrigin.Begin) |> ignore
+            fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
             let bfBytes = br.ReadInt32() |> br.ReadBytes
             BloomFilter(bfBytes, BloomFilter.numHashFunctions)
 
         if fs.Length >= 24L then
-            fs.Seek(-24L, SeekOrigin.End) |> ignore
+            fs.Seek(-24L, System.IO.SeekOrigin.End) |> ignore
             let indexOffset = br.ReadInt64()
             let bloomOffset = br.ReadInt64()
             let magic = br.ReadInt64()
 
             if magic <> MAGIC then
-                raise (InvalidDataException "Invalid SSTable magic number")
+                raise (System.IO.InvalidDataException "Invalid SSTable magic number")
 
             loadOffsets indexOffset, loadBloomFilter bloomOffset
         else
             [||], BloomFilter([||], 0)
 
-    let readValue (br: BinaryReader) =
-        br.ReadInt32() |> br.ReadBytes |> Encoding.UTF8.GetString
+    let readValue (br: System.IO.BinaryReader) =
+        br.ReadInt32() |> br.ReadBytes |> System.Text.Encoding.UTF8.GetString
 
-    let readItem (br: BinaryReader) =
+    let readItem (br: System.IO.BinaryReader) =
         if br.ReadBoolean() then None else Some(readValue br)
 
-    let readEntry (fs: FileStream) (br: BinaryReader) (offset: int64) =
-        fs.Seek(offset, SeekOrigin.Begin) |> ignore
+    let readEntry (fs: System.IO.FileStream) (br: System.IO.BinaryReader) (offset: int64) =
+        fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
         let seq = br.ReadInt64()
         let key = readValue br
         let value = readItem br
         key, seq, value
 
     [<TailCall>]
-    let rec binSearch (fs: FileStream) (br: BinaryReader) (offsets: int64[]) key snap left right bestMatch =
+    let rec binSearch
+        (fs: System.IO.FileStream)
+        (br: System.IO.BinaryReader)
+        (offsets: int64[])
+        key
+        snap
+        left
+        right
+        bestMatch
+        =
         if left > right then
             bestMatch
         else
             let mid = left + (right - left) / 2
-            fs.Seek(offsets.[mid], SeekOrigin.Begin) |> ignore
+            fs.Seek(offsets.[mid], System.IO.SeekOrigin.Begin) |> ignore
             let currentSeq = br.ReadInt64()
             let currentKey = readValue br
             let comp = System.String.CompareOrdinal(key, currentKey)
@@ -65,8 +71,10 @@ module SSTable =
                 binSearch fs br offsets key snap (mid + 1) right bestMatch
 
 type SSTable(path: string) =
-    let fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)
-    let br = new BinaryReader(fs)
+    let fs =
+        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+
+    let br = new System.IO.BinaryReader(fs)
     let offsets, bloomFilter = SSTable.load fs br
     let mutable disposed = false
 
@@ -94,27 +102,34 @@ type SSTable(path: string) =
                 disposed <- true
 
 module SSTableWriter =
-    let writeBytes (bw: BinaryWriter) (bytes: byte[]) =
+    let writeBytes (bw: System.IO.BinaryWriter) (bytes: byte[]) =
         bw.Write bytes.Length
         bw.Write bytes
 
-    let writeValue (bw: BinaryWriter) (value: string) =
-        Encoding.UTF8.GetBytes value |> writeBytes bw
+    let writeValue (bw: System.IO.BinaryWriter) (value: string) =
+        System.Text.Encoding.UTF8.GetBytes value |> writeBytes bw
 
-    let writeItem (bw: BinaryWriter) item =
+    let writeItem (bw: System.IO.BinaryWriter) item =
         match item with
         | None -> bw.Write true
         | Some v ->
             bw.Write false
             writeValue bw v
 
-    let writeOffsets (bw: BinaryWriter) (offsets: int64 list) =
+    let writeOffsets (bw: System.IO.BinaryWriter) (offsets: int64 list) =
         bw.Write offsets.Length
         offsets |> List.iter bw.Write
 
     let write outPath (memTableEntries: (string * int64 * string option) list) =
-        use fs = new FileStream(outPath, FileMode.Create, FileAccess.Write, FileShare.None)
-        use bw = new BinaryWriter(fs)
+        use fs =
+            new System.IO.FileStream(
+                outPath,
+                System.IO.FileMode.Create,
+                System.IO.FileAccess.Write,
+                System.IO.FileShare.None
+            )
+
+        use bw = new System.IO.BinaryWriter(fs)
         let bf = BloomFilter.create memTableEntries.Length
 
         let offsets =

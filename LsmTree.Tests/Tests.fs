@@ -1,18 +1,16 @@
 module LsmTree.Tests.Tests
 
-open System
-open System.IO
-open System.Threading.Tasks
 open Xunit
 open LsmTree
 
 let getTestDir name =
-    let dir = Path.Combine(Environment.CurrentDirectory, "test_data_" + name)
+    let dir =
+        System.IO.Path.Combine(System.Environment.CurrentDirectory, "test_data_" + name)
 
-    if Directory.Exists dir then
-        Directory.Delete(dir, true)
+    if System.IO.Directory.Exists dir then
+        System.IO.Directory.Delete(dir, true)
 
-    Directory.CreateDirectory dir |> ignore
+    System.IO.Directory.CreateDirectory dir |> ignore
     dir
 
 let assertEqual expected actual msg =
@@ -96,7 +94,7 @@ let ``Multi_Level_Compaction_L0_L1`` () =
     for i = 1 to 5 do
         assertEqual (Some(sprintf "c_v%d" i)) (tree.Get(sprintf "c_k%d" i)) "Compacted keys must be readable"
 
-    let l1Files = Directory.GetFiles(testDataDir, "L1_*.sst")
+    let l1Files = System.IO.Directory.GetFiles(testDataDir, "L1_*.sst")
     Assert.True(l1Files.Length = 1, sprintf "Expected 1 compacted L1 file, but found %d" l1Files.Length)
 
 [<Fact>]
@@ -152,9 +150,9 @@ let ``Test_MergeSSTables_Coverage`` () =
 [<Fact>]
 let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
     let testDataDir = getTestDir "sst_levels"
-    let l1Path = Path.Combine(testDataDir, "L1_data.sst")
-    let l0Path = Path.Combine(testDataDir, "L0_data.sst")
-    let legacyPath = Path.Combine(testDataDir, "legacy.sst")
+    let l1Path = System.IO.Path.Combine(testDataDir, "L1_data.sst")
+    let l0Path = System.IO.Path.Combine(testDataDir, "L0_data.sst")
+    let legacyPath = System.IO.Path.Combine(testDataDir, "legacy.sst")
     SSTableWriter.write l1Path [ "k1", 1L, Some "v1_L1" ]
     SSTableWriter.write l0Path [ "k1", 200L, Some "v1_L0" ]
     SSTableWriter.write legacyPath [ "k9", 10L, Some "v9" ]
@@ -171,20 +169,20 @@ let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
 [<Fact>]
 let ``SSTable_Double_Dispose`` () =
     let testDataDir = getTestDir "sst_double_dispose"
-    let sstPath = Path.Combine(testDataDir, "double_dispose.sst")
+    let sstPath = System.IO.Path.Combine(testDataDir, "double_dispose.sst")
     SSTableWriter.flush sstPath [] |> ignore
 
     use sst = new SSTable(sstPath)
-    (sst :> IDisposable).Dispose()
+    (sst :> System.IDisposable).Dispose()
 
-    (sst :> IDisposable).Dispose()
+    (sst :> System.IDisposable).Dispose()
     Assert.True(true, "Should not throw")
 
 [<Fact>]
 let ``SSTable_Load_Short_File_Handling`` () =
     let testDataDir = getTestDir "sst_short"
-    let sstPath = Path.Combine(testDataDir, "L0_short.sst")
-    File.WriteAllBytes(sstPath, [| 1uy; 2uy; 3uy |])
+    let sstPath = System.IO.Path.Combine(testDataDir, "L0_short.sst")
+    System.IO.File.WriteAllBytes(sstPath, [| 1uy; 2uy; 3uy |])
 
     use sst = new SSTable(sstPath)
     assertEqual None (sst.Get("any", 0L)) "Should handle short/invalid SSTable file gracefully"
@@ -192,17 +190,19 @@ let ``SSTable_Load_Short_File_Handling`` () =
 [<Fact>]
 let ``SSTable_Invalid_Magic`` () =
     let testDataDir = getTestDir "sst_bad_magic"
-    let sstPath = Path.Combine(testDataDir, "bad.sst")
+    let sstPath = System.IO.Path.Combine(testDataDir, "bad.sst")
 
     do
-        use fs = new FileStream(sstPath, FileMode.Create, FileAccess.Write)
-        use bw = new BinaryWriter(fs)
+        use fs =
+            new System.IO.FileStream(sstPath, System.IO.FileMode.Create, System.IO.FileAccess.Write)
+
+        use bw = new System.IO.BinaryWriter(fs)
         bw.Write [| 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy |] // data
         bw.Write 0L // index offset
         bw.Write 0L // bloom offset
         bw.Write 0xFEEDFACEL // bad magic
 
-    Assert.Throws<InvalidDataException>(fun () -> new SSTable(sstPath) |> ignore)
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(sstPath) |> ignore)
 
 // ============================================================
 // MVCC (Multi-Version Concurrency Control)
@@ -319,9 +319,9 @@ let ``Transaction_DoubleDispose`` () =
     let testDataDir = getTestDir "tx_double_dispose"
     use tree = new LsmTree(testDataDir)
     let tx = tree.BeginTransaction()
-    (tx :> IDisposable).Dispose()
+    (tx :> System.IDisposable).Dispose()
 
-    (tx :> IDisposable).Dispose()
+    (tx :> System.IDisposable).Dispose()
     Assert.True(true, "Should not throw")
 
 [<Fact>]
@@ -331,10 +331,10 @@ let ``Transaction_Already_Finished_Errors`` () =
     use tx = tree.BeginTransaction()
     tx.Commit()
 
-    Assert.Throws<Exception>(fun () -> tx.Put("k", "v") |> ignore) |> ignore
-    Assert.Throws<Exception>(fun () -> tx.Delete "k" |> ignore) |> ignore
-    Assert.Throws<Exception>(fun () -> tx.Commit() |> ignore) |> ignore
-    Assert.Throws<Exception>(fun () -> tx.Rollback() |> ignore) |> ignore
+    Assert.Throws<System.Exception>(fun () -> tx.Put("k", "v") |> ignore) |> ignore
+    Assert.Throws<System.Exception>(fun () -> tx.Delete "k" |> ignore) |> ignore
+    Assert.Throws<System.Exception>(fun () -> tx.Commit() |> ignore) |> ignore
+    Assert.Throws<System.Exception>(fun () -> tx.Rollback() |> ignore) |> ignore
 
 // ============================================================
 // WAL (Write-Ahead Log) & Recovery
@@ -355,10 +355,10 @@ let ``Auto_recovery_from_WAL`` () =
 [<Fact>]
 let ``WAL_Atomic_Recovery`` () =
     let testDataDir = getTestDir "tx_wal_atomicity"
-    let walPath = Path.Combine(testDataDir, "wal.log")
+    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
 
     do
-        use sw = new StreamWriter(walPath)
+        use sw = new System.IO.StreamWriter(walPath)
         sw.WriteLine "BEGIN 1"
         let k1 = WALRecovery.utf8ToBase64 "k1"
         let v1 = WALRecovery.utf8ToBase64 "v1"
@@ -368,7 +368,7 @@ let ``WAL_Atomic_Recovery`` () =
     assertEqual None (tree.Get "k1") "Should not recover k1 because transaction was not committed"
 
     do
-        use sw2 = File.AppendText walPath
+        use sw2 = System.IO.File.AppendText walPath
         sw2.WriteLine "COMMIT 1"
 
     use tree2 = new LsmTree(testDataDir)
@@ -377,10 +377,10 @@ let ``WAL_Atomic_Recovery`` () =
 [<Fact>]
 let ``WAL_Recovery_Uncommitted_Transaction`` () =
     let testDataDir = getTestDir "tx_wal_uncommitted"
-    let walPath = Path.Combine(testDataDir, "wal.log")
+    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
 
     do
-        use writer = new StreamWriter(walPath)
+        use writer = new System.IO.StreamWriter(walPath)
         let k = WALRecovery.utf8ToBase64 "k_uncommitted"
         let v = WALRecovery.utf8ToBase64 "v_uncommitted"
         writer.WriteLine(sprintf "%s %d" WALRecovery.BEGIN 100L)
@@ -397,10 +397,10 @@ let ``WAL_Recover_NonExistent_File`` () =
 [<Fact>]
 let ``WAL_Recovery_Ignores_Unknown_Entries`` () =
     let testDataDir = getTestDir "wal_edge"
-    let walPath = Path.Combine(testDataDir, "wal.log")
+    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     let k = WALRecovery.utf8ToBase64 "k"
     let v = WALRecovery.utf8ToBase64 "v"
-    File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; sprintf "PUT 2 %s %s" k v; "COMMIT 2" ])
+    System.IO.File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; sprintf "PUT 2 %s %s" k v; "COMMIT 2" ])
 
     use tree = new LsmTree(testDataDir)
     assertEqual (Some "v") (tree.Get "k") "Should recover valid transaction even if unknown entry present"
@@ -408,10 +408,10 @@ let ``WAL_Recovery_Ignores_Unknown_Entries`` () =
 [<Fact>]
 let ``WAL_Recovery_Orphaned_Ops`` () =
     let testDataDir = getTestDir "wal_edge_orphan"
-    let walPath = Path.Combine(testDataDir, "wal.log")
+    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     let k_orphan = WALRecovery.utf8ToBase64 "key_orphan"
     let v_orphan = WALRecovery.utf8ToBase64 "val_orphan"
-    File.WriteAllLines(walPath, [ sprintf "PUT 3 %s %s" k_orphan v_orphan ])
+    System.IO.File.WriteAllLines(walPath, [ sprintf "PUT 3 %s %s" k_orphan v_orphan ])
 
     use tree = new LsmTree(testDataDir)
     assertEqual (Some "val_orphan") (tree.Get "key_orphan") "Orphaned PUT without BEGIN should be recovered"
@@ -419,8 +419,8 @@ let ``WAL_Recovery_Orphaned_Ops`` () =
 [<Fact>]
 let ``WAL_Recovery_Orphaned_Commit`` () =
     let testDataDir = getTestDir "wal_edge_orphan_commit"
-    let walPath = Path.Combine(testDataDir, "wal.log")
-    File.WriteAllLines(walPath, [ "COMMIT 4" ])
+    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
+    System.IO.File.WriteAllLines(walPath, [ "COMMIT 4" ])
 
     use tree = new LsmTree(testDataDir)
     assertEqual None (tree.Get "non_existent") "Orphaned COMMIT with no matching BEGIN should not crash"
@@ -428,10 +428,10 @@ let ``WAL_Recovery_Orphaned_Commit`` () =
 [<Fact>]
 let ``WAL_Recovery_Ignores_Malformed_Lines`` () =
     let testDataDir = getTestDir "wal_malformed"
-    let walPath = Path.Combine(testDataDir, "wal.log")
+    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     // Empty lines, non-numeric seq, too-few fields, and unknown verbs should all be skipped
     let lines = [ ""; "invalid"; "PUT abc k v"; "UNKNOWN 1 k v" ]
-    File.WriteAllLines(walPath, lines)
+    System.IO.File.WriteAllLines(walPath, lines)
 
     let ops = WALRecovery.recover walPath |> Seq.toList
     assertEqual [] ops "Should ignore invalid WAL entries"
@@ -443,18 +443,19 @@ let ``WAL_Recovery_Ignores_Malformed_Lines`` () =
 
 [<Fact>]
 let ``LsmTree_Startup_CreatesDirectory`` () =
-    let testDataDir = Path.Combine(Environment.CurrentDirectory, "test_data_new_dir")
+    let testDataDir =
+        System.IO.Path.Combine(System.Environment.CurrentDirectory, "test_data_new_dir")
 
-    if Directory.Exists testDataDir then
-        Directory.Delete(testDataDir, true)
+    if System.IO.Directory.Exists testDataDir then
+        System.IO.Directory.Delete(testDataDir, true)
 
     try
         use tree = new LsmTree(testDataDir)
         tree.Put("k1", "v1")
-        Assert.True(Directory.Exists testDataDir, "Directory should be created")
+        Assert.True(System.IO.Directory.Exists testDataDir, "Directory should be created")
     finally
-        if Directory.Exists testDataDir then
-            Directory.Delete(testDataDir, true)
+        if System.IO.Directory.Exists testDataDir then
+            System.IO.Directory.Delete(testDataDir, true)
 
 [<Fact>]
 let ``LsmTree_Restart_LoadsData`` () =
@@ -528,7 +529,7 @@ let ``Get_from_ImmutableMemTable_Race`` () =
     let tasks =
         [| for _ = 1 to 10 do
                yield
-                   Task.Run(fun () ->
+                   System.Threading.Tasks.Task.Run(fun () ->
                        for _ = 1 to 10 do
                            tree.Flush()
                            tree.Get "race_k" |> ignore
@@ -537,7 +538,7 @@ let ``Get_from_ImmutableMemTable_Race`` () =
                            tree.Delete "race_k"
                            tree.Get "race_k" |> ignore) |]
 
-    Task.WaitAll tasks
+    System.Threading.Tasks.Task.WaitAll tasks
     Assert.True(true, "Should not crash during concurrent flush/get")
 
 [<Fact>]
@@ -549,13 +550,13 @@ let ``SkipList_Concurrency_Stress`` () =
     let tasks =
         [| for i = 1 to numThreads do
                yield
-                   Task.Run(fun () ->
+                   System.Threading.Tasks.Task.Run(fun () ->
                        for j = 1 to numOps do
                            list.Put(sprintf "key%d" (j % 50), int64 (i * numOps + j), sprintf "val%d" j)
 
                            if j % 10 = 0 then
-                               list.Find(sprintf "key%d" (j % 50), Int64.MaxValue) |> ignore) |]
+                               list.Find(sprintf "key%d" (j % 50), System.Int64.MaxValue) |> ignore) |]
 
-    Task.WaitAll tasks
+    System.Threading.Tasks.Task.WaitAll tasks
     let entries = list.Entries()
     Assert.True(entries.Length > 0)

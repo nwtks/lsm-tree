@@ -1,8 +1,5 @@
 namespace LsmTree
 
-open System.IO
-open System.Text
-
 module WALRecovery =
     [<Literal>]
     let PUT = "PUT"
@@ -22,10 +19,10 @@ module WALRecovery =
         | Commit
 
     let utf8ToBase64 (value: string) =
-        value |> Encoding.UTF8.GetBytes |> System.Convert.ToBase64String
+        value |> System.Text.Encoding.UTF8.GetBytes |> System.Convert.ToBase64String
 
     let base64ToUtf8 value =
-        value |> System.Convert.FromBase64String |> Encoding.UTF8.GetString
+        value |> System.Convert.FromBase64String |> System.Text.Encoding.UTF8.GetString
 
     let parseEntry (item: string) =
         let parts = item.Split ' '
@@ -63,10 +60,10 @@ module WALRecovery =
             | None -> buffered, acc
 
     let recover path =
-        if not (File.Exists path) then
+        if not (System.IO.File.Exists path) then
             Seq.empty
         else
-            File.ReadLines path
+            System.IO.File.ReadLines path
             |> Seq.choose parseEntry
             |> Seq.fold collectEntries (Map.empty, [])
             |> snd
@@ -74,8 +71,10 @@ module WALRecovery =
             |> Seq.ofList
 
 type WAL(path: string) =
-    let stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read)
-    let writer = new StreamWriter(stream, Encoding.UTF8)
+    let stream =
+        new System.IO.FileStream(path, System.IO.FileMode.Append, System.IO.FileAccess.Write, System.IO.FileShare.Read)
+
+    let writer = new System.IO.StreamWriter(stream, System.Text.Encoding.UTF8)
     let walLock = obj ()
     let mutable disposed = false
     do writer.AutoFlush <- true
