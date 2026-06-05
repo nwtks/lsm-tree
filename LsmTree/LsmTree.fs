@@ -8,26 +8,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let mutable memTable = MemTable()
     let mutable immutableMemTable: MemTable option = None
     let mainLock = new System.Threading.ReaderWriterLockSlim()
+    let snapshotManager = LsmTreeSnapshot()
 
     let ssTables =
         Array.init (compactLevelLimits.Length + 1) (fun _ -> list<SSTable>.Empty)
 
-    let mutable isCompacting = false
+    let isCompacting = ref false
     let ssTablesLock = obj ()
-
-    let mutable globalSeq = 0L
-    let mutable activeSnapshots = Set.empty<int64>
-    let activeSnapshotsLock = obj ()
-
-    let releaseSnapshot (snapshot: int64) =
-        lock activeSnapshotsLock (fun () -> activeSnapshots <- Set.remove snapshot activeSnapshots)
-
-    let getMinActiveSnapshot () =
-        lock activeSnapshotsLock (fun () ->
-            if Set.isEmpty activeSnapshots then
-                System.Threading.Interlocked.Read(&globalSeq)
-            else
-                Set.minElement activeSnapshots)
 
     let parseSstLevel (path: string) =
         let name = System.IO.Path.GetFileName path
@@ -59,10 +46,10 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         |> Seq.iter (function
             | seq, k, Some v ->
                 memTable.Put(k, seq, v)
-                globalSeq <- max globalSeq seq
+                snapshotManager.AdvanceSequence seq
             | seq, k, None ->
                 memTable.Delete(k, seq)
-                globalSeq <- max globalSeq seq)
+                snapshotManager.AdvanceSequence seq)
 
     let startup dataDir =
         if not (System.IO.Directory.Exists dataDir) then
@@ -74,185 +61,22 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     do startup dataDir
     let mutable wal = new WAL(walPath)
 
-    let timestamp () =
-        System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-
-    let newGuid () = System.Guid.NewGuid().ToString "N"
-
-    let ssTablePath level =
-        System.IO.Path.Combine(dataDir, sprintf "L%d_%d_%s.sst" level (timestamp ()) (newGuid ()))
-
-    let collectKeyVersions isLastLevel minSnap (key, versions: seq<string * int64 * string option>) =
-        let sorted =
-            versions
-            |> Seq.map (fun (_, seq, value) -> seq, value)
-            |> Seq.sortByDescending fst
-            |> Seq.toList
-
-        let newer = sorted |> List.filter (fun (s, _) -> s >= minSnap)
-        let older = sorted |> List.filter (fun (s, _) -> s < minSnap) |> List.tryHead
-
-        let kept =
-            match older with
-            | Some o -> List.append newer [ o ]
-            | None -> newer
-
-        if isLastLevel then
-            kept |> List.filter (fun (_, v) -> v.IsSome)
-        else
-            kept
-        |> Seq.map (fun (s, v) -> key, s, v)
-
-    let mergeSSTables level (tablesToCompact: SSTable list) minSnap =
-        tablesToCompact
-        |> List.rev
-        |> Seq.collect (fun t -> t.GetAll())
-        |> Seq.groupBy (fun (key, _, _) -> key)
-        |> Seq.collect (collectKeyVersions (compactLevelLimits.Length = level + 1) minSnap)
-        |> Seq.sortWith (fun (k1, s1, _) (k2, s2, _) ->
-            let c = System.String.CompareOrdinal(k1, k2)
-            if c <> 0 then c else s2.CompareTo s1)
-        |> Seq.toList
-        |> SSTableWriter.flush (ssTablePath (level + 1))
-
-    let performMerge level tablesToCompact =
-        let minSnap = getMinActiveSnapshot ()
-        let newSSTable = mergeSSTables level tablesToCompact minSnap
-
-        lock ssTablesLock (fun () ->
-            ssTables.[level + 1] <- newSSTable :: ssTables.[level + 1]
-
-            let remaining =
-                ssTables.[level] |> List.filter (fun t -> not (List.contains t tablesToCompact))
-
-            ssTables.[level] <- remaining)
-
-        tablesToCompact
-        |> List.iter (fun t ->
-            try
-                (t :> System.IDisposable).Dispose()
-
-                if System.IO.File.Exists t.Path then
-                    System.IO.File.Delete t.Path
-            with e ->
-                printfn "Compaction: Failed to cleanup old SSTable %s: %s" t.Path e.Message)
-
-    [<TailCall>]
-    let rec compact level =
-        let tablesToCompact =
-            lock ssTablesLock (fun () ->
-                if
-                    level < ssTables.Length - 1
-                    && ssTables.[level].Length > compactLevelLimits.[level]
-                then
-                    ssTables.[level]
-                else
-                    [])
-
-        if tablesToCompact.Length > 0 then
-            performMerge level tablesToCompact
-            compact (level + 1)
-
-    let triggerCompaction () =
-        let shouldStart =
-            lock ssTablesLock (fun () ->
-                if not isCompacting then
-                    isCompacting <- true
-                    true
-                else
-                    false)
-
-        if shouldStart then
-            System.Threading.Tasks.Task.Run(fun () ->
-                try
-                    compact 0
-                finally
-                    lock ssTablesLock (fun () -> isCompacting <- false))
-            |> ignore
-
-    let swapMemTableAndWal () =
-        mainLock.EnterWriteLock()
-
-        try
-            if memTable.SizeBytes > 0 then
-                let oldMemTable = memTable
-                wal.Close()
-                let oldWalPath = System.IO.Path.Combine(dataDir, sprintf "wal_%s.old" (newGuid ()))
-                System.IO.File.Move(walPath, oldWalPath)
-                memTable <- MemTable()
-                wal <- new WAL(walPath)
-                immutableMemTable <- Some oldMemTable
-                Some(oldMemTable, oldWalPath)
-            else
-                None
-        finally
-            mainLock.ExitWriteLock()
-
-    let addSSTable (oldMemTable: MemTable) =
-        let sst = SSTableWriter.flush (ssTablePath 0) oldMemTable.Entries
-        lock ssTablesLock (fun () -> ssTables.[0] <- sst :: ssTables.[0])
-        mainLock.EnterWriteLock()
-
-        try
-            immutableMemTable <- None
-        finally
-            mainLock.ExitWriteLock()
-
     let flushMemTable () =
-        match swapMemTableAndWal () with
+        match
+            LsmTreeFlush.swapMemTableAndWal mainLock memTable wal walPath dataDir (fun newMt newWal oldMt ->
+                memTable <- newMt
+                wal <- newWal
+                immutableMemTable <- Some oldMt)
+        with
         | Some(oldMemTable, oldWalPath) ->
-            addSSTable oldMemTable
+            LsmTreeFlush.flushToSSTable dataDir oldMemTable
+            |> LsmTreeFlush.addSSTable mainLock ssTablesLock ssTables (fun () -> immutableMemTable <- None)
 
             if System.IO.File.Exists oldWalPath then
                 System.IO.File.Delete oldWalPath
 
-            triggerCompaction ()
+            LsmTreeFlush.triggerCompaction ssTables ssTablesLock isCompacting compactLevelLimits dataDir snapshotManager
         | None -> ()
-
-    let searchInTables key snap level =
-        lock ssTablesLock (fun () -> ssTables.[level])
-        |> List.tryPick (fun t -> t.Get(key, snap))
-
-    [<TailCall>]
-    let rec searchLevel key snap level =
-        if level >= ssTables.Length then
-            None
-        else
-            match searchInTables key snap level with
-            | Some res -> Some res
-            | None -> searchLevel key snap (level + 1)
-
-    let findValue key snap =
-        let memRes, immRes =
-            mainLock.EnterReadLock()
-
-            try
-                memTable.Get(key, snap),
-                match immutableMemTable with
-                | Some m -> m.Get(key, snap)
-                | None -> None
-            finally
-                mainLock.ExitReadLock()
-
-        match memRes with
-        | Some(Some v) -> Some v
-        | Some None -> None
-        | None ->
-            match immRes with
-            | Some(Some v) -> Some v
-            | Some None -> None
-            | None ->
-                match searchLevel key snap 0 with
-                | Some(Some v) -> Some v
-                | _ -> None
-
-    [<TailCall>]
-    let rec wait () =
-        let active = lock ssTablesLock (fun () -> isCompacting)
-
-        if active then
-            System.Threading.Thread.Sleep 50
-            wait ()
 
     let commitTransaction (ops: (string * string option) list) =
         let shouldFlush =
@@ -260,7 +84,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
             try
                 if not ops.IsEmpty then
-                    let commitSeq = System.Threading.Interlocked.Increment(&globalSeq)
+                    let commitSeq = snapshotManager.NextSequence()
                     wal.Begin commitSeq
 
                     ops
@@ -284,12 +108,11 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
         shouldFlush
 
-    member _.Snapshot() =
-        System.Threading.Interlocked.Read(&globalSeq)
+    member _.Snapshot() = snapshotManager.CurrentSequence()
 
     member this.BeginTransaction() =
         let snap = this.Snapshot()
-        lock activeSnapshotsLock (fun () -> activeSnapshots <- Set.add snap activeSnapshots)
+        snapshotManager.RegisterSnapshot snap
         new LsmTransaction(this :> ILsmTree, snap) :> ITransaction
 
     member this.Put(key: string, value: string) =
@@ -303,21 +126,24 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         tx.Commit()
 
     member this.Get(key: string, ?snapshot: int64) =
-        defaultArg snapshot (this.Snapshot()) |> findValue key
+        defaultArg snapshot (this.Snapshot())
+        |> LsmTreeSearch.findValue mainLock ssTablesLock memTable immutableMemTable ssTables key
 
     member _.Flush() = flushMemTable ()
 
-    member _.WaitForCompaction() = wait ()
+    member _.WaitForCompaction() =
+        LsmTreeFlush.waitForCompaction ssTablesLock isCompacting
 
     member _.SyncOnCommit = syncOnCommit
 
-    member _.ReleaseSnapshot(snapshot: int64) = releaseSnapshot snapshot
+    member _.ReleaseSnapshot(snapshot: int64) =
+        snapshotManager.ReleaseSnapshot snapshot
 
     member this.Close() = (this :> System.IDisposable).Dispose()
 
     interface System.IDisposable with
         member _.Dispose() =
-            wait ()
+            LsmTreeFlush.waitForCompaction ssTablesLock isCompacting
             wal.Close()
             mainLock.Dispose()
 
@@ -327,4 +153,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     interface ILsmTree with
         member this.Get(key, snapshot) = this.Get(key, ?snapshot = snapshot)
         member _.CommitTransaction ops = commitTransaction ops
-        member _.ReleaseSnapshot snapshot = releaseSnapshot snapshot
+
+        member _.ReleaseSnapshot snapshot =
+            snapshotManager.ReleaseSnapshot snapshot

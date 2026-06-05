@@ -10,6 +10,9 @@
     <Compile Include="BloomFilter.fs" />
     <Compile Include="SSTable.fs" />
     <Compile Include="LsmTransaction.fs" />
+    <Compile Include="LsmTreeSnapshot.fs" />
+    <Compile Include="LsmTreeSearch.fs" />
+    <Compile Include="LsmTreeFlush.fs" />
     <Compile Include="LsmTree.fs" />
   </ItemGroup>
 
