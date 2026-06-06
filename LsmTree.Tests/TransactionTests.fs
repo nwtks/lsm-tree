@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``Transaction_Read_Own_Writes`` () =
+let ``Transaction reads its own uncommitted writes`` () =
     let testDataDir = getTestDir "tx3"
     use tree = new LsmTree(testDataDir)
     use tx = tree.BeginTransaction()
@@ -15,7 +15,7 @@ let ``Transaction_Read_Own_Writes`` () =
     assertEqual None (tx.Get "tx_k3") "Should see its own delete"
 
 [<Fact>]
-let ``Transaction_Commit_Visibility`` () =
+let ``Transaction commit makes writes visible to others`` () =
     let testDataDir = getTestDir "tx1"
     use tree = new LsmTree(testDataDir)
     use tx = tree.BeginTransaction()
@@ -26,7 +26,7 @@ let ``Transaction_Commit_Visibility`` () =
     assertEqual (Some "tx_v1") (tree.Get "tx_k1") "Should see committed write"
 
 [<Fact>]
-let ``Transaction_Single_Sequence_Commit`` () =
+let ``Transaction single-sequence commit shares sequence number`` () =
     let testDataDir = getTestDir "tx5"
     use tree = new LsmTree(testDataDir)
     use tx = tree.BeginTransaction()
@@ -41,7 +41,7 @@ let ``Transaction_Single_Sequence_Commit`` () =
     assertEqual (Some "v2") (tree2.Get "k2") "k2 should be v2"
 
 [<Fact>]
-let ``Transaction_EmptyCommit`` () =
+let ``Transaction empty commit works safely`` () =
     let testDataDir = getTestDir "tx_empty"
     use tree = new LsmTree(testDataDir)
     use tx = tree.BeginTransaction()
@@ -49,7 +49,7 @@ let ``Transaction_EmptyCommit`` () =
     assertEqual None (tree.Get "any") "Empty commit should work safely"
 
 [<Fact>]
-let ``Transaction_Rollback_Visibility`` () =
+let ``Transaction rollback restores original values`` () =
     let testDataDir = getTestDir "tx_rollback"
     use tree = new LsmTree(testDataDir)
     tree.Put("k1", "v1")
@@ -61,7 +61,7 @@ let ``Transaction_Rollback_Visibility`` () =
     assertEqual (Some "v1") (tree.Get "k1") "Database should remain v1 after rollback"
 
 [<Fact>]
-let ``Transaction_Snapshot_Isolation`` () =
+let ``Transaction sees snapshot at start time`` () =
     let testDataDir = getTestDir "tx4"
     use tree = new LsmTree(testDataDir)
     tree.Put("k", "v1")
@@ -73,7 +73,7 @@ let ``Transaction_Snapshot_Isolation`` () =
     assertEqual (Some "v2") (tree.Get "k") "Final value should be v2"
 
 [<Fact>]
-let ``Transaction_Isolation_Across_Flush`` () =
+let ``Transaction isolation persists across flushes`` () =
     let testDataDir = getTestDir "tx_flush"
     use tree = new LsmTree(testDataDir, 1024)
     tree.Put("k1", "initial")
@@ -83,7 +83,7 @@ let ``Transaction_Isolation_Across_Flush`` () =
     assertEqual (Some "initial") (tx.Get "k1") "Transaction must see its snapshot even after background flush"
 
 [<Fact>]
-let ``Transaction_DoubleDispose`` () =
+let ``Transaction double dispose does not throw`` () =
     let testDataDir = getTestDir "tx_double_dispose"
     use tree = new LsmTree(testDataDir)
     let tx = tree.BeginTransaction()
@@ -93,7 +93,7 @@ let ``Transaction_DoubleDispose`` () =
     Assert.True(true, "Should not throw")
 
 [<Fact>]
-let ``Transaction_Already_Finished_Errors`` () =
+let ``Transaction operations on finished transaction throw`` () =
     let testDataDir = getTestDir "tx_errors"
     use tree = new LsmTree(testDataDir)
     use tx = tree.BeginTransaction()

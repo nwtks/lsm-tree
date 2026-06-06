@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
+let ``SSTable level parsing prefers L0 over L1`` () =
     let testDataDir = getTestDir "sst_levels"
     let l1Path = System.IO.Path.Combine(testDataDir, "L1_data.sst")
     let l0Path = System.IO.Path.Combine(testDataDir, "L0_data.sst")
@@ -23,7 +23,7 @@ let ``SSTable_Level_Parsing_and_Recovery_Ordering`` () =
     assertEqual (Some "v9") (tree.Get("k9", 300L)) "legacy.sst should be at level 0"
 
 [<Fact>]
-let ``SSTable_Double_Dispose`` () =
+let ``SSTable double dispose does not throw`` () =
     let testDataDir = getTestDir "sst_double_dispose"
     let sstPath = System.IO.Path.Combine(testDataDir, "double_dispose.sst")
     SSTableWriter.flush sstPath [] |> ignore
@@ -35,7 +35,7 @@ let ``SSTable_Double_Dispose`` () =
     Assert.True(true, "Should not throw")
 
 [<Fact>]
-let ``SSTable_Load_Short_File_Handling`` () =
+let ``SSTable handles short or invalid files gracefully`` () =
     let testDataDir = getTestDir "sst_short"
     let sstPath = System.IO.Path.Combine(testDataDir, "L0_short.sst")
     System.IO.File.WriteAllBytes(sstPath, [| 1uy; 2uy; 3uy |])
@@ -44,7 +44,7 @@ let ``SSTable_Load_Short_File_Handling`` () =
     assertEqual None (sst.Get("any", 0L)) "Should handle short/invalid SSTable file gracefully"
 
 [<Fact>]
-let ``SSTable_Invalid_Magic`` () =
+let ``SSTable invalid magic number throws InvalidDataException`` () =
     let testDataDir = getTestDir "sst_bad_magic"
     let sstPath = System.IO.Path.Combine(testDataDir, "bad.sst")
 

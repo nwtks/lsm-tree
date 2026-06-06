@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``BloomFilter_Empty_Behavior`` () =
+let ``BloomFilter empty behavior always returns true`` () =
     let bf = BloomFilter([||], 0)
     assertEqual true (bf.MightContain "any") "Empty BloomFilter true"
 
@@ -12,7 +12,7 @@ let ``BloomFilter_Empty_Behavior`` () =
     assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
 
 [<Fact>]
-let ``BloomFilter_FalsePositiveRate`` () =
+let ``BloomFilter false positive rate is below 2 percent`` () =
     let numEntries = 1000
     let bf = BloomFilter.create numEntries
 

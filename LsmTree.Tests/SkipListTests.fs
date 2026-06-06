@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``SkipList_Properties_Sorting_by_Keys`` () =
+let ``SkipList maintains sorted order by key`` () =
     let sl = SkipList()
     sl.Put("k3", 1L, "v3")
     sl.Put("k1", 2L, "v1")
@@ -17,7 +17,7 @@ let ``SkipList_Properties_Sorting_by_Keys`` () =
         "SkipList should maintain sorted order"
 
 [<Fact>]
-let ``SkipList_Concurrency_Stress`` () =
+let ``SkipList handles concurrent access without crashing`` () =
     let list = SkipList()
     let numThreads = 20
     let numOps = 2000

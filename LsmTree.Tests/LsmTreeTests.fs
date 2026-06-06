@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``Put_and_Get_from_MemTable`` () =
+let ``Put and get from MemTable works correctly`` () =
     let testDataDir = getTestDir "1"
     use tree = new LsmTree(testDataDir)
     tree.Put("k1", "v1")
@@ -14,7 +14,7 @@ let ``Put_and_Get_from_MemTable`` () =
     tree.Close()
 
 [<Fact>]
-let ``Overwrite_Key_Multiple_Times`` () =
+let ``Overwriting a key multiple times keeps the latest value`` () =
     let testDataDir = getTestDir "overwrite"
     use tree = new LsmTree(testDataDir)
     tree.Put("k", "v1")
@@ -28,7 +28,7 @@ let ``Overwrite_Key_Multiple_Times`` () =
     tree.Close()
 
 [<Fact>]
-let ``Delete_a_key_Tombstone`` () =
+let ``Delete marks a key with a tombstone so Get returns None`` () =
     let testDataDir = getTestDir "2"
     use tree = new LsmTree(testDataDir)
     tree.Put("k1", "v1")
@@ -38,7 +38,7 @@ let ``Delete_a_key_Tombstone`` () =
     tree.Close()
 
 [<Fact>]
-let ``Delete_NonExistent_Key`` () =
+let ``Deleting a non-existent key returns None`` () =
     let testDataDir = getTestDir "del_none"
     use tree = new LsmTree(testDataDir)
     tree.Delete "no_such_key"
@@ -47,7 +47,7 @@ let ``Delete_NonExistent_Key`` () =
     tree.Close()
 
 [<Fact>]
-let ``Flush_to_SSTable_and_Read`` () =
+let ``Flush to SSTable and read back`` () =
     let testDataDir = getTestDir "3"
     use tree = new LsmTree(testDataDir, 10)
     tree.Put("key1", "value1")
@@ -60,7 +60,7 @@ let ``Flush_to_SSTable_and_Read`` () =
     tree.Close()
 
 [<Fact>]
-let ``Multi_Level_Compaction_L0_L1`` () =
+let ``Multi-level compaction from L0 to L1`` () =
     let testDataDir = getTestDir "6"
     use tree = new LsmTree(testDataDir, 10)
 
@@ -77,7 +77,7 @@ let ``Multi_Level_Compaction_L0_L1`` () =
     Assert.True(l1Files.Length = 1, sprintf "Expected 1 compacted L1 file, but found %d" l1Files.Length)
 
 [<Fact>]
-let ``Snapshot_Pruning_Verification`` () =
+let ``Snapshot pruning removes old versions correctly`` () =
     let testDataDir = getTestDir "pruning"
     use tree = new LsmTree(testDataDir, 10)
     tree.Put("kp", "v1")
@@ -100,7 +100,7 @@ let ``Snapshot_Pruning_Verification`` () =
     assertEqual (Some "v3") (tree.Get "kp") "Current should be v3"
 
 [<Fact>]
-let ``Test_MergeSSTables_Coverage`` () =
+let ``Merge SSTables during compaction`` () =
     let testDataDir = getTestDir "merge_cov"
     let limits = [| 1; 1 |]
     use tree = new LsmTree(testDataDir, 1, compactLevelLimits = limits)
@@ -123,7 +123,7 @@ let ``Test_MergeSSTables_Coverage`` () =
     assertEqual None (tree.Get "kd") "kd is deleted"
 
 [<Fact>]
-let ``MVCC_Multi_Version_Concurrency_Control`` () =
+let ``MVCC provides multi-version concurrency control across snapshots`` () =
     let testDataDir = getTestDir "7"
     use tree = new LsmTree(testDataDir)
     tree.Put("mvcc_key", "version1")
@@ -146,7 +146,7 @@ let ``MVCC_Multi_Version_Concurrency_Control`` () =
     assertEqual (Some "version1") (tree.Get("mvcc_key", snap1)) "Post-flush: Snapshot 1 should read version 1"
 
 [<Fact>]
-let ``LsmTree_Startup_CreatesDirectory`` () =
+let ``LsmTree startup creates the data directory`` () =
     let testDataDir =
         System.IO.Path.Combine(System.Environment.CurrentDirectory, "test_data_new_dir")
 
@@ -162,7 +162,7 @@ let ``LsmTree_Startup_CreatesDirectory`` () =
             System.IO.Directory.Delete(testDataDir, true)
 
 [<Fact>]
-let ``LsmTree_Restart_LoadsData`` () =
+let ``LsmTree restart loads data from SSTable and WAL`` () =
     let testDataDir = getTestDir "restart_load"
 
     do
@@ -176,7 +176,7 @@ let ``LsmTree_Restart_LoadsData`` () =
     assertEqual (Some "v2") (tree2.Get "k2") "Should load from WAL"
 
 [<Fact>]
-let ``Get_from_ImmutableMemTable_Race`` () =
+let ``Concurrent flush and get on immutable MemTable does not crash`` () =
     let testDataDir = getTestDir "imm_race"
     use tree = new LsmTree(testDataDir, 1000)
     tree.Put("race_k", "race_v")

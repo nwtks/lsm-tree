@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``Auto_recovery_from_WAL`` () =
+let ``WAL recovery restores data after restart`` () =
     let testDataDir = getTestDir "4"
     use tree1 = new LsmTree(testDataDir)
     tree1.Put("wal_key1", "wal_val1")
@@ -16,7 +16,7 @@ let ``Auto_recovery_from_WAL`` () =
     assertEqual (Some "wal_val2") (tree2.Get "wal_key2") "wal_key2 should be recovered from WAL log"
 
 [<Fact>]
-let ``WAL_Atomic_Recovery`` () =
+let ``WAL atomic recovery skips uncommitted transactions`` () =
     let testDataDir = getTestDir "tx_wal_atomicity"
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
 
@@ -38,7 +38,7 @@ let ``WAL_Atomic_Recovery`` () =
     assertEqual (Some "v1") (tree2.Get "k1") "Should recover k1 after COMMIT marker is present"
 
 [<Fact>]
-let ``WAL_Recovery_Uncommitted_Transaction`` () =
+let ``WAL recovery ignores uncommitted transactions`` () =
     let testDataDir = getTestDir "tx_wal_uncommitted"
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
 
@@ -53,12 +53,12 @@ let ``WAL_Recovery_Uncommitted_Transaction`` () =
     assertEqual None (tree.Get "k_uncommitted") "Uncommitted transaction should NOT be recovered"
 
 [<Fact>]
-let ``WAL_Recover_NonExistent_File`` () =
+let ``WAL recovery handles non-existent file gracefully`` () =
     let ops = WALRecovery.recover "/tmp/non_existent_wal_path_xyz" |> Seq.toList
     assertEqual [] ops "Recovering non-existent file path"
 
 [<Fact>]
-let ``WAL_Recovery_Ignores_Unknown_Entries`` () =
+let ``WAL recovery ignores unknown entries`` () =
     let testDataDir = getTestDir "wal_edge"
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     let k = WALRecovery.utf8ToBase64 "k"
@@ -69,7 +69,7 @@ let ``WAL_Recovery_Ignores_Unknown_Entries`` () =
     assertEqual (Some "v") (tree.Get "k") "Should recover valid transaction even if unknown entry present"
 
 [<Fact>]
-let ``WAL_Recovery_Orphaned_Ops`` () =
+let ``WAL recovery handles orphaned PUT lines`` () =
     let testDataDir = getTestDir "wal_edge_orphan"
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     let k_orphan = WALRecovery.utf8ToBase64 "key_orphan"
@@ -80,7 +80,7 @@ let ``WAL_Recovery_Orphaned_Ops`` () =
     assertEqual (Some "val_orphan") (tree.Get "key_orphan") "Orphaned PUT without BEGIN should be recovered"
 
 [<Fact>]
-let ``WAL_Recovery_Orphaned_Commit`` () =
+let ``WAL recovery handles orphaned COMMIT lines`` () =
     let testDataDir = getTestDir "wal_edge_orphan_commit"
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     System.IO.File.WriteAllLines(walPath, [ "COMMIT 4" ])
@@ -89,7 +89,7 @@ let ``WAL_Recovery_Orphaned_Commit`` () =
     assertEqual None (tree.Get "non_existent") "Orphaned COMMIT with no matching BEGIN should not crash"
 
 [<Fact>]
-let ``WAL_Recovery_Ignores_Malformed_Lines`` () =
+let ``WAL recovery ignores malformed lines`` () =
     let testDataDir = getTestDir "wal_malformed"
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     // Empty lines, non-numeric seq, too-few fields, and unknown verbs should all be skipped
