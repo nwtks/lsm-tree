@@ -63,7 +63,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
     let flushMemTable () =
         match
-            LsmTreeFlush.swapMemTableAndWal mainLock memTable wal walPath dataDir (fun newMt newWal oldMt ->
+            LsmTreeFlush.swapMemTableAndWal mainLock dataDir memTable wal walPath (fun newMt newWal oldMt ->
                 memTable <- newMt
                 wal <- newWal
                 immutableMemTable <- Some oldMt)
@@ -75,7 +75,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
             if System.IO.File.Exists oldWalPath then
                 System.IO.File.Delete oldWalPath
 
-            LsmTreeFlush.triggerCompaction ssTables ssTablesLock isCompacting compactLevelLimits dataDir snapshotManager
+            LsmTreeFlush.triggerCompaction dataDir snapshotManager ssTablesLock ssTables compactLevelLimits isCompacting
         | None -> ()
 
     let commitTransaction (ops: (string * string option) list) =
@@ -127,7 +127,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
     member this.Get(key: string, ?snapshot: int64) =
         defaultArg snapshot (this.Snapshot())
-        |> LsmTreeSearch.findValue mainLock ssTablesLock memTable immutableMemTable ssTables key
+        |> LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key
 
     member _.Flush() = flushMemTable ()
 

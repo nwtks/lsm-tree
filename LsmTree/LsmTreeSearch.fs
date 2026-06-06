@@ -1,12 +1,12 @@
 namespace LsmTree
 
 module LsmTreeSearch =
-    let searchInTables ssTablesLock (ssTables: list<SSTable>[]) key snap level =
+    let searchInTables ssTablesLock (ssTables: SSTable list[]) key snap level =
         lock ssTablesLock (fun () -> ssTables.[level])
         |> List.tryPick (fun t -> t.Get(key, snap))
 
     [<TailCall>]
-    let rec searchLevel ssTablesLock (ssTables: list<SSTable>[]) key snap level =
+    let rec searchLevel ssTablesLock (ssTables: SSTable list[]) key snap level =
         if level >= ssTables.Length then
             None
         else
@@ -16,9 +16,9 @@ module LsmTreeSearch =
 
     let findValue
         (mainLock: System.Threading.ReaderWriterLockSlim)
-        ssTablesLock
         (memTable: MemTable)
         (immutableMemTable: MemTable option)
+        ssTablesLock
         ssTables
         key
         snap
