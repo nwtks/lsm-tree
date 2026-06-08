@@ -13,7 +13,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let ssTables =
         Array.init (compactLevelLimits.Length + 1) (fun _ -> list<SSTable>.Empty)
 
-    let isCompacting = ref false
+    let compaction = CompactionCoordinator()
     let ssTablesLock = obj ()
 
     let parseSstLevel (path: string) =
@@ -25,15 +25,25 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
             0
 
     let loadSSTables () =
+        let mutable maxSeq = 0L
+
         System.IO.Directory.GetFiles(dataDir, "*.sst")
         |> Array.iter (fun path ->
             let level = parseSstLevel path
 
             if level < ssTables.Length then
-                ssTables.[level] <- new SSTable(path) :: ssTables.[level])
+                let sst = new SSTable(path)
+                ssTables.[level] <- sst :: ssTables.[level]
+
+                for _, seq, _ in sst.GetAll() do
+                    if seq > maxSeq then
+                        maxSeq <- seq)
 
         for i = 0 to ssTables.Length - 1 do
             ssTables.[i] <- ssTables.[i] |> List.sortByDescending (fun t -> t.Path)
+
+        if maxSeq > 0L then
+            snapshotManager.AdvanceSequence maxSeq
 
     let loadWal () =
         let logs = System.IO.Directory.GetFiles(dataDir, "wal*.log")
@@ -51,15 +61,15 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                 memTable.Delete(k, seq)
                 snapshotManager.AdvanceSequence seq)
 
-    let startup dataDir =
+    do
         if not (System.IO.Directory.Exists dataDir) then
             System.IO.Directory.CreateDirectory dataDir |> ignore
 
+    let mutable wal = new WAL(walPath)
+
+    do
         loadSSTables ()
         loadWal ()
-
-    do startup dataDir
-    let mutable wal = new WAL(walPath)
 
     let flushMemTable () =
         match
@@ -75,14 +85,12 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
             if System.IO.File.Exists oldWalPath then
                 System.IO.File.Delete oldWalPath
 
-            LsmTreeFlush.triggerCompaction dataDir snapshotManager ssTablesLock ssTables compactLevelLimits isCompacting
+            LsmTreeFlush.triggerCompaction dataDir snapshotManager ssTablesLock ssTables compactLevelLimits compaction
         | None -> ()
 
     let commitTransaction (ops: (string * string option) list) =
         let shouldFlush =
-            mainLock.EnterReadLock()
-
-            try
+            LockExtensions.withReadLock mainLock (fun () ->
                 if not ops.IsEmpty then
                     let commitSeq = snapshotManager.NextSequence()
                     wal.Begin commitSeq
@@ -99,9 +107,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
                     wal.Commit(commitSeq, sync = syncOnCommit)
 
-                memTable.SizeBytes >= memTableLimit
-            finally
-                mainLock.ExitReadLock()
+                memTable.SizeBytes >= memTableLimit)
 
         if shouldFlush then
             flushMemTable ()
@@ -132,7 +138,14 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     member _.Flush() = flushMemTable ()
 
     member _.WaitForCompaction() =
-        LsmTreeFlush.waitForCompaction ssTablesLock isCompacting
+        LsmTreeFlush.waitForCompaction ssTablesLock compaction
+
+        lock ssTablesLock (fun () ->
+            match compaction.Error with
+            | Some ex ->
+                compaction.Error <- None
+                raise (System.AggregateException("Compaction failed", ex))
+            | None -> ())
 
     member _.SyncOnCommit = syncOnCommit
 
@@ -143,7 +156,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
     interface System.IDisposable with
         member _.Dispose() =
-            LsmTreeFlush.waitForCompaction ssTablesLock isCompacting
+            LsmTreeFlush.waitForCompaction ssTablesLock compaction
+
+            lock ssTablesLock (fun () ->
+                match compaction.Error with
+                | Some ex -> raise (System.AggregateException("Compaction failed", ex))
+                | None -> ())
+
             wal.Close()
             mainLock.Dispose()
 

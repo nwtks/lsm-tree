@@ -9,11 +9,11 @@ This project demonstrates the core architectural concepts behind modern top-tier
   Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted sequentially to a `.log` file before memory allocation, guaranteeing 100% recovery upon engine restart.
   * **Configurable `fsync`**: `SyncOnCommit` toggles whether `fsync` is called on every commit — balancing durability and throughput.
 * **MemTable (Lock-Free SkipList)**
-  In-memory mutations are buffered within a highly performant, custom-built mutable **SkipList**. This achieves stable $O(\log N)$ probabilistic insertions and lookups. 
+  In-memory mutations are buffered within a highly performant, custom-built mutable **SkipList**. This achieves stable $O(\log N)$ probabilistic insertions and lookups.
   * **Extreme Concurrency**: The SkipList natively employs **Lock-Free** `Interlocked.CompareExchange` CAS loops to securely splice nodes without blocking, seamlessly supporting massive multi-threaded `Put` operations simultaneously.
 * **SSTable (Sorted String Table)**
   When the MemTable exceeds its size limit, it flushes to immutable on-disk `SSTable` files featuring:
-  * **True Binary Search (Footer Indexing)**: Instead of loading entire datasets into RAM, SSTables only load a compressed array of `int64` offsets. The engine accurately jumps through the disk via raw binary search, minimizing RAM footprint.
+  * **True Binary Search (Footer Indexing)**: At startup, each SSTable loads its offset array (`int64[]`) and Bloom filter bytes into RAM. Lookups use binary search over the in-memory offsets and seek to exact disk positions, keeping per-SSTable memory proportional to entry count rather than data size.
   * **Bloom Filters**: Each SSTable calculates and embeds a probabilistic bitmask. This filter runs in memory at $O(1)$ time, instantly blocking useless disk reads when a key isn't stored in the segment.
 * **Background Multi-Level Compaction & Automatic Pruning**
   Dynamically tracks hierarchical limits and merges older tables.
@@ -22,25 +22,12 @@ This project demonstrates the core architectural concepts behind modern top-tier
   * **Tombstone Removal**: In the final storage level, old deletion markers (Tombstones) are completely eliminated.
 * **Immutable Data Structures & Functional Design**
   Employs native F# purely functional `Map`, `Set`, and `list` structures for deterministic, side-effect-free state transitions during WAL recovery and Snapshot management.
-* **Atomic ACID Transactions**
-  Supports multi-key atomic updates via a dedicated `ITransaction` API. 
+* **Atomic Transactions with Snapshot Isolation**
+  Supports multi-key atomic updates via a dedicated `ITransaction` API.
   * **Commit & Rollback**: Transactions can be committed atomically or rolled back to discard all pending changes.
   * **Read Own Writes**: `ITransaction.Get` reads pending (uncommitted) writes within the same transaction before falling back to the snapshot view.
   * **IDisposable Lifecycle**: Transactions implement `IDisposable`, ensuring active snapshots are automatically released and reclaimed by the compaction engine once a task is complete.
   * **Snapshot Isolation**: Every transaction operates on a stable snapshot of the database, ensuring consistent reads even during concurrent writes.
-
-## 🔧 Project Structure
-
-| File | Description |
-|------|-------------|
-| `LsmTree/LsmTree.fs` | Primary coordinator — snapshot tracking, background compaction, MemTable flush orchestration |
-| `LsmTree/SSTable.fs` | Binary SSTable format, offset indexing, disk-based binary search |
-| `LsmTree/BloomFilter.fs` | Probabilistic hashing and bitmask logic for read optimization |
-| `LsmTree/MemTable.fs` | Thin wrapper around the SkipList for in-memory buffering |
-| `LsmTree/SkipList.fs` | Lock-free concurrent SkipList with CAS-based insertion |
-| `LsmTree/WAL.fs` | Write-Ahead Log for crash recovery with atomic transaction support |
-| `LsmTree.Tests/Tests.fs` | XUnit test suite (37 tests across 9 categories) |
-| `benchmark/Program.fs` | BenchmarkDotNet suite for performance measurement |
 
 ## 🏗️ Architecture & Internals
 
@@ -51,10 +38,10 @@ This project demonstrates the core architectural concepts behind modern top-tier
 | `memTable` / `immutableMemTable` | `ReaderWriterLockSlim` (`mainLock`) |
 | `ssTables` array | `lock ssTablesLock` |
 | `activeSnapshots` set | `lock activeSnapshotsLock` |
-| `globalSeq` | `Interlocked.Increment` / `Interlocked.Read` |
+| `globalSeq` | `Interlocked.Increment` / `Interlocked.Read` / `Interlocked.CompareExchange` |
 | SkipList nodes | Lock-free CAS (`Interlocked.CompareExchange`) |
 
-**Never hold `mainLock` (write) while acquiring `ssTablesLock`** — this ordering must stay consistent to prevent deadlocks. `isCompacting` is a boolean guarded by `ssTablesLock`; at most one compaction runs at a time.
+**Lock ordering**: you may hold `ssTablesLock` while acquiring `mainLock` (write), but **never the reverse** — this prevents deadlocks. The `CompactionCoordinator` class uses auto-properties (`IsCompacting`, `Error`) guarded by `ssTablesLock`; at most one compaction `Task` runs at a time.
 
 ### WAL Format
 

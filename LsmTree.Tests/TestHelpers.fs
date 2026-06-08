@@ -15,4 +15,4 @@ module TestHelpers =
         dir
 
     let assertEqual expected actual msg =
-        Assert.True((expected = actual), sprintf "%s\n  Expected: %A\n  Actual: %A" msg expected actual)
+        Assert.True((expected = actual), $"{msg}\n  Expected: {expected}\n  Actual: {actual}")

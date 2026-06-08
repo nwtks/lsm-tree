@@ -25,7 +25,7 @@ let ``WAL atomic recovery skips uncommitted transactions`` () =
         sw.WriteLine "BEGIN 1"
         let k1 = WALRecovery.utf8ToBase64 "k1"
         let v1 = WALRecovery.utf8ToBase64 "v1"
-        sw.WriteLine(sprintf "PUT 1 %s %s" k1 v1)
+        sw.WriteLine $"PUT 1 {k1} {v1}"
 
     use tree = new LsmTree(testDataDir)
     assertEqual None (tree.Get "k1") "Should not recover k1 because transaction was not committed"
@@ -46,8 +46,8 @@ let ``WAL recovery ignores uncommitted transactions`` () =
         use writer = new System.IO.StreamWriter(walPath)
         let k = WALRecovery.utf8ToBase64 "k_uncommitted"
         let v = WALRecovery.utf8ToBase64 "v_uncommitted"
-        writer.WriteLine(sprintf "%s %d" WALRecovery.BEGIN 100L)
-        writer.WriteLine(sprintf "%s %d %s %s" WALRecovery.PUT 100L k v)
+        writer.WriteLine $"{WALRecovery.BEGIN} {100L}"
+        writer.WriteLine $"{WALRecovery.PUT} {100L} {k} {v}"
 
     use tree = new LsmTree(testDataDir)
     assertEqual None (tree.Get "k_uncommitted") "Uncommitted transaction should NOT be recovered"
@@ -63,7 +63,7 @@ let ``WAL recovery ignores unknown entries`` () =
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     let k = WALRecovery.utf8ToBase64 "k"
     let v = WALRecovery.utf8ToBase64 "v"
-    System.IO.File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; sprintf "PUT 2 %s %s" k v; "COMMIT 2" ])
+    System.IO.File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; $"PUT 2 {k} {v}"; "COMMIT 2" ])
 
     use tree = new LsmTree(testDataDir)
     assertEqual (Some "v") (tree.Get "k") "Should recover valid transaction even if unknown entry present"
@@ -74,7 +74,7 @@ let ``WAL recovery handles orphaned PUT lines`` () =
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
     let k_orphan = WALRecovery.utf8ToBase64 "key_orphan"
     let v_orphan = WALRecovery.utf8ToBase64 "val_orphan"
-    System.IO.File.WriteAllLines(walPath, [ sprintf "PUT 3 %s %s" k_orphan v_orphan ])
+    System.IO.File.WriteAllLines(walPath, [ $"PUT 3 {k_orphan} {v_orphan}" ])
 
     use tree = new LsmTree(testDataDir)
     assertEqual (Some "val_orphan") (tree.Get "key_orphan") "Orphaned PUT without BEGIN should be recovered"
@@ -92,7 +92,7 @@ let ``WAL recovery handles orphaned COMMIT lines`` () =
 let ``WAL recovery ignores malformed lines`` () =
     let testDataDir = getTestDir "wal_malformed"
     let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
-    // Empty lines, non-numeric seq, too-few fields, and unknown verbs should all be skipped
+
     let lines = [ ""; "invalid"; "PUT abc k v"; "UNKNOWN 1 k v" ]
     System.IO.File.WriteAllLines(walPath, lines)
 

@@ -53,23 +53,21 @@ module SkipList =
             searchPreds head key seq preds (lvl - 1) p
 
     let findCurrentLevel (currentLevel: int byref) lvl =
-        let mutable cont = true
-        let mutable result = currentLevel
+        let mutable currLvl = System.Threading.Volatile.Read(&currentLevel)
 
-        while cont do
-            let currLvl = System.Threading.Volatile.Read(&currentLevel)
-
-            if lvl > currLvl then
+        while lvl > currLvl do
+            let actual =
                 System.Threading.Interlocked.CompareExchange(&currentLevel, lvl, currLvl)
-                |> ignore
-            else
-                result <- currLvl
-                cont <- false
 
-        result
+            if actual = currLvl then
+                currLvl <- lvl
+            else
+                currLvl <- actual
+
+        currLvl
 
     [<TailCall>]
-    let rec insertAtLevel head key seq currLvl (newNode: SkipListNode) (pred: SkipListNode) lvl =
+    let rec insertAtLevel head key seq (newNode: SkipListNode) (pred: SkipListNode) lvl =
         let current = pred.Next.[lvl]
         newNode.Next.[lvl] <- current
 
@@ -78,13 +76,13 @@ module SkipList =
 
         if not (obj.ReferenceEquals(actual, current)) then
             let nextPred = search head key seq lvl lvl pred
-            insertAtLevel head key seq currLvl newNode nextPred lvl
+            insertAtLevel head key seq newNode nextPred lvl
 
     [<TailCall>]
-    let rec insertAtLevels head key seq currLvl (newNode: SkipListNode) (preds: SkipListNode[]) maxLvl lvl =
+    let rec insertAtLevels head key seq (newNode: SkipListNode) (preds: SkipListNode[]) maxLvl lvl =
         if lvl < maxLvl then
-            insertAtLevel head key seq currLvl newNode preds.[lvl] lvl
-            insertAtLevels head key seq currLvl newNode preds maxLvl (lvl + 1)
+            insertAtLevel head key seq newNode preds.[lvl] lvl
+            insertAtLevels head key seq newNode preds maxLvl (lvl + 1)
 
     [<TailCall>]
     let rec collectEntries (current: SkipListNode) acc =
@@ -115,7 +113,7 @@ type SkipList() =
             SkipList.searchPreds head key seq (Array.create SkipList.MAX_LEVEL head) (currLvl - 1) head
 
         let newNode = SkipListNode(key, seq, value, lvl)
-        SkipList.insertAtLevels head key seq currLvl newNode preds lvl 0
+        SkipList.insertAtLevels head key seq newNode preds lvl 0
 
     member _.Entries() =
         SkipList.collectEntries head.Next.[0] []

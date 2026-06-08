@@ -65,16 +65,16 @@ let ``Multi-level compaction from L0 to L1`` () =
     use tree = new LsmTree(testDataDir, 10)
 
     for i = 1 to 5 do
-        tree.Put(sprintf "c_k%d" i, sprintf "c_v%d" i)
+        tree.Put($"c_k{i}", $"c_v{i}")
         tree.Flush()
 
     tree.WaitForCompaction()
 
     for i = 1 to 5 do
-        assertEqual (Some(sprintf "c_v%d" i)) (tree.Get(sprintf "c_k%d" i)) "Compacted keys must be readable"
+        assertEqual (Some $"c_v{i}") (tree.Get $"c_k{i}") "Compacted keys must be readable"
 
     let l1Files = System.IO.Directory.GetFiles(testDataDir, "L1_*.sst")
-    Assert.True(l1Files.Length = 1, sprintf "Expected 1 compacted L1 file, but found %d" l1Files.Length)
+    Assert.True(l1Files.Length = 1, $"Expected 1 compacted L1 file, but found {l1Files.Length}")
 
 [<Fact>]
 let ``Snapshot pruning removes old versions correctly`` () =
@@ -115,7 +115,7 @@ let ``Merge SSTables during compaction`` () =
     tree.Flush()
 
     for i = 1 to 10 do
-        tree.Put(sprintf "other_%d" i, "data")
+        tree.Put($"other_{i}", "data")
         tree.Flush()
 
     tree.WaitForCompaction()
@@ -195,3 +195,182 @@ let ``Concurrent flush and get on immutable MemTable does not crash`` () =
 
     System.Threading.Tasks.Task.WaitAll tasks
     Assert.True(true, "Should not crash during concurrent flush/get")
+
+[<Fact>]
+let ``Flush works correctly while compaction is running in background`` () =
+    let testDataDir = getTestDir "flush_during_compact"
+    use tree = new LsmTree(testDataDir, 50)
+    tree.Put("k1", "v1")
+    tree.Flush()
+    tree.Put("k2", "v2")
+    tree.Flush()
+
+    for batch = 1 to 4 do
+        for i = 1 to 5 do
+            tree.Put($"ck_{batch}_{i}", $"cv_{batch}_{i}")
+
+        tree.Flush()
+
+    tree.WaitForCompaction()
+
+    assertEqual (Some "v1") (tree.Get "k1") "k1 should survive concurrent flush + compaction"
+    assertEqual (Some "v2") (tree.Get "k2") "k2 should survive concurrent flush + compaction"
+    assertEqual (Some "cv_2_3") (tree.Get "ck_2_3") "Concurrent flush data should survive"
+    assertEqual None (tree.Get "nonexistent") "Non-existent key should return None"
+
+[<Fact>]
+let ``Compaction cascades through multiple levels when limits exceeded`` () =
+    let testDataDir = getTestDir "cascade_levels"
+    let limits = [| 1; 2; 3 |]
+    use tree = new LsmTree(testDataDir, 1024 * 1024, compactLevelLimits = limits)
+
+    let totalRounds = 6
+
+    for round = 0 to totalRounds - 1 do
+        for i = 0 to 3 do
+            tree.Put($"k{round}_{i}", $"v{round}_{i}")
+            tree.Flush()
+
+        tree.WaitForCompaction()
+
+    for round = 0 to totalRounds - 1 do
+        for i = 0 to 3 do
+            assertEqual (Some $"v{round}_{i}") (tree.Get $"k{round}_{i}") $"k{round}_{i} should survive cascade"
+
+[<Fact>]
+let ``Compaction handles last-level tombstone pruning gracefully`` () =
+    let testDataDir = getTestDir "compact_prune_last"
+    let limits = [| 1; 1 |]
+    use tree = new LsmTree(testDataDir, 50, compactLevelLimits = limits)
+
+    for i = 1 to 4 do
+        tree.Put($"k{i}", $"v{i}")
+        tree.Delete $"k{i}"
+        tree.Flush()
+        tree.WaitForCompaction()
+
+    for i = 1 to 4 do
+        assertEqual None (tree.Get $"k{i}") $"k{i} should be gone (tombstone pruned)"
+
+    tree.Put("fresh", "data")
+    assertEqual (Some "data") (tree.Get "fresh") "Engine should work after tombstone pruning"
+
+[<Fact>]
+let ``syncOnCommit=false works for basic operations`` () =
+    let testDataDir = getTestDir "nosync_crud"
+    use tree = new LsmTree(testDataDir, syncOnCommit = false)
+    Assert.False(tree.SyncOnCommit, "SyncOnCommit property should be false")
+
+    tree.Put("k1", "v1")
+    tree.Put("k2", "v2")
+    assertEqual (Some "v1") (tree.Get "k1") "Should read k1 with syncOnCommit=false"
+    assertEqual (Some "v2") (tree.Get "k2") "Should read k2 with syncOnCommit=false"
+
+    tree.Delete "k1"
+    assertEqual None (tree.Get "k1") "k1 should be deleted with syncOnCommit=false"
+    assertEqual (Some "v2") (tree.Get "k2") "k2 should remain after delete"
+
+[<Fact>]
+let ``syncOnCommit=false data survives clean close and reopen`` () =
+    let testDataDir = getTestDir "nosync_restart"
+
+    do
+        use tree = new LsmTree(testDataDir, syncOnCommit = false)
+        tree.Put("persist_k1", "persist_v1")
+        tree.Put("persist_k2", "persist_v2")
+
+    use tree2 = new LsmTree(testDataDir)
+    assertEqual (Some "persist_v1") (tree2.Get "persist_k1") "k1 should survive clean restart with syncOnCommit=false"
+    assertEqual (Some "persist_v2") (tree2.Get "persist_k2") "k2 should survive clean restart with syncOnCommit=false"
+
+[<Fact>]
+let ``syncOnCommit=false works with transactions`` () =
+    let testDataDir = getTestDir "nosync_tx"
+
+    do
+        use tree = new LsmTree(testDataDir, syncOnCommit = false)
+        use tx = tree.BeginTransaction()
+        tx.Put("tx_k", "tx_v")
+        tx.Commit()
+
+        assertEqual (Some "tx_v") (tree.Get "tx_k") "Should read committed transaction data with syncOnCommit=false"
+
+    use tree2 = new LsmTree(testDataDir)
+    assertEqual (Some "tx_v") (tree2.Get "tx_k") "Transaction data should survive restart with syncOnCommit=false"
+
+[<Fact>]
+let ``syncOnCommit=false with flush and compaction`` () =
+    let testDataDir = getTestDir "nosync_compact"
+    let limits = [| 1 |]
+
+    do
+        use tree = new LsmTree(testDataDir, 500, false, limits)
+        Assert.False(tree.SyncOnCommit, "SyncOnCommit property should be false")
+
+        for i = 1 to 5 do
+            tree.Put($"c_k{i}", $"c_v{i}")
+
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        for i = 1 to 5 do
+            assertEqual
+                (Some $"c_v{i}")
+                (tree.Get $"c_k{i}")
+                $"k{i} should be readable after compact with syncOnCommit=false"
+
+    let sstFiles = System.IO.Directory.GetFiles(testDataDir, "*.sst")
+    Assert.True(sstFiles.Length >= 1, $"Expected ≥1 SSTable, got {sstFiles.Length}")
+
+    use tree2 = new LsmTree(testDataDir)
+
+    for i = 1 to 5 do
+        assertEqual
+            (Some $"c_v{i}")
+            (tree2.Get $"c_k{i}")
+            $"k{i} should survive restart after compact with syncOnCommit=false"
+
+[<Fact>]
+let ``Compaction error propagrates through WaitForCompaction`` () =
+    let testDataDir = getTestDir "compact_error_prop"
+
+    do
+        use tree = new LsmTree(testDataDir, 500, compactLevelLimits = [| 100; 100; 100 |])
+
+        for i = 1 to 10 do
+            tree.Put($"k{i}", $"v{i}")
+            tree.Flush()
+
+    do
+        use tree = new LsmTree(testDataDir, 500, compactLevelLimits = [| 0; 0; 1 |])
+
+        let ssTablesField =
+            typeof<LsmTree>
+                .GetField(
+                    "ssTables",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let ssTables = ssTablesField.GetValue tree :?> SSTable list[]
+
+        let fsField =
+            typeof<SSTable>
+                .GetField(
+                    "fs",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        for sst in ssTables.[0] do
+            let fs = fsField.GetValue sst :?> System.IO.FileStream
+            fs.Close()
+
+        tree.Put("trigger", "compact")
+        tree.Flush()
+
+        let ex =
+            Assert.Throws<System.AggregateException>(fun () -> tree.WaitForCompaction())
+
+        Assert.Contains("Compaction failed", ex.Message)
+        Assert.NotNull ex.InnerException

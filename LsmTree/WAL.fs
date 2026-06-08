@@ -63,7 +63,7 @@ module WALRecovery =
         if not (System.IO.File.Exists path) then
             Seq.empty
         else
-            System.IO.File.ReadLines path
+            System.IO.File.ReadAllLines path
             |> Seq.choose parseEntry
             |> Seq.fold collectEntries (Map.empty, [])
             |> snd
@@ -82,21 +82,21 @@ type WAL(path: string) =
     member _.Put(seq: int64, key: string, value: string) =
         let k = WALRecovery.utf8ToBase64 key
         let v = WALRecovery.utf8ToBase64 value
-        let log = sprintf "%s %d %s %s" WALRecovery.PUT seq k v
+        let log = $"{WALRecovery.PUT} {seq} {k} {v}"
         lock walLock (fun () -> writer.WriteLine log)
 
     member _.Delete(seq: int64, key: string) =
         let k = WALRecovery.utf8ToBase64 key
-        let log = sprintf "%s %d %s" WALRecovery.DEL seq k
+        let log = $"{WALRecovery.DEL} {seq} {k}"
         lock walLock (fun () -> writer.WriteLine log)
 
     member _.Begin(seq: int64) =
-        let log = sprintf "%s %d" WALRecovery.BEGIN seq
+        let log = $"{WALRecovery.BEGIN} {seq}"
         lock walLock (fun () -> writer.WriteLine log)
 
     member _.Commit(seq: int64, ?sync: bool) =
         let sync = defaultArg sync true
-        let log = sprintf "%s %d" WALRecovery.COMMIT seq
+        let log = $"{WALRecovery.COMMIT} {seq}"
 
         lock walLock (fun () ->
             writer.WriteLine log

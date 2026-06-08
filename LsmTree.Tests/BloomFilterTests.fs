@@ -17,16 +17,16 @@ let ``BloomFilter false positive rate is below 2 percent`` () =
     let bf = BloomFilter.create numEntries
 
     for i = 1 to numEntries do
-        bf.Add(sprintf "key_%d" i)
+        bf.Add $"key_{i}"
 
     let numTests = 10000
     let mutable falsePositives = 0
 
     for i = 1 to numTests do
-        let key = sprintf "miss_%d" i
+        let key = $"miss_{i}"
 
         if bf.MightContain key then
             falsePositives <- falsePositives + 1
 
     let fpr = float falsePositives / float numTests
-    Assert.True(fpr < 0.02, sprintf "False positive rate too high: %f" fpr)
+    Assert.True(fpr < 0.02, $"False positive rate too high: {fpr}")

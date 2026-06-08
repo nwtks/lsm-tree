@@ -41,17 +41,19 @@ type PutBenchmark() =
     [<Benchmark(Baseline = true)>]
     member this.SequentialPut() =
         for i = 1 to this.N do
-            db.Put(sprintf "k%d" i, "v")
+            db.Put($"k{i}", "v")
 
     [<Benchmark>]
     member this.ConcurrentPut() =
-        Parallel.For(1, this.N + 1, fun i -> db.Put(sprintf "ck%d" i, "v")) |> ignore
+        Parallel.For(1, this.N + 1, fun i -> db.Put($"ck{i}", "v")) |> ignore
 
     [<Benchmark>]
     member this.TransactionPut() =
         use tx = db.BeginTransaction()
+
         for i = 1 to this.N do
-            tx.Put(sprintf "tk%d" i, "v")
+            tx.Put($"tk{i}", "v")
+
         tx.Commit()
 
 [<MemoryDiagnoser>]
@@ -75,7 +77,7 @@ type GetBenchmark() =
         use tx = db.BeginTransaction()
 
         for i = 1 to this.N do
-            tx.Put(sprintf "k%d" i, "v")
+            tx.Put($"k{i}", "v")
 
         tx.Commit()
 
@@ -91,12 +93,12 @@ type GetBenchmark() =
 
     [<Benchmark>]
     member this.RandomHitGet() =
-        let target = sprintf "k%d" (rand.Next(1, this.N))
+        let target = $"k{rand.Next(1, this.N)}"
         db.Get target |> ignore
 
     [<Benchmark>]
     member this.RandomMissGet() =
-        let target = sprintf "miss_%d" (rand.Next(1, this.N))
+        let target = $"miss_{rand.Next(1, this.N)}"
         db.Get target |> ignore
 
 [<EntryPoint>]

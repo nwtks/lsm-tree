@@ -24,15 +24,11 @@ module LsmTreeSearch =
         snap
         =
         let memRes, immRes =
-            mainLock.EnterReadLock()
-
-            try
+            LockExtensions.withReadLock mainLock (fun () ->
                 memTable.Get(key, snap),
                 match immutableMemTable with
                 | Some m -> m.Get(key, snap)
-                | None -> None
-            finally
-                mainLock.ExitReadLock()
+                | None -> None)
 
         match memRes with
         | Some(Some v) -> Some v

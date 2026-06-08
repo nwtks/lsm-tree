@@ -1,5 +1,9 @@
 namespace LsmTree
 
+type CompactionCoordinator() =
+    member val IsCompacting = false with get, set
+    member val Error: exn option = None with get, set
+
 module LsmTreeFlush =
     let timestamp () =
         System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
@@ -7,7 +11,7 @@ module LsmTreeFlush =
     let newGuid () = System.Guid.NewGuid().ToString "N"
 
     let ssTablePath dataDir level =
-        System.IO.Path.Combine(dataDir, sprintf "L%d_%d_%s.sst" level (timestamp ()) (newGuid ()))
+        System.IO.Path.Combine(dataDir, $"L{level}_{timestamp ()}_{newGuid ()}.sst")
 
     let swapMemTableAndWal
         (mainLock: System.Threading.ReaderWriterLockSlim)
@@ -17,25 +21,19 @@ module LsmTreeFlush =
         walPath
         (swapState: MemTable -> WAL -> MemTable -> unit)
         =
-        mainLock.EnterWriteLock()
-
-        try
+        LockExtensions.withWriteLock mainLock (fun () ->
             if memTable.SizeBytes > 0 then
                 let oldMemTable = memTable
                 wal.Close()
-
-                let oldWalPath = System.IO.Path.Combine(dataDir, sprintf "wal_%s.old" (newGuid ()))
-
+                let oldWalPath = System.IO.Path.Combine(dataDir, $"wal_{newGuid ()}.old")
                 System.IO.File.Move(walPath, oldWalPath)
                 swapState (MemTable()) (new WAL(walPath)) oldMemTable
                 Some(oldMemTable, oldWalPath)
             else
-                None
-        finally
-            mainLock.ExitWriteLock()
+                None)
 
     let flushToSSTable dataDir (oldMemTable: MemTable) =
-        SSTableWriter.flush (ssTablePath dataDir 0) oldMemTable.Entries
+        SSTableWriter.write (ssTablePath dataDir 0) oldMemTable.Entries
 
     let addSSTable
         (mainLock: System.Threading.ReaderWriterLockSlim)
@@ -45,46 +43,84 @@ module LsmTreeFlush =
         sst
         =
         lock ssTablesLock (fun () -> ssTables.[0] <- sst :: ssTables.[0])
-        mainLock.EnterWriteLock()
+        LockExtensions.withWriteLock mainLock clearState
 
-        try
-            clearState ()
-        finally
-            mainLock.ExitWriteLock()
+    let findMinKey (current: (string * int64 * string option) option[]) =
+        (None, current)
+        ||> Array.fold (fun acc entry ->
+            match entry with
+            | Some(k, _, _) ->
+                match acc with
+                | Some mk -> Some(if System.String.CompareOrdinal(k, mk) < 0 then k else mk)
+                | None -> Some k
+            | None -> acc)
 
-    let collectKeyVersions isLastLevel minSnap (key, versions: seq<string * int64 * string option>) =
-        let sorted =
-            versions
-            |> Seq.map (fun (_, seq, value) -> seq, value)
-            |> Seq.sortByDescending fst
-            |> Seq.toList
+    let collectVersions
+        (enumerators: System.Collections.Generic.IEnumerator<_>[])
+        (current: (string * int64 * string option) option[])
+        key
+        =
+        let versions = ResizeArray()
 
+        for i in 0 .. enumerators.Length - 1 do
+            while current.[i] |> Option.exists (fun (k, _, _) -> k = key) do
+                let _, seq, value = current.[i].Value
+                versions.Add(seq, value)
+
+                if enumerators.[i].MoveNext() then
+                    current.[i] <- Some enumerators.[i].Current
+                else
+                    current.[i] <- None
+
+        versions
+
+    let pruneVersions (versions: ResizeArray<int64 * string option>) isLastLevel minSnap =
+        let sorted = versions |> Seq.sortByDescending fst |> Seq.toList
         let newer = sorted |> List.filter (fun (s, _) -> s >= minSnap)
         let older = sorted |> List.filter (fun (s, _) -> s < minSnap) |> List.tryHead
 
-        let kept =
-            match older with
-            | Some o -> List.append newer [ o ]
-            | None -> newer
+        let olderPruned =
+            if isLastLevel then
+                older |> Option.filter (fun (_, v) -> v.IsSome)
+            else
+                older
 
-        if isLastLevel then
-            kept |> List.filter (fun (_, v) -> v.IsSome)
-        else
-            kept
-        |> Seq.map (fun (s, v) -> key, s, v)
+        match olderPruned with
+        | Some o -> List.append newer [ o ]
+        | None -> newer
+
+    let mergeSortedEntries (tables: SSTable list) isLastLevel minSnap =
+        seq {
+            let enumerators =
+                tables |> List.map (fun t -> t.GetAll().GetEnumerator()) |> List.toArray
+
+            let current = Array.init enumerators.Length (fun _ -> None)
+
+            for i in 0 .. enumerators.Length - 1 do
+                if enumerators.[i].MoveNext() then
+                    current.[i] <- Some enumerators.[i].Current
+
+            let mutable running = true
+
+            while running do
+                match findMinKey current with
+                | Some key ->
+                    let versions = collectVersions enumerators current key
+
+                    for s, v in pruneVersions versions isLastLevel minSnap do
+                        yield key, s, v
+                | None -> running <- false
+
+            for e in enumerators do
+                e.Dispose()
+        }
 
     let mergeSSTables dataDir (tablesToCompact: SSTable list) (compactLevelLimits: int[]) level minSnap =
-        tablesToCompact
-        |> List.rev
-        |> Seq.collect (fun t -> t.GetAll())
-        |> Seq.groupBy (fun (key, _, _) -> key)
-        |> Seq.collect (collectKeyVersions (compactLevelLimits.Length = level + 1) minSnap)
-        |> Seq.sortWith (fun (k1, s1, _) (k2, s2, _) ->
-            let c = System.String.CompareOrdinal(k1, k2)
+        let estimatedEntries = tablesToCompact |> List.sumBy (fun t -> t.Count)
+        let isLastLevel = compactLevelLimits.Length = level + 1
 
-            if c <> 0 then c else s2.CompareTo s1)
-        |> Seq.toList
-        |> SSTableWriter.flush (ssTablePath dataDir (level + 1))
+        mergeSortedEntries (List.rev tablesToCompact) isLastLevel minSnap
+        |> SSTableWriter.writeStream (ssTablePath dataDir (level + 1)) estimatedEntries
 
     let performMerge
         dataDir
@@ -116,7 +152,7 @@ module LsmTreeFlush =
                 if System.IO.File.Exists t.Path then
                     System.IO.File.Delete t.Path
             with e ->
-                printfn "Compaction: Failed to cleanup old SSTable %s: %s" t.Path e.Message)
+                eprintfn "Compaction: Failed to cleanup old SSTable %s: %s" t.Path e.Message)
 
     [<TailCall>]
     let rec compact dataDir snapshotManager ssTablesLock (ssTables: SSTable list[]) (compactLevelLimits: int[]) level =
@@ -134,11 +170,18 @@ module LsmTreeFlush =
             performMerge dataDir snapshotManager ssTablesLock ssTables tablesToCompact compactLevelLimits level
             compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits (level + 1)
 
-    let triggerCompaction dataDir snapshotManager ssTablesLock ssTables compactLevelLimits (isCompacting: bool ref) =
+    let triggerCompaction
+        dataDir
+        snapshotManager
+        ssTablesLock
+        ssTables
+        compactLevelLimits
+        (compaction: CompactionCoordinator)
+        =
         let shouldStart =
             lock ssTablesLock (fun () ->
-                if not isCompacting.Value then
-                    isCompacting.Value <- true
+                if not compaction.IsCompacting then
+                    compaction.IsCompacting <- true
                     true
                 else
                     false)
@@ -146,15 +189,18 @@ module LsmTreeFlush =
         if shouldStart then
             System.Threading.Tasks.Task.Run(fun () ->
                 try
-                    compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits 0
+                    try
+                        compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits 0
+                    with ex ->
+                        lock ssTablesLock (fun () -> compaction.Error <- Some ex)
                 finally
-                    lock ssTablesLock (fun () -> isCompacting.Value <- false))
+                    lock ssTablesLock (fun () -> compaction.IsCompacting <- false))
             |> ignore
 
     [<TailCall>]
-    let rec waitForCompaction ssTablesLock (isCompacting: bool ref) =
-        let active = lock ssTablesLock (fun () -> isCompacting.Value)
+    let rec waitForCompaction ssTablesLock (compaction: CompactionCoordinator) =
+        let active = lock ssTablesLock (fun () -> compaction.IsCompacting)
 
         if active then
             System.Threading.Thread.Sleep 50
-            waitForCompaction ssTablesLock isCompacting
+            waitForCompaction ssTablesLock compaction

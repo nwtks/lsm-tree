@@ -80,6 +80,8 @@ type SSTable(path: string) =
 
     member _.Path = path
 
+    member _.Count = offsets.Length
+
     member _.GetAll() =
         seq {
             for offset in offsets do
@@ -120,39 +122,44 @@ module SSTableWriter =
         bw.Write offsets.Length
         offsets |> List.iter bw.Write
 
-    let write outPath (memTableEntries: (string * int64 * string option) list) =
-        use fs =
-            new System.IO.FileStream(
-                outPath,
-                System.IO.FileMode.Create,
-                System.IO.FileAccess.Write,
-                System.IO.FileShare.None
-            )
+    let writeCore outPath (entries: seq<string * int64 * string option>) (bf: BloomFilter) =
+        let offsets = ResizeArray<int64>()
 
-        use bw = new System.IO.BinaryWriter(fs)
-        let bf = BloomFilter.create memTableEntries.Length
+        do
+            use fs =
+                new System.IO.FileStream(
+                    outPath,
+                    System.IO.FileMode.Create,
+                    System.IO.FileAccess.Write,
+                    System.IO.FileShare.None
+                )
 
-        let offsets =
-            memTableEntries
-            |> List.map (fun (key, seq, value) ->
+            use bw = new System.IO.BinaryWriter(fs)
+
+            for key, seq, value in entries do
                 bf.Add key
-                let offset = fs.Position
+                offsets.Add fs.Position
                 bw.Write seq
                 writeValue bw key
                 writeItem bw value
-                offset)
 
-        let indexOffset = fs.Position
-        writeOffsets bw offsets
+            let indexOffset = fs.Position
+            writeOffsets bw (offsets |> Seq.toList)
 
-        let bloomOffset = fs.Position
-        writeBytes bw bf.Bytes
+            let bloomOffset = fs.Position
+            writeBytes bw bf.Bytes
 
-        bw.Write indexOffset
-        bw.Write bloomOffset
-        bw.Write SSTable.MAGIC
-        fs.Flush true
+            bw.Write indexOffset
+            bw.Write bloomOffset
+            bw.Write SSTable.MAGIC
+            fs.Flush true
 
-    let flush outPath memTableEntries =
-        write outPath memTableEntries
         new SSTable(outPath)
+
+    let write outPath (memTableEntries: (string * int64 * string option) list) =
+        let bf = BloomFilter.create memTableEntries.Length
+        writeCore outPath memTableEntries bf
+
+    let writeStream outPath estimatedEntries entries =
+        let bf = BloomFilter.create (max 64 estimatedEntries)
+        writeCore outPath entries bf

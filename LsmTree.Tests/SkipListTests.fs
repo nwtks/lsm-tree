@@ -27,10 +27,10 @@ let ``SkipList handles concurrent access without crashing`` () =
                yield
                    System.Threading.Tasks.Task.Run(fun () ->
                        for j = 1 to numOps do
-                           list.Put(sprintf "key%d" (j % 50), int64 (i * numOps + j), sprintf "val%d" j)
+                           list.Put($"key{j % 50}", int64 (i * numOps + j), $"val{j}")
 
                            if j % 10 = 0 then
-                               list.Find(sprintf "key%d" (j % 50), System.Int64.MaxValue) |> ignore) |]
+                               list.Find($"key{j % 50}", System.Int64.MaxValue) |> ignore) |]
 
     System.Threading.Tasks.Task.WaitAll tasks
     let entries = list.Entries()

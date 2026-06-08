@@ -4,9 +4,11 @@ type BloomFilter(bits: byte[], numHashFunctions: int) =
     let bitSize = bits.Length * 8
 
     let hash (key: string) =
-        let h =
-            key
-            |> Seq.fold (fun acc c -> (acc ^^^ uint64 c) * 1099511628211uL) 14695981039346656037uL
+        let bytes = System.Text.Encoding.UTF8.GetBytes key
+        let mutable h = 14695981039346656037uL
+
+        for i = 0 to bytes.Length - 1 do
+            h <- (h ^^^ uint64 bytes.[i]) * 1099511628211uL
 
         uint32 (h >>> 32), uint32 (h &&& 0xFFFFFFFFuL)
 
