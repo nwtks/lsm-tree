@@ -15,9 +15,12 @@ module SkipList =
     [<Literal>]
     let P = 0.5
 
+    let randomLocal =
+        new System.Threading.ThreadLocal<System.Random>(fun () -> System.Random())
+
     [<TailCall>]
     let rec randomLevel lvl =
-        if System.Random.Shared.NextDouble() < P && lvl < MAX_LEVEL then
+        if randomLocal.Value.NextDouble() < P && lvl < MAX_LEVEL then
             randomLevel (lvl + 1)
         else
             lvl
@@ -29,7 +32,7 @@ module SkipList =
 
     [<TailCall>]
     let rec findPredAtLevel key seq lvl (pred: SkipListNode) =
-        let nxt = pred.Next.[lvl]
+        let nxt = System.Threading.Volatile.Read(&pred.Next.[lvl])
 
         if next nxt key seq then
             findPredAtLevel key seq lvl nxt
@@ -89,7 +92,8 @@ module SkipList =
         if isNull current then
             acc |> List.rev
         else
-            collectEntries current.Next.[0] ((current.Key, current.Seq, current.Value) :: acc)
+            let next = System.Threading.Volatile.Read(&current.Next.[0])
+            collectEntries next ((current.Key, current.Seq, current.Value) :: acc)
 
 type SkipList() =
     let head = SkipListNode("", System.Int64.MaxValue, None, SkipList.MAX_LEVEL)
@@ -98,7 +102,7 @@ type SkipList() =
     member _.Find(key: string, snapshot: int64) =
         let currLvl = System.Threading.Volatile.Read(&currentLevel)
         let pred = SkipList.search head key snapshot 0 (currLvl - 1) head
-        let current = pred.Next.[0]
+        let current = System.Threading.Volatile.Read(&pred.Next.[0])
 
         if not (isNull current) && current.Key = key && current.Seq <= snapshot then
             Some current.Value

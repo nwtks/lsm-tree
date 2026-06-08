@@ -55,26 +55,18 @@ module LsmTreeFlush =
                 | None -> Some k
             | None -> acc)
 
-    let collectVersions
-        (enumerators: System.Collections.Generic.IEnumerator<_>[])
-        (current: (string * int64 * string option) option[])
-        key
-        =
+    let collectVersions advance (current: (string * int64 * string option) option[]) key =
         let versions = ResizeArray()
 
-        for i in 0 .. enumerators.Length - 1 do
+        for i in 0 .. current.Length - 1 do
             while current.[i] |> Option.exists (fun (k, _, _) -> k = key) do
                 let _, seq, value = current.[i].Value
                 versions.Add(seq, value)
-
-                if enumerators.[i].MoveNext() then
-                    current.[i] <- Some enumerators.[i].Current
-                else
-                    current.[i] <- None
+                advance i
 
         versions
 
-    let pruneVersions (versions: ResizeArray<int64 * string option>) isLastLevel minSnap =
+    let pruneVersions isLastLevel minSnap (versions: ResizeArray<int64 * string option>) =
         let sorted = versions |> Seq.sortByDescending fst |> Seq.toList
         let newer = sorted |> List.filter (fun (s, _) -> s >= minSnap)
         let older = sorted |> List.filter (fun (s, _) -> s < minSnap) |> List.tryHead
@@ -91,28 +83,31 @@ module LsmTreeFlush =
 
     let mergeSortedEntries (tables: SSTable list) isLastLevel minSnap =
         seq {
-            let enumerators =
-                tables |> List.map (fun t -> t.GetAll().GetEnumerator()) |> List.toArray
+            let tableData =
+                tables |> List.map (fun t -> t.GetAll() |> Seq.toArray) |> List.toArray
 
-            let current = Array.init enumerators.Length (fun _ -> None)
+            let pos = Array.zeroCreate tableData.Length
 
-            for i in 0 .. enumerators.Length - 1 do
-                if enumerators.[i].MoveNext() then
-                    current.[i] <- Some enumerators.[i].Current
+            let entryAt i =
+                if pos.[i] < tableData.[i].Length then
+                    Some tableData.[i].[pos.[i]]
+                else
+                    None
+
+            let current = Array.init tableData.Length entryAt
+
+            let advance i =
+                pos.[i] <- pos.[i] + 1
+                current.[i] <- entryAt i
 
             let mutable running = true
 
             while running do
                 match findMinKey current with
                 | Some key ->
-                    let versions = collectVersions enumerators current key
-
-                    for s, v in pruneVersions versions isLastLevel minSnap do
+                    for s, v in collectVersions advance current key |> pruneVersions isLastLevel minSnap do
                         yield key, s, v
                 | None -> running <- false
-
-            for e in enumerators do
-                e.Dispose()
         }
 
     let mergeSSTables dataDir (tablesToCompact: SSTable list) (compactLevelLimits: int[]) level minSnap =
@@ -144,15 +139,21 @@ module LsmTreeFlush =
 
             ssTables.[level] <- remaining)
 
-        tablesToCompact
-        |> List.iter (fun t ->
-            try
-                (t :> System.IDisposable).Dispose()
+        let cleanupErrors =
+            tablesToCompact
+            |> List.collect (fun t ->
+                try
+                    (t :> System.IDisposable).Dispose()
 
-                if System.IO.File.Exists t.Path then
-                    System.IO.File.Delete t.Path
-            with e ->
-                eprintfn "Compaction: Failed to cleanup old SSTable %s: %s" t.Path e.Message)
+                    if System.IO.File.Exists t.Path then
+                        System.IO.File.Delete t.Path
+
+                    []
+                with e ->
+                    [ e ])
+
+        if not (List.isEmpty cleanupErrors) then
+            raise (System.AggregateException("Compaction cleanup failed", cleanupErrors))
 
     [<TailCall>]
     let rec compact dataDir snapshotManager ssTablesLock (ssTables: SSTable list[]) (compactLevelLimits: int[]) level =

@@ -50,7 +50,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         let olds = System.IO.Directory.GetFiles(dataDir, "wal*.old")
 
         Array.append logs olds
-        |> Seq.sort
         |> Seq.collect WALRecovery.recover
         |> Seq.sortBy (fun (seq, _, _) -> seq)
         |> Seq.iter (function

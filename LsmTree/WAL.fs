@@ -109,8 +109,10 @@ type WAL(path: string) =
     interface System.IDisposable with
         member _.Dispose() =
             if not disposed then
-                writer.Flush()
-                stream.Flush true
-                writer.Dispose()
-                stream.Dispose()
+                lock walLock (fun () ->
+                    writer.Flush()
+                    stream.Flush true
+                    writer.Dispose()
+                    stream.Dispose())
+
                 disposed <- true
