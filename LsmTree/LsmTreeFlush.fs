@@ -1,8 +1,14 @@
 namespace LsmTree
 
 type CompactionCoordinator() =
+    let completedEvent = new System.Threading.ManualResetEvent(true)
     member val IsCompacting = false with get, set
     member val Error: exn option = None with get, set
+    member _.CompletedEvent = completedEvent
+
+    interface System.IDisposable with
+        member _.Dispose() =
+            (completedEvent :> System.IDisposable).Dispose()
 
 module LsmTreeFlush =
     let timestamp () =
@@ -183,6 +189,7 @@ module LsmTreeFlush =
             lock ssTablesLock (fun () ->
                 if not compaction.IsCompacting then
                     compaction.IsCompacting <- true
+                    compaction.CompletedEvent.Reset() |> ignore
                     true
                 else
                     false)
@@ -195,13 +202,10 @@ module LsmTreeFlush =
                     with ex ->
                         lock ssTablesLock (fun () -> compaction.Error <- Some ex)
                 finally
-                    lock ssTablesLock (fun () -> compaction.IsCompacting <- false))
+                    lock ssTablesLock (fun () ->
+                        compaction.IsCompacting <- false
+                        compaction.CompletedEvent.Set() |> ignore))
             |> ignore
 
-    [<TailCall>]
-    let rec waitForCompaction ssTablesLock (compaction: CompactionCoordinator) =
-        let active = lock ssTablesLock (fun () -> compaction.IsCompacting)
-
-        if active then
-            System.Threading.Thread.Sleep 50
-            waitForCompaction ssTablesLock compaction
+    let waitForCompaction (compaction: CompactionCoordinator) =
+        compaction.CompletedEvent.WaitOne() |> ignore

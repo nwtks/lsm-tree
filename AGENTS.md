@@ -29,6 +29,8 @@ Key format facts to remember:
 - Compaction runs on a background `Task`; all shared-state mutations must be guarded by `ssTablesLock`.
 - `CompactionCoordinator` uses auto-properties (`IsCompacting`, `Error`) — always read/write under `ssTablesLock`.
 - **Re-query `minActiveSnapshot` at the start of each merge** — never cache it across merge operations.
+- **L0 compaction selects ALL files** (L0 files overlap in key range; partial compaction would shadow newer versions).
+- **Ln (n>0) compaction also selects ALL files** — in this implementation, files in non-L0 levels can also overlap due to L0→L1 merges covering the entire key range, so partial compaction would shadow newer versions in higher levels.
 - After merge, `Dispose()` old SSTable objects and `File.Delete` the files.
 - Compaction respects `minActiveSnapshot` — versions still visible to active snapshots are never pruned.
 - `mergeSortedEntries` uses a k-way streaming merge; helper functions `findMinKey`, `collectVersions`, and `pruneVersions` keep the main loop readable.

@@ -87,12 +87,13 @@ module SSTable =
     let readItem (br: System.IO.BinaryReader) =
         if br.ReadBoolean() then None else readValue br |> Some
 
-    let readEntry (fs: System.IO.FileStream) (br: System.IO.BinaryReader) (offset: int64) =
-        fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
-        let seq = br.ReadInt64()
-        let key = readValue br
-        let value = readItem br
-        key, seq, value
+    let readAllEntries (br: System.IO.BinaryReader) (offsets: int64[]) =
+        offsets
+        |> Array.map (fun _ ->
+            let seq = br.ReadInt64()
+            let key = readValue br
+            let value = readItem br
+            key, seq, value)
 
     [<TailCall>]
     let rec binSearch
@@ -137,7 +138,12 @@ type SSTable(path: string) =
     member _.Count = offsets.Length
 
     member _.GetAll() =
-        lock fs (fun () -> offsets |> Array.map (fun offset -> SSTable.readEntry fs br offset))
+        lock fs (fun () ->
+            if offsets.Length > 0 then
+                fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
+                SSTable.readAllEntries br offsets
+            else
+                [||])
 
     member _.Get(key: string, snapshot: int64) =
         if offsets.Length > 0 && bloomFilter.MightContain key then

@@ -109,10 +109,21 @@ type WAL(path: string) =
     interface System.IDisposable with
         member _.Dispose() =
             if not disposed then
-                lock walLock (fun () ->
-                    writer.Flush()
-                    stream.Flush true
-                    writer.Dispose()
-                    stream.Dispose())
-
                 disposed <- true
+
+                lock walLock (fun () ->
+                    try
+                        writer.Flush()
+                        stream.Flush true
+                    with _ ->
+                        eprintfn "[WARN] WAL: I/O error during final flush"
+
+                    try
+                        (writer :> System.IDisposable).Dispose()
+                    with _ ->
+                        ()
+
+                    try
+                        (stream :> System.IDisposable).Dispose()
+                    with _ ->
+                        ())

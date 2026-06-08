@@ -13,8 +13,9 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let ssTables =
         Array.init (compactLevelLimits.Length + 1) (fun _ -> list<SSTable>.Empty)
 
-    let compaction = CompactionCoordinator()
     let ssTablesLock = obj ()
+    let compaction = new CompactionCoordinator()
+    let mutable disposed = false
 
     let parseSstLevel (path: string) =
         let name = System.IO.Path.GetFileName path
@@ -137,7 +138,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     member _.Flush() = flushMemTable ()
 
     member _.WaitForCompaction() =
-        LsmTreeFlush.waitForCompaction ssTablesLock compaction
+        LsmTreeFlush.waitForCompaction compaction
 
         lock ssTablesLock (fun () ->
             match compaction.Error with
@@ -155,18 +156,36 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
     interface System.IDisposable with
         member _.Dispose() =
-            LsmTreeFlush.waitForCompaction ssTablesLock compaction
+            if not disposed then
+                disposed <- true
 
-            lock ssTablesLock (fun () ->
-                match compaction.Error with
-                | Some ex -> raise (System.AggregateException("Compaction failed", ex))
-                | None -> ())
+                try
+                    LsmTreeFlush.waitForCompaction compaction
 
-            wal.Close()
-            mainLock.Dispose()
-
-            ssTables
-            |> Array.iter (fun level -> level |> Seq.iter (fun sst -> (sst :> System.IDisposable).Dispose()))
+                    lock ssTablesLock (fun () ->
+                        match compaction.Error with
+                        | Some ex ->
+                            compaction.Error <- None
+                            eprintfn $"[WARN] LsmTree: compaction error during dispose: {ex.Message}"
+                        | None -> ())
+                finally
+                    try
+                        wal.Close()
+                    finally
+                        try
+                            mainLock.Dispose()
+                        finally
+                            try
+                                ssTables
+                                |> Array.iter (fun level ->
+                                    level
+                                    |> Seq.iter (fun sst ->
+                                        try
+                                            (sst :> System.IDisposable).Dispose()
+                                        with _ ->
+                                            ()))
+                            finally
+                                (compaction :> System.IDisposable).Dispose()
 
     interface ILsmTree with
         member this.Get(key, snapshot) = this.Get(key, ?snapshot = snapshot)
