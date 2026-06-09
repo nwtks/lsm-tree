@@ -45,30 +45,25 @@ module WALRecovery =
                 | _ -> None
             | _ -> None
 
-    let collectEntries (buffered, acc) (seq, entry) =
-        match entry with
-        | Begin -> Map.add seq [] buffered, acc
-        | Op(k, v) ->
-            match Map.tryFind seq buffered with
-            | Some ops -> Map.add seq ((k, v) :: ops) buffered, acc
-            | None -> buffered, (seq, k, v) :: acc
-        | Commit ->
-            match Map.tryFind seq buffered with
-            | Some ops ->
-                let folder a (k, v) = (seq, k, v) :: a
-                Map.remove seq buffered, List.fold folder acc (List.rev ops)
-            | None -> buffered, acc
-
     let recover path =
-        if not (System.IO.File.Exists path) then
-            Seq.empty
+        if System.IO.File.Exists path then
+            let lines = System.IO.File.ReadAllLines path |> Array.choose parseEntry
+
+            let committedSeqs, begunSeqs =
+                ((Set.empty, Set.empty), lines)
+                ||> Array.fold (fun (committed, begun) (seq, entry) ->
+                    match entry with
+                    | Begin -> committed, Set.add seq begun
+                    | Commit -> Set.add seq committed, begun
+                    | Op _ -> committed, begun)
+
+            lines
+            |> Seq.choose (fun (seq, entry) ->
+                match entry with
+                | Op(k, v) when Set.contains seq committedSeqs || not (Set.contains seq begunSeqs) -> Some(seq, k, v)
+                | _ -> None)
         else
-            System.IO.File.ReadAllLines path
-            |> Seq.choose parseEntry
-            |> Seq.fold collectEntries (Map.empty, [])
-            |> snd
-            |> List.rev
-            |> Seq.ofList
+            Seq.empty
 
 type WAL(path: string) =
     let stream =

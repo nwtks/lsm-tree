@@ -93,6 +93,7 @@ let ``SSTable index offset out of range throws`` () =
     writeRawSst testDataDir "L0_bad_idx_ofs.sst" (fun bw _dataEnd bloomPos ->
         bw.Write(bloomPos + 9999L)
         bw.Write bloomPos
+        bw.Write 0L // maxSeq
         bw.Write SSTable.MAGIC)
     |> ignore
 
@@ -106,6 +107,7 @@ let ``SSTable bloom offset before index offset throws`` () =
     writeRawSst testDataDir "L0_bloom_before_idx.sst" (fun bw dataEnd _bloomPos ->
         bw.Write dataEnd
         bw.Write 0L
+        bw.Write 0L // maxSeq
         bw.Write SSTable.MAGIC)
     |> ignore
 
@@ -140,6 +142,7 @@ let ``SSTable negative index entry count throws`` () =
 
         bw.Write indexPos // indexOffset
         bw.Write bloomPos // bloomOffset
+        bw.Write 0L // maxSeq
         bw.Write SSTable.MAGIC
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
@@ -173,6 +176,7 @@ let ``SSTable index entry count exceeds remaining space throws`` () =
 
         bw.Write indexPos
         bw.Write bloomPos
+        bw.Write 0L // maxSeq
         bw.Write SSTable.MAGIC
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
@@ -204,6 +208,7 @@ let ``SSTable entry offset out of range throws`` () =
 
         bw.Write indexPos
         bw.Write bloomPos
+        bw.Write 0L // maxSeq
         bw.Write SSTable.MAGIC
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
@@ -235,6 +240,7 @@ let ``SSTable entry offset at index position throws`` () =
 
         bw.Write indexPos
         bw.Write bloomPos
+        bw.Write 0L // maxSeq
         bw.Write SSTable.MAGIC
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
@@ -266,6 +272,7 @@ let ``SSTable negative bloom byte count throws`` () =
 
         bw.Write indexPos
         bw.Write bloomPos
+        bw.Write 0L // maxSeq
         bw.Write SSTable.MAGIC
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
@@ -296,6 +303,7 @@ let ``SSTable bloom byte count exceeds remaining space throws`` () =
 
         bw.Write indexPos
         bw.Write bloomPos
+        bw.Write 0L // maxSeq
         bw.Write SSTable.MAGIC
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)

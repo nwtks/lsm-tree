@@ -3,7 +3,18 @@ namespace LsmTree
 type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?compactLevelLimits: int[]) =
     let memTableLimit = defaultArg memTableSizeLimit (1024 * 1024)
     let syncOnCommit = defaultArg syncOnCommit true
-    let compactLevelLimits = defaultArg compactLevelLimits [| 4; 10; 100; 1000 |]
+
+    let compactLevelLimits =
+        let limits = defaultArg compactLevelLimits [| 4; 10; 100; 1000 |]
+
+        if limits.Length = 0 then
+            invalidArg "compactLevelLimits" "compactLevelLimits must not be empty"
+
+        if limits |> Array.exists (fun x -> x < 0) then
+            invalidArg "compactLevelLimits" "compactLevelLimits must not contain negative values"
+
+        limits
+
     let walPath = System.IO.Path.Combine(dataDir, "wal.log")
     let mutable memTable = MemTable()
     let mutable immutableMemTable: MemTable option = None
@@ -36,9 +47,8 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                 let sst = new SSTable(path)
                 ssTables.[level] <- sst :: ssTables.[level]
 
-                for _, seq, _ in sst.GetAll() do
-                    if seq > maxSeq then
-                        maxSeq <- seq)
+                if sst.MaxSeq > maxSeq then
+                    maxSeq <- sst.MaxSeq)
 
         for i = 0 to ssTables.Length - 1 do
             ssTables.[i] <- ssTables.[i] |> List.sortByDescending (fun t -> t.Path)
@@ -158,6 +168,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         member _.Dispose() =
             if not disposed then
                 disposed <- true
+                compaction.Cancel()
 
                 try
                     LsmTreeFlush.waitForCompaction compaction

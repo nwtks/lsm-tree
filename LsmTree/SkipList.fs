@@ -15,12 +15,9 @@ module SkipList =
     [<Literal>]
     let P = 0.5
 
-    let randomLocal =
-        new System.Threading.ThreadLocal<System.Random>(fun () -> System.Random())
-
     [<TailCall>]
     let rec randomLevel lvl =
-        if randomLocal.Value.NextDouble() < P && lvl < MAX_LEVEL then
+        if System.Random.Shared.NextDouble() < P && lvl < MAX_LEVEL then
             randomLevel (lvl + 1)
         else
             lvl

@@ -2,8 +2,7 @@ namespace LsmTree
 
 module LsmTreeSearch =
     let searchInTables ssTablesLock (ssTables: SSTable list[]) key snap level =
-        lock ssTablesLock (fun () -> ssTables.[level])
-        |> List.tryPick (fun t -> t.Get(key, snap))
+        lock ssTablesLock (fun () -> ssTables.[level] |> List.tryPick (fun t -> t.Get(key, snap)))
 
     [<TailCall>]
     let rec searchLevel ssTablesLock (ssTables: SSTable list[]) key snap level =

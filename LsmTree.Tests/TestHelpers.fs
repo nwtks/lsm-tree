@@ -5,8 +5,7 @@ open Xunit
 [<AutoOpen>]
 module TestHelpers =
     let getTestDir name =
-        let dir =
-            System.IO.Path.Combine(System.Environment.CurrentDirectory, "test_data_" + name)
+        let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "test_data_" + name)
 
         if System.IO.Directory.Exists dir then
             System.IO.Directory.Delete(dir, true)

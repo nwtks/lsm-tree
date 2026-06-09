@@ -2,14 +2,15 @@ namespace LsmTree
 
 module SSTable =
     [<Literal>]
-    let MAGIC = 0x534D434CL
+    let MAGIC = 0x4C534D54L
 
-    let footerSize = 24L
+    [<Literal>]
+    let FOOTER_SIZE = 32L
 
     let load (fs: System.IO.FileStream) (br: System.IO.BinaryReader) =
         let fileLen = fs.Length
 
-        let loadOffsets offset =
+        let loadOffsets offset footerSize =
             if offset < 0L || offset > fileLen - footerSize then
                 System.IO.InvalidDataException $"SSTable index offset {offset} is out of range (file size: {fileLen})"
                 |> raise
@@ -36,7 +37,7 @@ module SSTable =
 
             offsets
 
-        let loadBloomFilter offset =
+        let loadBloomFilter offset footerSize =
             if offset < 0L || offset > fileLen - footerSize then
                 System.IO.InvalidDataException $"SSTable bloom offset {offset} is out of range (file size: {fileLen})"
                 |> raise
@@ -57,29 +58,30 @@ module SSTable =
             let bfBytes = br.ReadBytes byteCount
             BloomFilter(bfBytes, BloomFilter.numHashFunctions)
 
-        if fileLen >= footerSize then
-            fs.Seek(-footerSize, System.IO.SeekOrigin.End) |> ignore
+        if fileLen >= FOOTER_SIZE then
+            fs.Seek(-FOOTER_SIZE, System.IO.SeekOrigin.End) |> ignore
             let indexOffset = br.ReadInt64()
             let bloomOffset = br.ReadInt64()
+            let maxSeq = br.ReadInt64()
             let magic = br.ReadInt64()
 
             if magic <> MAGIC then
                 System.IO.InvalidDataException $"Invalid SSTable magic number: expected 0x{MAGIC:x}, got 0x{magic:x}"
                 |> raise
 
-            if indexOffset < 0L || indexOffset > fileLen - footerSize then
+            if indexOffset < 0L || indexOffset > fileLen - FOOTER_SIZE then
                 System.IO.InvalidDataException
                     $"SSTable index offset {indexOffset} is out of range (file size: {fileLen})"
                 |> raise
 
-            if bloomOffset < indexOffset || bloomOffset > fileLen - footerSize then
+            if bloomOffset < indexOffset || bloomOffset > fileLen - FOOTER_SIZE then
                 System.IO.InvalidDataException
                     $"SSTable bloom offset {bloomOffset} is out of range (index offset: {indexOffset})"
                 |> raise
 
-            loadOffsets indexOffset, loadBloomFilter bloomOffset
+            loadOffsets indexOffset FOOTER_SIZE, loadBloomFilter bloomOffset FOOTER_SIZE, maxSeq
         else
-            [||], BloomFilter([||], 0)
+            [||], BloomFilter([||], 0), 0L
 
     let readValue (br: System.IO.BinaryReader) =
         br.ReadInt32() |> br.ReadBytes |> System.Text.Encoding.UTF8.GetString
@@ -130,12 +132,14 @@ type SSTable(path: string) =
         new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
 
     let br = new System.IO.BinaryReader(fs)
-    let offsets, bloomFilter = SSTable.load fs br
+    let offsets, bloomFilter, maxSeq = SSTable.load fs br
     let mutable disposed = false
 
     member _.Path = path
 
     member _.Count = offsets.Length
+
+    member _.MaxSeq = maxSeq
 
     member _.GetAll() =
         lock fs (fun () ->
@@ -153,12 +157,11 @@ type SSTable(path: string) =
 
     interface System.IDisposable with
         member _.Dispose() =
-            if not disposed then
-                lock fs (fun () ->
+            lock fs (fun () ->
+                if not disposed then
+                    disposed <- true
                     br.Dispose()
                     fs.Dispose())
-
-                disposed <- true
 
 module SSTableWriter =
     let writeBytes (bw: System.IO.BinaryWriter) (bytes: byte[]) =
@@ -179,44 +182,66 @@ module SSTableWriter =
         bw.Write offsets.Length
         offsets |> List.iter bw.Write
 
-    let writeCore outPath (entries: seq<string * int64 * string option>) (bf: BloomFilter) =
+    let writeCore
+        outPath
+        (bf: BloomFilter)
+        (ct: System.Threading.CancellationToken)
+        (entries: seq<string * int64 * string option>)
+        =
         let offsets = ResizeArray<int64>()
+        let mutable maxSeq = 0L
+        let tempPath = outPath + ".tmp"
 
-        do
-            use fs =
-                new System.IO.FileStream(
-                    outPath,
-                    System.IO.FileMode.Create,
-                    System.IO.FileAccess.Write,
-                    System.IO.FileShare.None
-                )
+        try
+            do
+                use fs =
+                    new System.IO.FileStream(
+                        tempPath,
+                        System.IO.FileMode.Create,
+                        System.IO.FileAccess.Write,
+                        System.IO.FileShare.None
+                    )
 
-            use bw = new System.IO.BinaryWriter(fs)
+                use bw = new System.IO.BinaryWriter(fs)
 
-            for key, seq, value in entries do
-                bf.Add key
-                offsets.Add fs.Position
-                bw.Write seq
-                writeValue bw key
-                writeItem bw value
+                for key, seq, value in entries do
+                    ct.ThrowIfCancellationRequested()
+                    bf.Add key
+                    offsets.Add fs.Position
+                    bw.Write seq
 
-            let indexOffset = fs.Position
-            writeOffsets bw (offsets |> Seq.toList)
+                    if seq > maxSeq then
+                        maxSeq <- seq
 
-            let bloomOffset = fs.Position
-            writeBytes bw bf.Bytes
+                    writeValue bw key
+                    writeItem bw value
 
-            bw.Write indexOffset
-            bw.Write bloomOffset
-            bw.Write SSTable.MAGIC
-            fs.Flush true
+                let indexOffset = fs.Position
+                writeOffsets bw (offsets |> Seq.toList)
+
+                let bloomOffset = fs.Position
+                writeBytes bw bf.Bytes
+
+                bw.Write indexOffset
+                bw.Write bloomOffset
+                bw.Write maxSeq
+                bw.Write SSTable.MAGIC
+                fs.Flush true
+
+            System.IO.File.Move(tempPath, outPath, overwrite = true)
+        finally
+            if System.IO.File.Exists tempPath then
+                try
+                    System.IO.File.Delete tempPath
+                with _ ->
+                    ()
 
         new SSTable(outPath)
 
     let write outPath (memTableEntries: (string * int64 * string option) list) =
         let bf = BloomFilter.create memTableEntries.Length
-        writeCore outPath memTableEntries bf
+        writeCore outPath bf System.Threading.CancellationToken.None memTableEntries
 
-    let writeStream outPath estimatedEntries entries =
+    let writeStream outPath (ct: System.Threading.CancellationToken) estimatedEntries entries =
         let bf = BloomFilter.create (max 64 estimatedEntries)
-        writeCore outPath entries bf
+        writeCore outPath bf ct entries

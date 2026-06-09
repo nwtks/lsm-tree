@@ -2,12 +2,16 @@ namespace LsmTree
 
 type CompactionCoordinator() =
     let completedEvent = new System.Threading.ManualResetEvent(true)
+    let cts = new System.Threading.CancellationTokenSource()
     member val IsCompacting = false with get, set
     member val Error: exn option = None with get, set
     member _.CompletedEvent = completedEvent
+    member _.Token = cts.Token
+    member _.Cancel() = cts.Cancel()
 
     interface System.IDisposable with
         member _.Dispose() =
+            cts.Dispose()
             (completedEvent :> System.IDisposable).Dispose()
 
 module LsmTreeFlush =
@@ -46,9 +50,9 @@ module LsmTreeFlush =
         ssTablesLock
         (ssTables: SSTable list[])
         (clearState: unit -> unit)
-        sst
+        ssTable
         =
-        lock ssTablesLock (fun () -> ssTables.[0] <- sst :: ssTables.[0])
+        lock ssTablesLock (fun () -> ssTables.[0] <- ssTable :: ssTables.[0])
         LockExtensions.withWriteLock mainLock clearState
 
     let findMinKey (current: (string * int64 * string option) option[]) =
@@ -89,9 +93,7 @@ module LsmTreeFlush =
 
     let mergeSortedEntries (tables: SSTable list) isLastLevel minSnap =
         seq {
-            let tableData =
-                tables |> List.map (fun t -> t.GetAll() |> Seq.toArray) |> List.toArray
-
+            let tableData = tables |> List.map (fun t -> t.GetAll()) |> List.toArray
             let pos = Array.zeroCreate tableData.Length
 
             let entryAt i =
@@ -116,26 +118,35 @@ module LsmTreeFlush =
                 | None -> running <- false
         }
 
-    let mergeSSTables dataDir (tablesToCompact: SSTable list) (compactLevelLimits: int[]) level minSnap =
+    let mergeSSTables
+        dataDir
+        (compactLevelLimits: int[])
+        (ct: System.Threading.CancellationToken)
+        (tablesToCompact: SSTable list)
+        level
+        minSnap
+        =
         let estimatedEntries = tablesToCompact |> List.sumBy (fun t -> t.Count)
         let isLastLevel = compactLevelLimits.Length = level + 1
 
         mergeSortedEntries (List.rev tablesToCompact) isLastLevel minSnap
-        |> SSTableWriter.writeStream (ssTablePath dataDir (level + 1)) estimatedEntries
+        |> SSTableWriter.writeStream (ssTablePath dataDir (level + 1)) ct estimatedEntries
 
     let performMerge
         dataDir
         (snapshotManager: LsmTreeSnapshot)
         ssTablesLock
         (ssTables: SSTable list[])
-        tablesToCompact
         compactLevelLimits
+        (ct: System.Threading.CancellationToken)
+        tablesToCompact
         level
         =
+        ct.ThrowIfCancellationRequested()
         let minSnap = snapshotManager.GetMinActiveSnapshot()
 
         let newSSTable =
-            mergeSSTables dataDir tablesToCompact compactLevelLimits level minSnap
+            mergeSSTables dataDir compactLevelLimits ct tablesToCompact level minSnap
 
         lock ssTablesLock (fun () ->
             ssTables.[level + 1] <- newSSTable :: ssTables.[level + 1]
@@ -162,7 +173,17 @@ module LsmTreeFlush =
             raise (System.AggregateException("Compaction cleanup failed", cleanupErrors))
 
     [<TailCall>]
-    let rec compact dataDir snapshotManager ssTablesLock (ssTables: SSTable list[]) (compactLevelLimits: int[]) level =
+    let rec compact
+        dataDir
+        snapshotManager
+        ssTablesLock
+        (ssTables: SSTable list[])
+        (compactLevelLimits: int[])
+        (ct: System.Threading.CancellationToken)
+        level
+        =
+        ct.ThrowIfCancellationRequested()
+
         let tablesToCompact =
             lock ssTablesLock (fun () ->
                 if
@@ -174,8 +195,8 @@ module LsmTreeFlush =
                     [])
 
         if tablesToCompact.Length > 0 then
-            performMerge dataDir snapshotManager ssTablesLock ssTables tablesToCompact compactLevelLimits level
-            compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits (level + 1)
+            performMerge dataDir snapshotManager ssTablesLock ssTables compactLevelLimits ct tablesToCompact level
+            compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits ct (level + 1)
 
     let triggerCompaction
         dataDir
@@ -198,9 +219,10 @@ module LsmTreeFlush =
             System.Threading.Tasks.Task.Run(fun () ->
                 try
                     try
-                        compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits 0
-                    with ex ->
-                        lock ssTablesLock (fun () -> compaction.Error <- Some ex)
+                        compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits compaction.Token 0
+                    with
+                    | :? System.OperationCanceledException -> ()
+                    | ex -> lock ssTablesLock (fun () -> compaction.Error <- Some ex)
                 finally
                     lock ssTablesLock (fun () ->
                         compaction.IsCompacting <- false

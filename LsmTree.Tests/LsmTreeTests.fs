@@ -4,6 +4,17 @@ open Xunit
 open LsmTree
 
 [<Fact>]
+let ``Empty compactLevelLimits throws ArgumentException`` () =
+    Assert.Throws<System.ArgumentException>(fun () ->
+        new LsmTree(getTestDir "empty_limits", compactLevelLimits = [||]) |> ignore)
+
+[<Fact>]
+let ``Negative compactLevelLimits throws ArgumentException`` () =
+    Assert.Throws<System.ArgumentException>(fun () ->
+        new LsmTree(getTestDir "neg_limits", compactLevelLimits = [| 4; -1; 10 |])
+        |> ignore)
+
+[<Fact>]
 let ``Put and get from MemTable works correctly`` () =
     let testDataDir = getTestDir "1"
     use tree = new LsmTree(testDataDir)
@@ -374,3 +385,25 @@ let ``Compaction error propagrates through WaitForCompaction`` () =
 
         Assert.Contains("Compaction failed", ex.Message)
         Assert.NotNull ex.InnerException
+
+[<Fact>]
+let ``Compaction cancellation via Dispose preserves data integrity`` () =
+    let testDataDir = getTestDir "compact_cancel"
+
+    do
+        use tree = new LsmTree(testDataDir, 1024 * 1024, compactLevelLimits = [| 2; 2 |])
+        tree.Put("a", "1")
+        tree.Flush()
+        tree.Put("b", "2")
+        tree.Flush()
+        tree.Put("c", "3")
+        tree.Flush()
+
+    do
+        use tree = new LsmTree(testDataDir)
+        assertEqual (Some "1") (tree.Get "a") "a should survive cancellation"
+        assertEqual (Some "2") (tree.Get "b") "b should survive cancellation"
+        assertEqual (Some "3") (tree.Get "c") "c should survive cancellation"
+
+    let tmpFiles = System.IO.Directory.GetFiles(testDataDir, "*.sst.tmp")
+    assertEqual 0 tmpFiles.Length "No temp files should remain after cancellation"
