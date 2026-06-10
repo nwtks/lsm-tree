@@ -12,9 +12,6 @@ module SkipList =
     [<Literal>]
     let MAX_LEVEL = 16
 
-    [<Literal>]
-    let P = 0.5
-
     let randomLevel () =
         let bits = System.Random.Shared.Next()
         let mutable lvl = 1

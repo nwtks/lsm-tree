@@ -10,7 +10,7 @@ type ITransaction =
 
 type ILsmTree =
     abstract member Get: key: string * snapshot: int64 option -> string option
-    abstract member CommitTransaction: ops: (string * string option) list -> bool
+    abstract member CommitTransaction: ops: (string * string option) list -> unit
     abstract member ReleaseSnapshot: snapshot: int64 -> unit
 
 type LsmTransaction(lsm: ILsmTree, snapshot: int64) =
@@ -41,13 +41,19 @@ type LsmTransaction(lsm: ILsmTree, snapshot: int64) =
 
         member this.Commit() =
             checkFinished ()
-            lsm.CommitTransaction(ops |> Seq.rev |> Seq.toList) |> ignore
-            (this :> ITransaction).Dispose()
+
+            try
+                lsm.CommitTransaction(ops |> Seq.rev |> Seq.toList)
+            finally
+                (this :> ITransaction).Dispose()
 
         member this.Rollback() =
             checkFinished ()
-            ops <- []
-            (this :> ITransaction).Dispose()
+
+            try
+                ops <- []
+            finally
+                (this :> ITransaction).Dispose()
 
         member _.Dispose() =
             if not finished then

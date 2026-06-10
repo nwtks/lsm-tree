@@ -32,17 +32,21 @@ module WALRecovery =
         else
             match System.Int64.TryParse parts.[1] with
             | true, seq ->
-                match parts.[0] with
-                | PUT when parts.Length = 4 ->
-                    let k = base64ToUtf8 parts.[2]
-                    let v = base64ToUtf8 parts.[3]
-                    Some(seq, Op(k, Some v))
-                | DEL when parts.Length = 3 ->
-                    let k = base64ToUtf8 parts.[2]
-                    Some(seq, Op(k, None))
-                | BEGIN when parts.Length = 2 -> Some(seq, Begin)
-                | COMMIT when parts.Length = 2 -> Some(seq, Commit)
-                | _ -> None
+                try
+                    match parts.[0] with
+                    | PUT when parts.Length = 4 ->
+                        let k = base64ToUtf8 parts.[2]
+                        let v = base64ToUtf8 parts.[3]
+                        Some(seq, Op(k, Some v))
+                    | DEL when parts.Length = 3 ->
+                        let k = base64ToUtf8 parts.[2]
+                        Some(seq, Op(k, None))
+                    | BEGIN when parts.Length = 2 -> Some(seq, Begin)
+                    | COMMIT when parts.Length = 2 -> Some(seq, Commit)
+                    | _ -> None
+                with :? System.FormatException ->
+                    eprintfn $"[WARN] WAL recovery: skipping malformed line: {item}"
+                    None
             | _ -> None
 
     let recover path =

@@ -30,10 +30,8 @@ module LsmTreeSearch =
                 | None -> None)
 
         match memRes with
-        | Some(Some v) -> Some v
-        | Some None -> None
+        | Some v -> v
         | None ->
             match immRes with
-            | Some(Some v) -> Some v
-            | Some None -> None
-            | None -> searchLevel ssTablesLock ssTables key snap 0
+            | Some v -> v
+            | None -> searchLevel ssTablesLock ssTables key snap 0 |> Option.flatten

@@ -38,6 +38,9 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
             0
 
     let loadSSTables () =
+        System.IO.Directory.GetFiles(dataDir, "*.sst.tmp")
+        |> Array.iter System.IO.File.Delete
+
         let mutable maxSeq = 0L
 
         System.IO.Directory.GetFiles(dataDir, "*.sst")
@@ -52,7 +55,11 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                     maxSeq <- sst.MaxSeq)
 
         for i = 0 to ssTables.Length - 1 do
-            ssTables.[i] <- ssTables.[i] |> List.sortByDescending (fun t -> t.Path)
+            ssTables.[i] <-
+                ssTables.[i]
+                |> List.sortWith (fun a b ->
+                    let cmp = compare b.MaxSeq a.MaxSeq
+                    if cmp <> 0 then cmp else compare a.Path b.Path)
 
         if maxSeq > 0L then
             snapshotManager.AdvanceSequence maxSeq
@@ -155,8 +162,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         if shouldFlush then
             flushMemTable ()
 
-        shouldFlush
-
     member _.Snapshot() = snapshotManager.CurrentSequence()
 
     member this.BeginTransaction() =
@@ -215,34 +220,28 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                             compaction.Error <- None
                             eprintfn $"[WARN] LsmTree: compaction error during dispose: {ex.Message}"
                         | None -> ())
-                finally
-                    try
-                        flushCoordinator.WaitForCompletion()
+                with _ ->
+                    ()
 
-                        lock ssTablesLock (fun () ->
-                            match flushCoordinator.Error with
-                            | Some ex ->
-                                flushCoordinator.Error <- None
-                                eprintfn $"[WARN] LsmTree: flush error during dispose: {ex.Message}"
-                            | None -> ())
-                    finally
-                        try
-                            wal.Close()
-                        finally
-                            try
-                                mainLock.Dispose()
-                            finally
-                                try
-                                    ssTables
-                                    |> Array.iter (fun level ->
-                                        level
-                                        |> Seq.iter (fun sst ->
-                                            try
-                                                (sst :> System.IDisposable).Dispose()
-                                            with _ ->
-                                                ()))
-                                finally
-                                    (compaction :> System.IDisposable).Dispose()
+                try
+                    flushCoordinator.WaitForCompletion()
+
+                    lock ssTablesLock (fun () ->
+                        match flushCoordinator.Error with
+                        | Some ex ->
+                            flushCoordinator.Error <- None
+                            eprintfn $"[WARN] LsmTree: flush error during dispose: {ex.Message}"
+                        | None -> ())
+                with _ ->
+                    ()
+
+                LockExtensions.disposeOf wal
+                LockExtensions.disposeOf mainLock
+
+                ssTables
+                |> Array.iter (fun level -> level |> Seq.iter (fun sst -> LockExtensions.disposeOf sst))
+
+                LockExtensions.disposeOf compaction
 
     interface ILsmTree with
         member this.Get(key, snapshot) = this.Get(key, ?snapshot = snapshot)

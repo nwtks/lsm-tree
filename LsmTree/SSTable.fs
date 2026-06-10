@@ -3,7 +3,8 @@ namespace LsmTree
 type IndexEntry =
     { Key: string
       Seq: int64
-      Offset: int64 }
+      Offset: int64
+      KeyByteLen: int32 }
 
 module SSTable =
     [<Literal>]
@@ -11,6 +12,18 @@ module SSTable =
 
     [<Literal>]
     let FOOTER_SIZE = 32L
+
+    [<Literal>]
+    let SEQ_BYTE_SIZE = 8L
+
+    [<Literal>]
+    let KEY_LEN_BYTE_SIZE = 4L
+
+    [<Literal>]
+    let INDEX_COUNT_BYTE_SIZE = 4L
+
+    [<Literal>]
+    let BLOOM_COUNT_BYTE_SIZE = 4L
 
     let load (fs: System.IO.FileStream) (br: System.IO.BinaryReader) =
         let fileLen = fs.Length
@@ -27,9 +40,9 @@ module SSTable =
                 System.IO.InvalidDataException $"SSTable index entry count is negative: {count}"
                 |> raise
 
-            let remaining = fileLen - footerSize - offset - 4L
+            let remaining = fileLen - footerSize - offset - INDEX_COUNT_BYTE_SIZE
 
-            if int64 count * 8L > remaining then
+            if int64 count * SEQ_BYTE_SIZE > remaining then
                 System.IO.InvalidDataException $"SSTable index of {count} entries would exceed remaining space"
                 |> raise
 
@@ -54,7 +67,7 @@ module SSTable =
                 System.IO.InvalidDataException $"SSTable bloom filter byte count is negative: {byteCount}"
                 |> raise
 
-            let remaining = fileLen - footerSize - offset - 4L
+            let remaining = fileLen - footerSize - offset - BLOOM_COUNT_BYTE_SIZE
 
             if int64 byteCount > remaining then
                 System.IO.InvalidDataException $"SSTable bloom filter of {byteCount} bytes would exceed remaining space"
@@ -110,6 +123,7 @@ module SSTable =
             |> Array.map (fun offset ->
                 let seq = br.ReadInt64()
                 let key = readValue br
+                let keyByteLen = System.Text.Encoding.UTF8.GetByteCount key
 
                 if br.ReadBoolean() then
                     ()
@@ -119,7 +133,8 @@ module SSTable =
 
                 { Key = key
                   Seq = seq
-                  Offset = offset })
+                  Offset = offset
+                  KeyByteLen = keyByteLen })
         else
             [||]
 
@@ -149,6 +164,7 @@ type SSTable(path: string) =
     let br = new System.IO.BinaryReader(fs)
     let offsets, bloomFilter, maxSeq = SSTable.load fs br
     let index = SSTable.loadIndex fs br offsets
+    let rwLock = new System.Threading.ReaderWriterLockSlim()
     let mutable disposed = false
 
     member _.Path = path
@@ -158,7 +174,7 @@ type SSTable(path: string) =
     member _.MaxSeq = maxSeq
 
     member _.GetAll() =
-        lock fs (fun () ->
+        LockExtensions.withWriteLock rwLock (fun () ->
             if offsets.Length > 0 then
                 fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
                 SSTable.readAllEntries br offsets
@@ -171,22 +187,36 @@ type SSTable(path: string) =
             | Some idx ->
                 let entry = index.[idx]
 
-                lock fs (fun () ->
-                    fs.Seek(entry.Offset, System.IO.SeekOrigin.Begin) |> ignore
-                    br.ReadInt64() |> ignore
-                    SSTable.readValue br |> ignore
-                    (SSTable.readItem br))
+                LockExtensions.withReadLock rwLock (fun () ->
+                    fs.Seek(
+                        entry.Offset
+                        + SSTable.SEQ_BYTE_SIZE
+                        + SSTable.KEY_LEN_BYTE_SIZE
+                        + int64 entry.KeyByteLen,
+                        System.IO.SeekOrigin.Begin
+                    )
+                    |> ignore
+
+                    Some(SSTable.readItem br))
             | None -> None
         else
             None
 
     interface System.IDisposable with
         member _.Dispose() =
-            lock fs (fun () ->
-                if not disposed then
-                    disposed <- true
-                    br.Dispose()
-                    fs.Dispose())
+            if not disposed then
+                let shouldDispose =
+                    LockExtensions.withWriteLock rwLock (fun () ->
+                        if not disposed then
+                            disposed <- true
+                            br.Dispose()
+                            fs.Dispose()
+                            true
+                        else
+                            false)
+
+                if shouldDispose then
+                    rwLock.Dispose()
 
 module SSTableWriter =
     let writeBytes (bw: System.IO.BinaryWriter) (bytes: byte[]) =

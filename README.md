@@ -10,8 +10,10 @@ This project demonstrates the core architectural concepts behind modern database
 ### Write-Ahead Log (WAL)
 Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted sequentially to a `.log` file before memory allocation, guaranteeing full recovery upon engine restart.
 - **Configurable `fsync`**: `SyncOnCommit` toggles whether `fsync` is called on every commit — balancing durability and throughput.
+- **Explicit buffer flush**: `StreamWriter.AutoFlush` is disabled — the StreamWriter buffer is explicitly flushed (`writer.Flush()`) before the `fsync` call (`stream.Flush(true)`) on every commit or direct write. This avoids redundant page-cache flushes on every `WriteLine`.
+- **Non-transactional direct writes**: `PutSingle` / `DeleteSingle` bypass `BEGIN`/`COMMIT` markers for single-key operations — the orphaned `PUT`/`DEL` lines are recovered as committed on crash (safe under last-writer-wins semantics).
 - **Atomic transaction recovery**: Uncommitted transactions (missing `COMMIT` marker) are automatically discarded on restart.
-- **Fault-tolerant parser**: Malformed lines and unknown entries are silently skipped; orphaned `PUT`/`DEL` lines (without a surrounding `BEGIN`/`COMMIT`) are recovered as committed.
+- **Fault-tolerant parser**: Malformed lines and unknown entries are skipped (invalid base64 logs a warning to stderr); orphaned `PUT`/`DEL` lines (without a surrounding `BEGIN`/`COMMIT`) are recovered as committed.
 
 ### MemTable (Lock-Free SkipList)
 In-memory mutations are buffered within a performant, custom-built mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
@@ -20,7 +22,8 @@ In-memory mutations are buffered within a performant, custom-built mutable **Ski
 
 ### SSTable (Sorted String Table)
 Immutable on-disk files produced when the MemTable is flushed:
-- **In-memory index**: At startup, each SSTable loads an `IndexEntry[]` (key, sequence number, disk offset) and Bloom filter into RAM. Lookups perform pure in-memory binary search on the index, then do a single `Seek`+`Read` for the value payload on a hit.
+- **In-memory index**: At startup, each SSTable loads an `IndexEntry[]` (key, sequence number, disk offset, key byte length) and Bloom filter into RAM. Lookups perform pure in-memory binary search on the index, then do a single `Seek`+`Read` for the value payload on a hit — the key and sequence number are skipped via `KeyByteLen`, avoiding re-reading from disk.
+- **Concurrent reads**: Uses `ReaderWriterLockSlim` — concurrent readers proceed in parallel (`withReadLock`), while `GetAll` and `Dispose` serialise via `withWriteLock`.
 - **Bloom filters** (FNV-1a derived, double-hashing): 10 bits/item, 7 hash functions. $O(1)$ in-memory probe rejects non-existent keys before any disk I/O.
 
 ### Background Multi-Level Compaction & Automatic Pruning
@@ -46,91 +49,7 @@ Uses F# purely functional `Set` and `list` for deterministic state transitions d
 
 ## 🏗️ Architecture & Internals
 
-### WAL Format
-
-One line per operation; keys and values are **base64-encoded** to avoid delimiter issues:
-
-```
-BEGIN <seq>
-PUT <seq> <key_b64> <val_b64>
-DEL <seq> <key_b64>
-COMMIT <seq>
-```
-
-- **Committed transactions** are fully recovered.
-- **Uncommitted transactions** (`BEGIN` without matching `COMMIT`) are discarded.
-- **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — their sequence number never appeared in a `BEGIN` line, so they fall through as visible entries.
-- `WALRecovery.recover` handles malformed lines gracefully by returning `None` for unrecognized entries.
-
-### SSTable Binary Format
-
-The on-disk layout of an `.sst` file is:
-
-```
-[entry bytes...] [index: int32 count + int64[] offsets] [bloom filter: int32 byteCount + bytes] [index_offset: int64] [bloom_offset: int64] [max_seq: int64] [magic: int64]
-```
-
-Each **entry** is encoded as:
-
-```
-seq: int64 | key: int32 length + UTF-8 bytes | value: bool hasValue + (if true: int32 length + UTF-8 bytes)
-```
-
-A deletion marker (`None` value) is encoded as `hasValue = true` with no following length/bytes.
-
-- **Footer**: always 32 bytes (four `int64` fields).
-- **Magic**: `0x4C534D54` (`"LSMT"` in ASCII). Wrong magic raises `InvalidDataException`.
-- **Index**: packed `int32` count + `int64[]` offsets pointing to each entry.
-- **Bloom filter**: packed `int32` byte count + raw bytes.
-- **`max_seq`**: highest sequence number among all entries — enables O(1) startup without scanning.
-
-**File naming convention:**
-
-```
-L{level}_{timestamp_ms}_{guid}.sst
-```
-
-| Source | Level |
-|--------|-------|
-| MemTable flush | L0 |
-| Compaction of Ln → L(n+1) | L(n+1) |
-| Legacy files (no `L` prefix) | L0 |
-
-During SSTable writing, data is first written to a `.tmp` file and then atomically renamed to `.sst` (see `SSTableWriter.writeCore`). Stale `.tmp` files from a crash are ignored on startup.
-
-### Concurrency Model & Lock Ordering
-
-| Resource | Guard |
-|---|---|
-| `memTable` / `immutableMemTable` | `ReaderWriterLockSlim` (`mainLock`) |
-| `ssTables` array | `lock ssTablesLock` |
-| `activeSnapshots` set | `lock activeSnapshotsLock` |
-| `globalSeq` | `Interlocked.Increment` / `Interlocked.Read` / `Interlocked.CompareExchange` |
-| SkipList nodes | Lock-free CAS (`Interlocked.CompareExchange`) |
-
-**Lock ordering rules:**
-1. You may hold `ssTablesLock` while acquiring `mainLock` (write), but **never the reverse** — this prevents deadlocks.
-2. `CompactionCoordinator` auto-properties (`IsCompacting`, `Error`) are always read/written under `ssTablesLock`.
-3. At most one compaction `Task` runs at a time; coordination uses `ManualResetEvent` (`CompactionCoordinator.CompletedEvent`).
-4. The WAL instance is protected by its own `walLock` object; WAL operations are serialized.
-
-### Compaction Algorithm
-
-1. **Trigger**: A MemTable flush calls `triggerCompaction`, which starts a background `Task` if no compaction is currently running.
-2. **Level selection**: Starting from L0, if `ssTables[level].Length > compactLevelLimits[level]`, **all** files at that level are selected for compaction.
-3. **Merge**: A k-way streaming merge (`mergeSortedEntries`) reads all entries from selected SSTables, deduplicates by key (highest sequence number wins), and applies snapshot pruning.
-4. **Output**: A single new SSTable is written to the next level via `SSTableWriter.writeStream`.
-5. **Cascade**: Compaction recursively proceeds to the next level if it now exceeds its limit (see `compact` in `LsmTreeFlush.fs`).
-6. **Cleanup**: Old SSTable objects are disposed, files are deleted from disk, and references are removed from the in-memory list.
-
-> **Why all files?** In this implementation, all levels (including Ln for n>0) may contain overlapping key ranges. Partial compaction would leave old versions shadowing newer ones in higher levels. See [AGENTS.md](AGENTS.md) for details.
-
-### MVCC & Snapshot Isolation
-
-- Each write operation is assigned a globally incrementing sequence number (`globalSeq`).
-- `LsmTree.Snapshot()` captures the current sequence number; subsequent reads with that snapshot see a consistent view.
-- Compaction's `pruneVersions` preserves all entries with `seq >= minActiveSnapshot`, ensuring no visible version is removed.
-- Transactions registered with the snapshot manager prevent compaction from pruning versions they might read.
+See [docs/architecture.md](docs/architecture.md) for the WAL format, SSTable binary format, concurrency model, compaction algorithm, and MVCC design.
 
 ---
 
@@ -144,6 +63,8 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 - **No explicit checkpoint/archive**: The WAL grows indefinitely until the next MemTable swap. There is no periodic WAL archival independent of flush.
 - **No replication/clustering**: Single-node storage engine only.
 - **Empty SSTable flush race**: `MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList. A flush check between the increment and the insert can produce an empty SSTable (no data loss — the WAL guarantees full recovery).
+- **BloomFilter memory**: Each open SSTable holds a full `byte[]` bloom filter in memory (≈1.25 MB per million entries). BloomFilter lifetimes are tied to SSTable lifetimes; compaction disposes both together.
+- **`.sst.tmp` Stale files**: If the process crashes during `SSTableWriter.writeCore` (before the atomic rename), a `.sst.tmp` file may remain. Startup automatically deletes `*.sst.tmp` files — they are cosmetic and never affect correctness.
 
 ---
 
@@ -152,7 +73,7 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 Run benchmarks locally with:
 
 ```bash
-dotnet run -c Release --project benchmark
+dotnet run -c Release --project Benchmark
 ```
 
 The benchmark suite is built with [BenchmarkDotNet](https://benchmarkdotnet.org/) and consists of two test classes:
@@ -206,19 +127,7 @@ dotnet test --filter "FullyQualifiedName~BloomFilterTests"
 ### Running Benchmarks
 
 ```bash
-dotnet run -c Release --project benchmark
-```
-
-The benchmark project is a standalone console application (not included in the solution file). It runs `PutBenchmark` then `GetBenchmark` sequentially.
-
-### Code Quality
-
-```bash
-# Check formatting (requires dotnet-fantomas tool)
-dotnet format --verify-no-changes
-
-# Apply formatting
-dotnet format
+dotnet run -c Release --project Benchmark
 ```
 
 ---

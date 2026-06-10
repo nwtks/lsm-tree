@@ -16,3 +16,9 @@ module LockExtensions =
             f ()
         finally
             lock.ExitWriteLock()
+
+    let disposeOf (d: System.IDisposable) =
+        try
+            d.Dispose()
+        with _ ->
+            ()
