@@ -72,7 +72,6 @@ type WAL(path: string) =
     let writer = new System.IO.StreamWriter(stream, System.Text.Encoding.UTF8)
     let walLock = obj ()
     let mutable disposed = false
-    do writer.AutoFlush <- true
 
     member _.Put(seq: int64, key: string, value: string) =
         let k = WALRecovery.utf8ToBase64 key
@@ -80,10 +79,35 @@ type WAL(path: string) =
         let log = $"{WALRecovery.PUT} {seq} {k} {v}"
         lock walLock (fun () -> writer.WriteLine log)
 
+    member _.PutSingle(seq: int64, key: string, value: string, ?sync: bool) =
+        let sync = defaultArg sync true
+        let k = WALRecovery.utf8ToBase64 key
+        let v = WALRecovery.utf8ToBase64 value
+        let log = $"{WALRecovery.PUT} {seq} {k} {v}"
+
+        lock walLock (fun () ->
+            writer.WriteLine log
+
+            if sync then
+                writer.Flush()
+                stream.Flush true)
+
     member _.Delete(seq: int64, key: string) =
         let k = WALRecovery.utf8ToBase64 key
         let log = $"{WALRecovery.DEL} {seq} {k}"
         lock walLock (fun () -> writer.WriteLine log)
+
+    member _.DeleteSingle(seq: int64, key: string, ?sync: bool) =
+        let sync = defaultArg sync true
+        let k = WALRecovery.utf8ToBase64 key
+        let log = $"{WALRecovery.DEL} {seq} {k}"
+
+        lock walLock (fun () ->
+            writer.WriteLine log
+
+            if sync then
+                writer.Flush()
+                stream.Flush true)
 
     member _.Begin(seq: int64) =
         let log = $"{WALRecovery.BEGIN} {seq}"
@@ -97,6 +121,7 @@ type WAL(path: string) =
             writer.WriteLine log
 
             if sync then
+                writer.Flush()
                 stream.Flush true)
 
     member this.Close() = (this :> System.IDisposable).Dispose()

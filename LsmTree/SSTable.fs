@@ -1,5 +1,10 @@
 namespace LsmTree
 
+type IndexEntry =
+    { Key: string
+      Seq: int64
+      Offset: int64 }
+
 module SSTable =
     [<Literal>]
     let MAGIC = 0x4C534D54L
@@ -97,35 +102,45 @@ module SSTable =
             let value = readItem br
             key, seq, value)
 
+    let loadIndex (fs: System.IO.FileStream) (br: System.IO.BinaryReader) (offsets: int64[]) =
+        if offsets.Length > 0 then
+            fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
+
+            offsets
+            |> Array.map (fun offset ->
+                let seq = br.ReadInt64()
+                let key = readValue br
+
+                if br.ReadBoolean() then
+                    ()
+                else
+                    let valueLen = br.ReadInt32()
+                    fs.Seek(int64 valueLen, System.IO.SeekOrigin.Current) |> ignore
+
+                { Key = key
+                  Seq = seq
+                  Offset = offset })
+        else
+            [||]
+
     [<TailCall>]
-    let rec binSearch
-        (fs: System.IO.FileStream)
-        (br: System.IO.BinaryReader)
-        (offsets: int64[])
-        key
-        snap
-        left
-        right
-        bestMatch
-        =
+    let rec binSearchIndex (index: IndexEntry[]) key snap left right bestIdx =
         if left > right then
-            bestMatch
+            bestIdx
         else
             let mid = left + (right - left) / 2
-            fs.Seek(offsets.[mid], System.IO.SeekOrigin.Begin) |> ignore
-            let currentSeq = br.ReadInt64()
-            let currentKey = readValue br
-            let comp = System.String.CompareOrdinal(key, currentKey)
+            let entry = index.[mid]
+            let comp = System.String.CompareOrdinal(key, entry.Key)
 
             if comp = 0 then
-                if currentSeq <= snap then
-                    binSearch fs br offsets key snap left (mid - 1) (readItem br |> Some)
+                if entry.Seq <= snap then
+                    binSearchIndex index key snap left (mid - 1) (Some mid)
                 else
-                    binSearch fs br offsets key snap (mid + 1) right bestMatch
+                    binSearchIndex index key snap (mid + 1) right bestIdx
             elif comp < 0 then
-                binSearch fs br offsets key snap left (mid - 1) bestMatch
+                binSearchIndex index key snap left (mid - 1) bestIdx
             else
-                binSearch fs br offsets key snap (mid + 1) right bestMatch
+                binSearchIndex index key snap (mid + 1) right bestIdx
 
 type SSTable(path: string) =
     let fs =
@@ -133,6 +148,7 @@ type SSTable(path: string) =
 
     let br = new System.IO.BinaryReader(fs)
     let offsets, bloomFilter, maxSeq = SSTable.load fs br
+    let index = SSTable.loadIndex fs br offsets
     let mutable disposed = false
 
     member _.Path = path
@@ -150,8 +166,17 @@ type SSTable(path: string) =
                 [||])
 
     member _.Get(key: string, snapshot: int64) =
-        if offsets.Length > 0 && bloomFilter.MightContain key then
-            lock fs (fun () -> SSTable.binSearch fs br offsets key snapshot 0 (offsets.Length - 1) None)
+        if index.Length > 0 && bloomFilter.MightContain key then
+            match SSTable.binSearchIndex index key snapshot 0 (index.Length - 1) None with
+            | Some idx ->
+                let entry = index.[idx]
+
+                lock fs (fun () ->
+                    fs.Seek(entry.Offset, System.IO.SeekOrigin.Begin) |> ignore
+                    br.ReadInt64() |> ignore
+                    SSTable.readValue br |> ignore
+                    (SSTable.readItem br))
+            | None -> None
         else
             None
 

@@ -26,6 +26,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
     let ssTablesLock = obj ()
     let compaction = new CompactionCoordinator()
+    let flushCoordinator = FlushCoordinator()
     let mutable disposed = false
 
     let parseSstLevel (path: string) =
@@ -82,6 +83,8 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         loadWal ()
 
     let flushMemTable () =
+        flushCoordinator.AcquireAndReset()
+
         match
             LsmTreeFlush.swapMemTableAndWal mainLock dataDir memTable wal walPath (fun newMt newWal oldMt ->
                 memTable <- newMt
@@ -89,14 +92,44 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                 immutableMemTable <- Some oldMt)
         with
         | Some(oldMemTable, oldWalPath) ->
-            LsmTreeFlush.flushToSSTable dataDir oldMemTable
-            |> LsmTreeFlush.addSSTable mainLock ssTablesLock ssTables (fun () -> immutableMemTable <- None)
+            LsmTreeFlush.asyncFlushToSSTable
+                mainLock
+                dataDir
+                snapshotManager
+                ssTablesLock
+                ssTables
+                compactLevelLimits
+                compaction
+                flushCoordinator
+                oldMemTable
+                oldWalPath
+                (fun () ->
+                    match immutableMemTable with
+                    | Some mt when obj.ReferenceEquals(mt, oldMemTable) -> immutableMemTable <- None
+                    | _ -> ())
+        | None -> flushCoordinator.SignalCompleted()
 
-            if System.IO.File.Exists oldWalPath then
-                System.IO.File.Delete oldWalPath
+    let putDirect key value =
+        let shouldFlush =
+            LockExtensions.withReadLock mainLock (fun () ->
+                let seq = snapshotManager.NextSequence()
+                wal.PutSingle(seq, key, value, syncOnCommit)
+                memTable.Put(key, seq, value)
+                memTable.SizeBytes >= memTableLimit)
 
-            LsmTreeFlush.triggerCompaction dataDir snapshotManager ssTablesLock ssTables compactLevelLimits compaction
-        | None -> ()
+        if shouldFlush then
+            flushMemTable ()
+
+    let deleteDirect key =
+        let shouldFlush =
+            LockExtensions.withReadLock mainLock (fun () ->
+                let seq = snapshotManager.NextSequence()
+                wal.DeleteSingle(seq, key, syncOnCommit)
+                memTable.Delete(key, seq)
+                memTable.SizeBytes >= memTableLimit)
+
+        if shouldFlush then
+            flushMemTable ()
 
     let commitTransaction (ops: (string * string option) list) =
         let shouldFlush =
@@ -131,21 +164,24 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         snapshotManager.RegisterSnapshot snap
         new LsmTransaction(this :> ILsmTree, snap) :> ITransaction
 
-    member this.Put(key: string, value: string) =
-        let tx = this.BeginTransaction()
-        tx.Put(key, value)
-        tx.Commit()
+    member this.Put(key: string, value: string) = putDirect key value
 
-    member this.Delete(key: string) =
-        let tx = this.BeginTransaction()
-        tx.Delete key
-        tx.Commit()
+    member this.Delete(key: string) = deleteDirect key
 
     member this.Get(key: string, ?snapshot: int64) =
         defaultArg snapshot (this.Snapshot())
         |> LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key
 
-    member _.Flush() = flushMemTable ()
+    member _.Flush() =
+        flushMemTable ()
+        flushCoordinator.WaitForCompletion()
+
+        lock ssTablesLock (fun () ->
+            match flushCoordinator.Error with
+            | Some ex ->
+                flushCoordinator.Error <- None
+                raise (System.AggregateException("Flush failed", ex))
+            | None -> ())
 
     member _.WaitForCompaction() =
         LsmTreeFlush.waitForCompaction compaction
@@ -181,22 +217,32 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                         | None -> ())
                 finally
                     try
-                        wal.Close()
+                        flushCoordinator.WaitForCompletion()
+
+                        lock ssTablesLock (fun () ->
+                            match flushCoordinator.Error with
+                            | Some ex ->
+                                flushCoordinator.Error <- None
+                                eprintfn $"[WARN] LsmTree: flush error during dispose: {ex.Message}"
+                            | None -> ())
                     finally
                         try
-                            mainLock.Dispose()
+                            wal.Close()
                         finally
                             try
-                                ssTables
-                                |> Array.iter (fun level ->
-                                    level
-                                    |> Seq.iter (fun sst ->
-                                        try
-                                            (sst :> System.IDisposable).Dispose()
-                                        with _ ->
-                                            ()))
+                                mainLock.Dispose()
                             finally
-                                (compaction :> System.IDisposable).Dispose()
+                                try
+                                    ssTables
+                                    |> Array.iter (fun level ->
+                                        level
+                                        |> Seq.iter (fun sst ->
+                                            try
+                                                (sst :> System.IDisposable).Dispose()
+                                            with _ ->
+                                                ()))
+                                finally
+                                    (compaction :> System.IDisposable).Dispose()
 
     interface ILsmTree with
         member this.Get(key, snapshot) = this.Get(key, ?snapshot = snapshot)

@@ -36,7 +36,4 @@ module LsmTreeSearch =
             match immRes with
             | Some(Some v) -> Some v
             | Some None -> None
-            | None ->
-                match searchLevel ssTablesLock ssTables key snap 0 with
-                | Some(Some v) -> Some v
-                | _ -> None
+            | None -> searchLevel ssTablesLock ssTables key snap 0

@@ -15,12 +15,16 @@ module SkipList =
     [<Literal>]
     let P = 0.5
 
-    [<TailCall>]
-    let rec randomLevel lvl =
-        if System.Random.Shared.NextDouble() < P && lvl < MAX_LEVEL then
-            randomLevel (lvl + 1)
-        else
-            lvl
+    let randomLevel () =
+        let bits = System.Random.Shared.Next()
+        let mutable lvl = 1
+        let mutable mask = 1
+
+        while lvl < MAX_LEVEL && bits &&& mask <> 0 do
+            lvl <- lvl + 1
+            mask <- mask <<< 1
+
+        lvl
 
     let next (next: SkipListNode) key seq =
         not (isNull next)
@@ -107,7 +111,7 @@ type SkipList() =
             None
 
     member _.Put(key: string, seq: int64, ?value: string) =
-        let lvl = SkipList.randomLevel 1
+        let lvl = SkipList.randomLevel ()
         let currLvl = SkipList.findCurrentLevel &currentLevel lvl
 
         let preds =

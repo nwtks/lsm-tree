@@ -14,6 +14,19 @@ type CompactionCoordinator() =
             cts.Dispose()
             (completedEvent :> System.IDisposable).Dispose()
 
+type FlushCoordinator() =
+    let flushLock = obj ()
+    let completedEvent = new System.Threading.ManualResetEvent(true)
+    member val Error: exn option = None with get, set
+
+    member _.AcquireAndReset() =
+        lock flushLock (fun () ->
+            completedEvent.WaitOne() |> ignore
+            completedEvent.Reset() |> ignore)
+
+    member _.SignalCompleted() = completedEvent.Set() |> ignore
+    member _.WaitForCompletion() = completedEvent.WaitOne() |> ignore
+
 module LsmTreeFlush =
     let timestamp () =
         System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
@@ -228,6 +241,35 @@ module LsmTreeFlush =
                         compaction.IsCompacting <- false
                         compaction.CompletedEvent.Set() |> ignore))
             |> ignore
+
+    let asyncFlushToSSTable
+        (mainLock: System.Threading.ReaderWriterLockSlim)
+        dataDir
+        (snapshotManager: LsmTreeSnapshot)
+        ssTablesLock
+        (ssTables: SSTable list[])
+        (compactLevelLimits: int[])
+        (compaction: CompactionCoordinator)
+        (flushCoordinator: FlushCoordinator)
+        (oldMemTable: MemTable)
+        (oldWalPath: string)
+        (clearState: unit -> unit)
+        =
+        System.Threading.Tasks.Task.Run(fun () ->
+            try
+                try
+                    flushToSSTable dataDir oldMemTable
+                    |> addSSTable mainLock ssTablesLock ssTables clearState
+
+                    if System.IO.File.Exists oldWalPath then
+                        System.IO.File.Delete oldWalPath
+
+                    triggerCompaction dataDir snapshotManager ssTablesLock ssTables compactLevelLimits compaction
+                with ex ->
+                    lock ssTablesLock (fun () -> flushCoordinator.Error <- Some ex)
+            finally
+                flushCoordinator.SignalCompleted())
+        |> ignore
 
     let waitForCompaction (compaction: CompactionCoordinator) =
         compaction.CompletedEvent.WaitOne() |> ignore
