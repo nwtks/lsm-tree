@@ -221,7 +221,7 @@ let ``Transaction multiple overlapping transactions`` () =
     tx2.Commit()
     tx2.Dispose()
 
-    let tx3 = tree.BeginTransaction()
+    use tx3 = tree.BeginTransaction()
     assertEqual (Some "mv2") (tx3.Get "mk") "Latest committed value visible"
     assertEqual None (tree.Get("mk", snap)) "Old snapshot sees nothing"
     tx3.Commit()
@@ -230,7 +230,7 @@ let ``Transaction multiple overlapping transactions`` () =
 let ``Transaction Rollback discards uncommitted writes`` () =
     use tree = new LsmTree(getTestDir "tx_rollback")
 
-    let tx = tree.BeginTransaction()
+    use tx = tree.BeginTransaction()
     tx.Put("rk", "rv")
     tx.Delete "rk2"
     tx.Rollback()
@@ -242,7 +242,7 @@ let ``Transaction Rollback releases snapshot sequence`` () =
     use tree = new LsmTree(getTestDir "tx_rollback_snap")
     let snapBefore = tree.Snapshot()
 
-    let tx = tree.BeginTransaction()
+    use tx = tree.BeginTransaction()
     tx.Put("rs", "rv")
     tx.Rollback()
 

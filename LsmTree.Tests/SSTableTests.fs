@@ -266,7 +266,7 @@ let ``SSTable double dispose does not throw`` () =
     let sstPath = System.IO.Path.Combine(testDataDir, "double_dispose.sst")
     SSTableWriter.write sstPath [] |> ignore
 
-    use sst = new SSTable(sstPath)
+    let sst = new SSTable(sstPath)
     (sst :> System.IDisposable).Dispose()
 
     (sst :> System.IDisposable).Dispose()

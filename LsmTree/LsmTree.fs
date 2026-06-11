@@ -247,5 +247,4 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         member this.Get(key, snapshot) = this.Get(key, ?snapshot = snapshot)
         member _.CommitTransaction ops = commitTransaction ops
 
-        member _.ReleaseSnapshot snapshot =
-            snapshotManager.ReleaseSnapshot snapshot
+        member this.ReleaseSnapshot snapshot = this.ReleaseSnapshot snapshot
