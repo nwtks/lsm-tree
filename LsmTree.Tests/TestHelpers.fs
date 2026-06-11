@@ -15,3 +15,8 @@ module TestHelpers =
 
     let assertEqual expected actual msg =
         Assert.True((expected = actual), $"{msg}\n  Expected: {expected}\n  Actual: {actual}")
+
+    let runConcurrent tasks =
+        tasks
+        |> Array.map (fun f -> System.Action f |> System.Threading.Tasks.Task.Run)
+        |> System.Threading.Tasks.Task.WaitAll

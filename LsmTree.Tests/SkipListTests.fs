@@ -15,13 +15,6 @@ let ``SkipList randomLevel is within valid bounds`` () =
     Assert.True(hasSomeHighLevel, "At least one level should be >= 4 in 10000 trials")
 
 [<Fact>]
-let ``SkipList returns None for non-existent key`` () =
-    let sl = SkipList()
-    sl.Put("k1", 1L, "v1")
-    assertEqual None (sl.Find("nonexistent", System.Int64.MaxValue)) "Should return None for missing key"
-    assertEqual None (sl.Find("k1", 0L)) "Should return None when snapshot precedes entry"
-
-[<Fact>]
 let ``SkipList Find respects snapshot isolation`` () =
     let sl = SkipList()
     sl.Put("k", 10L, "v1")
@@ -33,10 +26,17 @@ let ``SkipList Find respects snapshot isolation`` () =
     assertEqual (Some(Some "v3")) (sl.Find("k", System.Int64.MaxValue)) "Max snapshot sees latest"
 
 [<Fact>]
-let ``SkipList returns Some None for key with tombstone value`` () =
+let ``SkipList Find returns tombstone for deleted key`` () =
     let sl = SkipList()
     sl.Put("k", 1L)
     assertEqual (Some None) (sl.Find("k", System.Int64.MaxValue)) "Tombstone should return Some None"
+
+[<Fact>]
+let ``SkipList returns None for non-existent key`` () =
+    let sl = SkipList()
+    sl.Put("k1", 1L, "v1")
+    assertEqual None (sl.Find("nonexistent", System.Int64.MaxValue)) "Should return None for missing key"
+    assertEqual None (sl.Find("k1", 0L)) "Should return None when snapshot precedes entry"
 
 [<Fact>]
 let ``SkipList maintains sorted order by key`` () =
@@ -52,22 +52,28 @@ let ``SkipList maintains sorted order by key`` () =
         "SkipList should maintain sorted order"
 
 [<Fact>]
+let ``SkipList Entries on empty list returns empty`` () =
+    let sl = SkipList()
+    assertEqual [] (sl.Entries()) "Empty SkipList should return []"
+
+[<Fact>]
 let ``SkipList handles concurrent access without crashing`` () =
     let list = SkipList()
     let numThreads = 20
     let numOps = 2000
 
-    let tasks =
-        [| for i = 1 to numThreads do
-               yield
-                   System.Threading.Tasks.Task.Run(fun () ->
-                       for j = 1 to numOps do
-                           list.Put($"key{j % 50}", int64 (i * numOps + j), $"val{j}")
+    runConcurrent (
+        Array.init numThreads (fun idx ->
+            let i = idx + 1
 
-                           if j % 10 = 0 then
-                               list.Find($"key{j % 50}", System.Int64.MaxValue) |> ignore) |]
+            fun () ->
+                for j = 1 to numOps do
+                    list.Put("sameKey", int64 (i * numOps + j), $"val{j}")
 
-    System.Threading.Tasks.Task.WaitAll tasks
+                    if j % 100 = 0 then
+                        list.Find("sameKey", System.Int64.MaxValue) |> ignore)
+    )
+
     let entries = list.Entries()
     Assert.True(entries.Length > 0)
 
@@ -77,25 +83,22 @@ let ``SkipList handles extreme CAS contention on same key`` () =
     let numThreads = 8
     let numOps = 10000
 
-    let tasks =
-        [| for i = 1 to numThreads do
-               yield
-                   System.Threading.Tasks.Task.Run(fun () ->
-                       for j = 1 to numOps do
-                           list.Put("sameKey", int64 (i * numOps + j), $"val{j}")
+    runConcurrent (
+        Array.init numThreads (fun idx ->
+            let i = idx + 1
 
-                           if j % 100 = 0 then
-                               list.Find("sameKey", System.Int64.MaxValue) |> ignore) |]
+            fun () ->
+                for j = 1 to numOps do
+                    list.Put("sameKey", int64 (i * numOps + j), $"val{j}")
 
-    System.Threading.Tasks.Task.WaitAll tasks
+                    if j % 100 = 0 then
+                        list.Find("sameKey", System.Int64.MaxValue) |> ignore)
+    )
+
     let entries = list.Entries()
     Assert.True(entries.Length > 0)
 
-    match list.Find("sameKey", System.Int64.MaxValue) with
-    | Some _ -> Assert.True(true, "sameKey should have a value")
-    | None -> Assert.True(false, "sameKey should have a value after concurrent puts")
-
-[<Fact>]
-let ``SkipList Entries on empty list returns empty`` () =
-    let sl = SkipList()
-    assertEqual [] (sl.Entries()) "Empty SkipList should return []"
+    Assert.True(
+        Option.isSome (list.Find("sameKey", System.Int64.MaxValue)),
+        "sameKey should have a value after concurrent puts"
+    )

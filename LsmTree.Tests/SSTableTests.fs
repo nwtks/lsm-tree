@@ -8,6 +8,29 @@ let writeSst dataDir name entries =
     SSTableWriter.write path entries |> ignore
     path
 
+let writeSstWith dataDir name (writeSections: System.IO.BinaryWriter -> System.IO.FileStream -> int64 * int64) =
+    let path = System.IO.Path.Combine(dataDir, name)
+
+    do
+        use fs =
+            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
+
+        use bw = new System.IO.BinaryWriter(fs)
+        bw.Write 1L
+        bw.Write 2
+        bw.Write "k1"B
+        bw.Write false
+        bw.Write 2
+        bw.Write "v1"B
+
+        let indexPos, bloomPos = writeSections bw fs
+        bw.Write indexPos
+        bw.Write bloomPos
+        bw.Write 0L
+        bw.Write SSTable.MAGIC
+
+    path
+
 let writeRawSst dataDir name (action: System.IO.BinaryWriter -> int64 -> int64 -> unit) =
     let path = System.IO.Path.Combine(dataDir, name)
 
@@ -34,18 +57,6 @@ let writeRawSst dataDir name (action: System.IO.BinaryWriter -> int64 -> int64 -
     path
 
 [<Fact>]
-let ``SSTable short file below footer size handles gracefully`` () =
-    let testDataDir = getTestDir "sst_short_file"
-    let path = System.IO.Path.Combine(testDataDir, "short.sst")
-
-    System.IO.File.WriteAllBytes(path, [| 0uy .. 9uy |])
-
-    use sst = new SSTable(path)
-    assertEqual 0 sst.Count "Short file should have 0 entries"
-    assertEqual None (sst.Get("any", 0L)) "Short file Get should return None"
-    assertEqual [||] (sst.GetAll()) "Short file GetAll should return empty array"
-
-[<Fact>]
 let ``SSTable invalid magic number throws InvalidDataException`` () =
     let testDataDir = getTestDir "sst_bad_magic"
     let sstPath = System.IO.Path.Combine(testDataDir, "bad.sst")
@@ -69,7 +80,7 @@ let ``SSTable index offset out of range throws`` () =
     writeRawSst testDataDir "L0_bad_idx_ofs.sst" (fun bw _dataEnd bloomPos ->
         bw.Write(bloomPos + 9999L)
         bw.Write bloomPos
-        bw.Write 0L // maxSeq
+        bw.Write 0L
         bw.Write SSTable.MAGIC)
     |> ignore
 
@@ -83,7 +94,7 @@ let ``SSTable bloom offset before index offset throws`` () =
     writeRawSst testDataDir "L0_bloom_before_idx.sst" (fun bw dataEnd _bloomPos ->
         bw.Write dataEnd
         bw.Write 0L
-        bw.Write 0L // maxSeq
+        bw.Write 0L
         bw.Write SSTable.MAGIC)
     |> ignore
 
@@ -94,195 +105,111 @@ let ``SSTable bloom offset before index offset throws`` () =
 [<Fact>]
 let ``SSTable negative index entry count throws`` () =
     let testDataDir = getTestDir "sst_neg_count"
-    let path = System.IO.Path.Combine(testDataDir, "L0_neg_count.sst")
 
-    do
-        use fs =
-            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
-
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write 1L // seq
-        bw.Write 2 // key length
-        bw.Write "k1"B // key
-        bw.Write false // has value
-        bw.Write 2 // value length
-        bw.Write "v1"B // value
-
-        let indexPos = fs.Position
-        bw.Write -1 // negative count!
-        bw.Write 0L // dummy offset
-
-        let bloomPos = fs.Position
-        bw.Write 1 // byte count
-        bw.Write 0uy // bloom byte
-
-        bw.Write indexPos // indexOffset
-        bw.Write bloomPos // bloomOffset
-        bw.Write 0L // maxSeq
-        bw.Write SSTable.MAGIC
+    let path =
+        writeSstWith testDataDir "L0_neg_count.sst" (fun bw fs ->
+            let indexPos = fs.Position
+            bw.Write -1
+            bw.Write 0L
+            let bloomPos = fs.Position
+            bw.Write 1
+            bw.Write 0uy
+            indexPos, bloomPos)
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
 
 [<Fact>]
 let ``SSTable index entry count exceeds remaining space throws`` () =
     let testDataDir = getTestDir "sst_count_overflow"
-    let path = System.IO.Path.Combine(testDataDir, "L0_count_overflow.sst")
 
-    do
-        use fs =
-            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
+    let path =
+        writeSstWith testDataDir "L0_count_overflow.sst" (fun bw fs ->
+            let indexPos = fs.Position
+            bw.Write 100000
 
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write 1L
-        bw.Write 2
-        bw.Write "k1"B
-        bw.Write false
-        bw.Write 2
-        bw.Write "v1"B
+            for _ = 0 to 9999 do
+                bw.Write 0L
 
-        let indexPos = fs.Position
-        bw.Write 100000
-
-        for _ = 0 to 9999 do
-            bw.Write 0L // write 10k offsets to make file large
-
-        let bloomPos = fs.Position
-        bw.Write 1
-        bw.Write 0uy
-
-        bw.Write indexPos
-        bw.Write bloomPos
-        bw.Write 0L // maxSeq
-        bw.Write SSTable.MAGIC
+            let bloomPos = fs.Position
+            bw.Write 1
+            bw.Write 0uy
+            indexPos, bloomPos)
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
 
 [<Fact>]
 let ``SSTable entry offset out of range throws`` () =
     let testDataDir = getTestDir "sst_entry_ofs"
-    let path = System.IO.Path.Combine(testDataDir, "L0_entry_ofs.sst")
 
-    do
-        use fs =
-            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
-
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write 1L
-        bw.Write 2
-        bw.Write "k1"B
-        bw.Write false
-        bw.Write 2
-        bw.Write "v1"B
-
-        let indexPos = fs.Position
-        bw.Write 1
-        bw.Write -1L // entry offset points before file start!
-
-        let bloomPos = fs.Position
-        bw.Write 1
-        bw.Write 0uy
-
-        bw.Write indexPos
-        bw.Write bloomPos
-        bw.Write 0L // maxSeq
-        bw.Write SSTable.MAGIC
+    let path =
+        writeSstWith testDataDir "L0_entry_ofs.sst" (fun bw fs ->
+            let indexPos = fs.Position
+            bw.Write 1
+            bw.Write -1L
+            let bloomPos = fs.Position
+            bw.Write 1
+            bw.Write 0uy
+            indexPos, bloomPos)
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
 
 [<Fact>]
 let ``SSTable entry offset at index position throws`` () =
     let testDataDir = getTestDir "sst_entry_at_idx"
-    let path = System.IO.Path.Combine(testDataDir, "L0_entry_at_idx.sst")
 
-    do
-        use fs =
-            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
-
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write 1L
-        bw.Write 2
-        bw.Write "k1"B
-        bw.Write false
-        bw.Write 2
-        bw.Write "v1"B
-
-        let indexPos = fs.Position
-        bw.Write 1
-        bw.Write indexPos // entry offset equals indexPos — should trigger >= offset check
-
-        let bloomPos = fs.Position
-        bw.Write 1
-        bw.Write 0uy
-
-        bw.Write indexPos
-        bw.Write bloomPos
-        bw.Write 0L // maxSeq
-        bw.Write SSTable.MAGIC
+    let path =
+        writeSstWith testDataDir "L0_entry_at_idx.sst" (fun bw fs ->
+            let indexPos = fs.Position
+            bw.Write 1
+            bw.Write indexPos
+            let bloomPos = fs.Position
+            bw.Write 1
+            bw.Write 0uy
+            indexPos, bloomPos)
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
 
 [<Fact>]
 let ``SSTable negative bloom byte count throws`` () =
     let testDataDir = getTestDir "sst_neg_bloom"
-    let path = System.IO.Path.Combine(testDataDir, "L0_neg_bloom.sst")
 
-    do
-        use fs =
-            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
-
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write 1L
-        bw.Write 2
-        bw.Write "k1"B
-        bw.Write false
-        bw.Write 2
-        bw.Write "v1"B
-
-        let indexPos = fs.Position
-        bw.Write 1
-        bw.Write 0L
-
-        let bloomPos = fs.Position
-        bw.Write -1 // negative bloom byte count!
-        bw.Write 0uy
-
-        bw.Write indexPos
-        bw.Write bloomPos
-        bw.Write 0L // maxSeq
-        bw.Write SSTable.MAGIC
+    let path =
+        writeSstWith testDataDir "L0_neg_bloom.sst" (fun bw fs ->
+            let indexPos = fs.Position
+            bw.Write 1
+            bw.Write 0L
+            let bloomPos = fs.Position
+            bw.Write -1
+            bw.Write 0uy
+            indexPos, bloomPos)
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
 
 [<Fact>]
 let ``SSTable bloom byte count exceeds remaining space throws`` () =
     let testDataDir = getTestDir "sst_bloom_overflow"
-    let path = System.IO.Path.Combine(testDataDir, "L0_bloom_overflow.sst")
 
-    do
-        use fs =
-            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
-
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write 1L
-        bw.Write 2
-        bw.Write "k1"B
-        bw.Write false
-        bw.Write 2
-        bw.Write "v1"B
-
-        let indexPos = fs.Position
-        bw.Write 1
-        bw.Write 0L
-
-        let bloomPos = fs.Position
-        bw.Write 10000
-
-        bw.Write indexPos
-        bw.Write bloomPos
-        bw.Write 0L // maxSeq
-        bw.Write SSTable.MAGIC
+    let path =
+        writeSstWith testDataDir "L0_bloom_overflow.sst" (fun bw fs ->
+            let indexPos = fs.Position
+            bw.Write 1
+            bw.Write 0L
+            let bloomPos = fs.Position
+            bw.Write 10000
+            indexPos, bloomPos)
 
     Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
+
+[<Fact>]
+let ``SSTable short file below footer size returns zero entries`` () =
+    let testDataDir = getTestDir "sst_short_file"
+    let path = System.IO.Path.Combine(testDataDir, "short.sst")
+    System.IO.File.WriteAllBytes(path, [| 0uy .. 9uy |])
+
+    use sst = new SSTable(path)
+    assertEqual 0 sst.Count "Short file should have 0 entries"
+    assertEqual None (sst.Get("any", 0L)) "Short file Get should return None"
+    assertEqual [||] (sst.GetAll()) "Short file GetAll should return empty array"
 
 [<Fact>]
 let ``SSTable handles empty entries correctly`` () =
@@ -343,7 +270,6 @@ let ``SSTable double dispose does not throw`` () =
     (sst :> System.IDisposable).Dispose()
 
     (sst :> System.IDisposable).Dispose()
-    Assert.True(true, "Should not throw")
 
 [<Fact>]
 let ``SSTable level parsing prefers L0 over L1`` () =

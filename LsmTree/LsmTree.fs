@@ -169,9 +169,9 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         snapshotManager.RegisterSnapshot snap
         new LsmTransaction(this :> ILsmTree, snap) :> ITransaction
 
-    member this.Put(key: string, value: string) = putDirect key value
+    member _.Put(key: string, value: string) = putDirect key value
 
-    member this.Delete(key: string) = deleteDirect key
+    member _.Delete(key: string) = deleteDirect key
 
     member this.Get(key: string, ?snapshot: int64) =
         defaultArg snapshot (this.Snapshot())

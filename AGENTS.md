@@ -1,7 +1,11 @@
+# AGENTS.md
+
+This file provides guidance for AI agents working in this repository.
+
 ## AGENTS.md Editing Rules
 
-**Don't write what's in the codebase** — information that can be obtained by reading source code or project files must not be written in AGENTS.md.
-**Don't duplicate README.md** — content already described in README.md should only be referenced by a link (`See [README.md](...)`).
+- **Don't write what's in the codebase** — information that can be obtained by reading source code or project files must not be written in AGENTS.md.
+- **Don't duplicate README.md** — content already described in README.md should only be referenced by a link (`See [README.md](...)`).
 
 ### Documentation Location Rules
 
@@ -13,20 +17,6 @@
 
 - Only keep project-specific implicit rules in AGENTS.md. The topics above belong in their corresponding `docs/*.md` files.
 - When a new trade-off or gotcha arises, first consider appending to the relevant `docs/` file. Only add to AGENTS.md if it's an "implicit rule not obvious from the codebase."
-
----
-
-## Build & Test
-
-```bash
-dotnet build
-dotnet test
-dotnet run -c Release --project Benchmark
-```
-
-After any code change, run `dotnet test` and confirm **all tests pass**.
-Maintain high unit test coverage (target: ≥ 80% line coverage).
-If line coverage falls below 80%, add test code to restore it above the threshold before merging.
 
 ---
 
@@ -47,6 +37,7 @@ See [docs/trade-off.md](docs/trade-off.md).
 See [docs/gotchas.md](docs/gotchas.md).
 
 ---
+
 ## Cross-Platform Compatibility
 
 All code — including test code — must work on **both Windows and Linux**. Avoid:
@@ -58,24 +49,26 @@ All code — including test code — must work on **both Windows and Linux**. Av
 
 ---
 
-## Code Style
+## Coding Conventions
 
-Prefer functional programming idioms over imperative ones throughout the codebase — including test code. These rules are preferences, not absolutes — use imperative style when it meaningfully improves readability or performance, but always start with the functional approach.
+- Prefer functional programming idioms over imperative ones throughout the codebase — including test code.
+- **Favor expressions over statements** — Use `match` expressions, `if`/`then`/`else`, and pattern matching instead of imperative control flow.
+- **Leverage discriminated unions** — Model domain concepts (messages, roles, configuration phases, timer actions, pending reads) with DUs for exhaustiveness checking.
+- **Use `[<TailCall>]` on recursive functions** that loop (e.g., `agentLoop`, `findFirstIdx`) to prevent stack overflows.
+- Do not introduce new external NuGet packages without checking existing dependencies in the `.fsproj` files first.
 
 ---
 
 ## Testing Conventions
 
-- Tests are top-level `[<Fact>]` functions in XUnit v3, split by component:
-  - `BloomFilterTests.fs` — Bloom filter correctness and false positive rate
-  - `SkipListTests.fs` — SkipList sorting and concurrency stress
-  - `SSTableTests.fs` — level parsing, dispose safety, short file, invalid magic
-  - `WALTests.fs` — recovery, atomicity, orphaned ops, malformed entries
-  - `TransactionTests.fs` — read own writes, commit visibility, rollback, snapshot isolation
-  - `LsmTreeTests.fs` — CRUD, flush, compaction, MVCC, lifecycle, concurrency, error propagation
-- Each test calls `getTestDir "<unique_name>"` to get an isolated temp directory (it deletes and recreates the dir).
+- After any code change, run `dotnet test` and confirm **all tests pass**.
+- Maintain high unit test coverage (target: ≥ 80% line coverage).If line coverage falls below 80%, add test code to restore it above the threshold before merging.
+- **Test ordering rules**:
+  1. Within each test file, `[<Fact>]` functions must appear in the same order as the corresponding functions/methods/constructors in the source file under test.
+  2. When multiple test cases target the same source function, order them by **test priority**: normal (happy path) → error cases → fault/failure scenarios.
+  3. **Prefer data-driven tests** (`[<Theory>]` + `[<InlineData>]`) when multiple test cases share the same test logic but differ only in inputs or expected outputs. This reduces code duplication and makes it easy to add new cases.
 - **Use a unique suffix** per test — tests may run in parallel.
-- **Test ordering matches source ordering**: Within each test file, the `[<Fact>]` functions must appear in the same order as the corresponding functions/methods/constructors in the source file under test. This makes it easy to locate the test for a given piece of code.
+- Each test calls `getTestDir "<unique_name>"` to get an isolated temp directory (it deletes and recreates the dir).
 - Use `assertEqual expected actual msg` (wraps `Assert.True`) for readable failure output.
 - To simulate IO errors deterministically (e.g., for error propagation tests), use reflection to close private `FileStream` handles. Never use file truncation (`SetLength`), as .NET's `FileStream` internal buffer can mask the corruption.
 

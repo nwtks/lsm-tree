@@ -12,13 +12,6 @@ let ``BloomFilter empty behavior always returns true`` () =
     assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
 
 [<Fact>]
-let ``BloomFilter create with negative capacity uses default`` () =
-    let bf = BloomFilter.create -1
-    Assert.NotNull bf
-    bf.Add "test_key"
-    assertEqual true (bf.MightContain "test_key") "Added key should be found"
-
-[<Fact>]
 let ``BloomFilter false positive rate is below 2 percent`` () =
     let numEntries = 1000
     let bf = BloomFilter.create numEntries
@@ -62,3 +55,10 @@ let ``BloomFilter duplicate adds do not corrupt filter`` () =
     bf.Add "dup"
     bf.Add "dup"
     assertEqual true (bf.MightContain "dup") "Key added multiple times should still be found"
+
+[<Fact>]
+let ``BloomFilter create with negative capacity uses default`` () =
+    let bf = BloomFilter.create -1
+    Assert.NotNull bf
+    bf.Add "test_key"
+    assertEqual true (bf.MightContain "test_key") "Added key should be found"

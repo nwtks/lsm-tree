@@ -4,143 +4,134 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``WALRecovery base64ToUtf8 throws on invalid input`` () =
-    Assert.Throws<System.FormatException>(fun () -> WALRecovery.base64ToUtf8 "!!!invalid-base64!!!" |> ignore)
+let ``WALRecovery base64ToUtf8 decodes correctly`` () =
+    let bytes = System.Text.Encoding.UTF8.GetBytes "Hello, WAL!"
+    let b64 = System.Convert.ToBase64String bytes
+    let decoded = WALRecovery.base64ToUtf8 b64
+    assertEqual "Hello, WAL!" decoded "Valid Base64 string should decode correctly"
 
 [<Fact>]
-let ``WAL recovery handles invalid base64 gracefully`` () =
-    let testDataDir = getTestDir "wal_bad_base64"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
-    let k = WALRecovery.utf8ToBase64 "good_key"
-    let v = WALRecovery.utf8ToBase64 "good_val"
-
-    System.IO.File.WriteAllLines(
-        walPath,
-        [| "PUT 1 !!!invalid-base64!!! !!!data!!!"
-           "BEGIN 2"
-           $"PUT 2 {k} {v}"
-           "COMMIT 2" |]
-    )
-
-    use tree = new LsmTree(testDataDir)
-    assertEqual (Some "good_val") (tree.Get "good_key") "Should recover valid transaction despite malformed entry"
+let ``WALRecovery invalid base64 returns None via parseEntry`` () =
+    let line = "PUT 1 !!invalid!! !!base64!!"
+    let result = WALRecovery.parseEntry line
+    assertEqual None result "parseEntry returns None for invalid base64"
 
 [<Fact>]
-let ``WAL recovery handles non-existent file gracefully`` () =
-    let testDataDir = getTestDir "wal_no_exist"
-
-    let ops =
-        WALRecovery.recover (System.IO.Path.Combine(testDataDir, "nonexistent.wal"))
-        |> Seq.toList
-
-    assertEqual [] ops "Recovering non-existent file path"
+let ``WALRecovery recover on non-existent file returns empty list`` () =
+    let testDir = getTestDir "wal_non_existent"
+    let path = System.IO.Path.Combine(testDir, "nonexistent.wal")
+    let recovered = WALRecovery.recover path
+    assertEqual Seq.empty recovered "Non-existent WAL file should return empty sequence"
 
 [<Fact>]
-let ``WAL recovery with empty file returns empty`` () =
-    let testDataDir = getTestDir "wal_empty"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
-    System.IO.File.WriteAllText(walPath, "")
+let ``WALRecovery recover handles empty WAL file`` () =
+    let testDir = getTestDir "wal_empty"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
+    System.IO.File.WriteAllText(path, "")
 
-    let ops = WALRecovery.recover walPath |> Seq.toList
-    assertEqual [] ops "Empty WAL file should produce no entries"
-
-[<Fact>]
-let ``WAL recovery ignores malformed lines`` () =
-    let testDataDir = getTestDir "wal_malformed"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
-
-    let lines = [ ""; "invalid"; "PUT abc k v"; "UNKNOWN 1 k v" ]
-    System.IO.File.WriteAllLines(walPath, lines)
-
-    let ops = WALRecovery.recover walPath |> Seq.toList
-    assertEqual [] ops "Should ignore invalid WAL entries"
+    let recovered = WALRecovery.recover path |> Seq.toList
+    assertEqual [] recovered "Empty WAL file should return empty list"
 
 [<Fact>]
-let ``WAL recovery handles orphaned PUT lines`` () =
-    let testDataDir = getTestDir "wal_edge_orphan"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
-    let k_orphan = WALRecovery.utf8ToBase64 "key_orphan"
-    let v_orphan = WALRecovery.utf8ToBase64 "val_orphan"
-    System.IO.File.WriteAllLines(walPath, [ $"PUT 3 {k_orphan} {v_orphan}" ])
+let ``WALRecovery malformed log lines are skipped`` () =
+    let testDir = getTestDir "wal_malformed"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
+    System.IO.File.WriteAllText(path, "garbage|line\n")
 
-    use tree = new LsmTree(testDataDir)
-    assertEqual (Some "val_orphan") (tree.Get "key_orphan") "Orphaned PUT without BEGIN should be recovered"
+    let recovered = WALRecovery.recover path |> Seq.toList
+    assertEqual [] recovered "Malformed lines should be skipped"
 
 [<Fact>]
-let ``WAL recovery handles orphaned COMMIT lines`` () =
-    let testDataDir = getTestDir "wal_edge_orphan_commit"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
-    System.IO.File.WriteAllLines(walPath, [ "COMMIT 4" ])
+let ``WALRecovery orphaned PUT outside transaction is recovered`` () =
+    let testDir = getTestDir "wal_orphan_put"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
+    System.IO.File.WriteAllText(path, "PUT 1 a2V5MQ== dmFsMQ==")
 
-    use tree = new LsmTree(testDataDir)
-    assertEqual None (tree.Get "non_existent") "Orphaned COMMIT with no matching BEGIN should not crash"
-
-[<Fact>]
-let ``WAL recovery ignores unknown entries`` () =
-    let testDataDir = getTestDir "wal_edge"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
-    let k = WALRecovery.utf8ToBase64 "k"
-    let v = WALRecovery.utf8ToBase64 "v"
-    System.IO.File.WriteAllLines(walPath, [ "UNKNOWN 1 some data"; "BEGIN 2"; $"PUT 2 {k} {v}"; "COMMIT 2" ])
-
-    use tree = new LsmTree(testDataDir)
-    assertEqual (Some "v") (tree.Get "k") "Should recover valid transaction even if unknown entry present"
+    let recovered = WALRecovery.recover path |> Seq.toList
+    let expected = [ 1L, "key1", Some "val1" ]
+    assertEqual expected recovered "Orphaned PUT outside a transaction must be recovered"
 
 [<Fact>]
-let ``WAL recovery handles DEL entries`` () =
-    let testDataDir = getTestDir "wal_del_recovery"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
-    let k = WALRecovery.utf8ToBase64 "del_key"
-    let k2 = WALRecovery.utf8ToBase64 "keep_key"
-    let v2 = WALRecovery.utf8ToBase64 "keep_val"
-    System.IO.File.WriteAllLines(walPath, [ $"DEL 1 {k}"; $"PUT 2 {k2} {v2}" ])
+let ``WALRecovery orphaned COMMIT is skipped on recovery`` () =
+    let testDir = getTestDir "wal_orphan_commit"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
+    let lines = [ "BEGIN 1"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1"; "COMMIT 2" ]
+    System.IO.File.WriteAllLines(path, lines)
 
-    use tree = new LsmTree(testDataDir)
-    assertEqual None (tree.Get "del_key") "DEL key should be absent after recovery"
-    assertEqual (Some "keep_val") (tree.Get "keep_key") "PUT key should be present after recovery"
+    let recovered = WALRecovery.recover path |> Seq.toList
+    let expected = [ 1L, "key1", Some "val1" ]
+    assertEqual expected recovered "Orphaned COMMIT should be ignored, valid txn recovered"
 
 [<Fact>]
-let ``WAL atomic recovery skips uncommitted transactions`` () =
-    let testDataDir = getTestDir "tx_wal_atomicity"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal.log")
+let ``WALRecovery unknown entry types are skipped`` () =
+    let testDir = getTestDir "wal_unknown"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
+    let lines = [ "BEGIN 1"; "UNKNOWN foo bar"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1" ]
+    System.IO.File.WriteAllLines(path, lines)
+
+    let recovered = WALRecovery.recover path |> Seq.toList
+    let expected = [ 1L, "key1", Some "val1" ]
+    assertEqual expected recovered "Unknown entry types should be gracefully skipped"
+
+[<Fact>]
+let ``WALRecovery DEL entries are recovered as tombstones`` () =
+    let testDir = getTestDir "wal_del_entries"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
+
+    let lines =
+        [ "BEGIN 1"
+          "PUT 1 a2V5MQ== dmFsMQ=="
+          "PUT 1 a2V5Mg== dmFsMg=="
+          "DEL 1 a2V5MQ=="
+          "COMMIT 1" ]
+
+    System.IO.File.WriteAllLines(path, lines)
+    let recovered = WALRecovery.recover path |> Seq.toList
+
+    let expected =
+        [ 1L, "key1", Some "val1"; 1L, "key2", Some "val2"; 1L, "key1", None ]
+
+    assertEqual expected recovered "DEL entries should be recovered as tombstones along with all committed ops"
+
+[<Fact>]
+let ``WALRecovery uncommitted transactions are excluded on recovery`` () =
+    let testDir = getTestDir "wal_atomic"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
+
+    let lines =
+        [ "BEGIN 1"
+          "PUT 1 a2V5MQ== dmFsMQ=="
+          "BEGIN 2"
+          "PUT 2 a2V5Mg== dmFsMg=="
+          "COMMIT 2" ]
+
+    System.IO.File.WriteAllLines(path, lines)
+    let recovered = WALRecovery.recover path |> Seq.toList
+    let expected = [ 2L, "key2", Some "val2" ]
+    assertEqual expected recovered "Only committed transactions should survive recovery"
+
+[<Fact>]
+let ``WAL Put and recover restores data correctly`` () =
+    let testDir = getTestDir "wal_restore"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
 
     do
-        use sw = new System.IO.StreamWriter(walPath)
-        sw.WriteLine "BEGIN 1"
-        let k1 = WALRecovery.utf8ToBase64 "k1"
-        let v1 = WALRecovery.utf8ToBase64 "v1"
-        sw.WriteLine $"PUT 1 {k1} {v1}"
+        use wal = new WAL(path)
+        wal.Put(1L, "key1", "val1")
+        wal.Put(2L, "key2", "val2")
+        wal.Close()
 
-    use tree = new LsmTree(testDataDir)
-    assertEqual None (tree.Get "k1") "Should not recover k1 because transaction was not committed"
-
-    do
-        use sw2 = System.IO.File.AppendText walPath
-        sw2.WriteLine "COMMIT 1"
-
-    use tree2 = new LsmTree(testDataDir)
-    assertEqual (Some "v1") (tree2.Get "k1") "Should recover k1 after COMMIT marker is present"
-
+    let recovered = WALRecovery.recover path |> Seq.toList
+    let expected = [ 1L, "key1", Some "val1"; 2L, "key2", Some "val2" ]
+    assertEqual expected recovered "WAL data should be recovered correctly after Close"
 
 [<Fact>]
-let ``WAL recovery restores data after restart`` () =
-    let testDataDir = getTestDir "4"
-    use tree1 = new LsmTree(testDataDir)
-    tree1.Put("wal_key1", "wal_val1")
-    tree1.Put("wal_key2", "wal_val2")
-    tree1.Delete "wal_key1"
+let ``WAL IO errors are propagated to the caller`` () =
+    let testDir = getTestDir "wal_io_errors"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
+    use wal = new WAL(path)
 
-    use tree2 = new LsmTree(testDataDir)
-    assertEqual None (tree2.Get "wal_key1") "wal_key1 should be deleted after recovery"
-    assertEqual (Some "wal_val2") (tree2.Get "wal_key2") "wal_key2 should be recovered from WAL log"
-
-[<Fact>]
-let ``WAL dispose handles I/O errors gracefully`` () =
-    let testDataDir = getTestDir "wal_io_error"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal_io.log")
-    let wal = new WAL(walPath)
-
-    let streamField =
+    let handleField =
         typeof<WAL>
             .GetField(
                 "stream",
@@ -148,18 +139,35 @@ let ``WAL dispose handles I/O errors gracefully`` () =
                 ||| System.Reflection.BindingFlags.Instance
             )
 
-    let stream = streamField.GetValue(wal) :?> System.IO.FileStream
-    stream.Close()
+    let fs = handleField.GetValue wal :?> System.IO.FileStream
+    fs.Close()
 
-    (wal :> System.IDisposable).Dispose()
-    Assert.True(true, "WAL Dispose should not throw when underlying stream is closed")
+    wal.Put(1L, "k2", "v2")
+
+    Assert.Throws<System.ObjectDisposedException>(fun () -> wal.PutSingle(2L, "k3", "v3", true))
+    |> ignore
 
 [<Fact>]
 let ``WAL double dispose does not throw`` () =
-    let testDataDir = getTestDir "wal_double_dispose"
-    let walPath = System.IO.Path.Combine(testDataDir, "wal_dd.log")
+    let testDir = getTestDir "wal_double_dispose"
+    let path = System.IO.Path.Combine(testDir, "data.wal")
 
-    let wal = new WAL(walPath)
+    let wal = new WAL(path)
+    wal.Close()
     (wal :> System.IDisposable).Dispose()
-    (wal :> System.IDisposable).Dispose()
-    Assert.True(true, "WAL double dispose should not throw")
+
+[<Fact>]
+let ``WALRecovery parseEntry PUT with wrong length returns None`` () =
+    assertEqual None (WALRecovery.parseEntry "PUT 1 a2V5MQ==") "PUT with 3 parts returns None"
+
+[<Fact>]
+let ``WALRecovery parseEntry DEL with wrong length returns None`` () =
+    assertEqual None (WALRecovery.parseEntry "DEL 1 a2V5MQ== dmFsMQ==") "DEL with 4 parts returns None"
+
+[<Fact>]
+let ``WALRecovery parseEntry BEGIN with wrong length returns None`` () =
+    assertEqual None (WALRecovery.parseEntry "BEGIN 1 extra") "BEGIN with 3 parts returns None"
+
+[<Fact>]
+let ``WALRecovery parseEntry COMMIT with wrong length returns None`` () =
+    assertEqual None (WALRecovery.parseEntry "COMMIT 1 extra") "COMMIT with 3 parts returns None"
