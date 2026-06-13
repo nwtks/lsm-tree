@@ -15,6 +15,7 @@
     <Compile Include="WALTests.fs" />
     <Compile Include="TransactionTests.fs" />
     <Compile Include="LsmTreeTests.fs" />
+    <Compile Include="LsmTreeLoaderTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

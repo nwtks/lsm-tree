@@ -25,56 +25,74 @@ module SSTable =
     [<Literal>]
     let BLOOM_COUNT_BYTE_SIZE = 4L
 
+    let validateIndexOffset fileLen offset footerSize =
+        if offset < 0L || offset > fileLen - footerSize then
+            System.IO.InvalidDataException $"SSTable index offset {offset} is out of range (file size: {fileLen})"
+            |> raise
+
+    let validateIndexCount fileLen offset count footerSize =
+        let remaining = fileLen - footerSize - offset - INDEX_COUNT_BYTE_SIZE
+
+        if count < 0 then
+            System.IO.InvalidDataException $"SSTable index entry count is negative: {count}"
+            |> raise
+
+        if int64 count * SEQ_BYTE_SIZE > remaining then
+            System.IO.InvalidDataException $"SSTable index of {count} entries would exceed remaining space"
+            |> raise
+
+    let validateEntryOffsets offset (offsets: int64[]) =
+        match offsets |> Array.tryFindIndex (fun o -> o < 0L || o >= offset) with
+        | Some i ->
+            System.IO.InvalidDataException $"SSTable entry offset at index {i} is out of range: {offsets.[i]}"
+            |> raise
+        | None -> ()
+
+    let loadOffsets (fs: System.IO.FileStream) (br: System.IO.BinaryReader) fileLen offset footerSize =
+        validateIndexOffset fileLen offset footerSize
+        fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
+        let count = br.ReadInt32()
+        validateIndexCount fileLen offset count footerSize
+        let offsets = Array.init count (fun _ -> br.ReadInt64())
+        validateEntryOffsets offset offsets
+        offsets
+
+    let validateBloomOffset fileLen indexOffset offset footerSize =
+        if offset < indexOffset then
+            System.IO.InvalidDataException
+                $"SSTable bloom offset {offset} is out of range (index offset: {indexOffset})"
+            |> raise
+
+        if offset < 0L || offset > fileLen - footerSize then
+            System.IO.InvalidDataException $"SSTable bloom offset {offset} is out of range (file size: {fileLen})"
+            |> raise
+
+    let validateBloomCount fileLen offset count footerSize =
+        let remaining = fileLen - footerSize - offset - BLOOM_COUNT_BYTE_SIZE
+
+        if count < 0 then
+            System.IO.InvalidDataException $"SSTable bloom filter byte count is negative: {count}"
+            |> raise
+
+        if int64 count > remaining then
+            System.IO.InvalidDataException $"SSTable bloom filter of {count} bytes would exceed remaining space"
+            |> raise
+
+    let loadBloomFilter (fs: System.IO.FileStream) (br: System.IO.BinaryReader) fileLen indexOffset offset footerSize =
+        validateBloomOffset fileLen indexOffset offset footerSize
+        fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
+        let byteCount = br.ReadInt32()
+        validateBloomCount fileLen offset byteCount footerSize
+        let bfBytes = br.ReadBytes byteCount
+        BloomFilter(bfBytes, BloomFilter.numHashFunctions)
+
+    let validateSSTableMagic magic =
+        if magic <> MAGIC then
+            System.IO.InvalidDataException $"Invalid SSTable magic number: expected 0x{MAGIC:x}, got 0x{magic:x}"
+            |> raise
+
     let load (fs: System.IO.FileStream) (br: System.IO.BinaryReader) =
         let fileLen = fs.Length
-
-        let loadOffsets offset footerSize =
-            if offset < 0L || offset > fileLen - footerSize then
-                System.IO.InvalidDataException $"SSTable index offset {offset} is out of range (file size: {fileLen})"
-                |> raise
-
-            fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
-            let count = br.ReadInt32()
-
-            if count < 0 then
-                System.IO.InvalidDataException $"SSTable index entry count is negative: {count}"
-                |> raise
-
-            let remaining = fileLen - footerSize - offset - INDEX_COUNT_BYTE_SIZE
-
-            if int64 count * SEQ_BYTE_SIZE > remaining then
-                System.IO.InvalidDataException $"SSTable index of {count} entries would exceed remaining space"
-                |> raise
-
-            let offsets = Array.init count (fun _ -> br.ReadInt64())
-
-            for i = 0 to offsets.Length - 1 do
-                if offsets.[i] < 0L || offsets.[i] >= offset then
-                    System.IO.InvalidDataException $"SSTable entry offset at index {i} is out of range: {offsets.[i]}"
-                    |> raise
-
-            offsets
-
-        let loadBloomFilter offset footerSize =
-            if offset < 0L || offset > fileLen - footerSize then
-                System.IO.InvalidDataException $"SSTable bloom offset {offset} is out of range (file size: {fileLen})"
-                |> raise
-
-            fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
-            let byteCount = br.ReadInt32()
-
-            if byteCount < 0 then
-                System.IO.InvalidDataException $"SSTable bloom filter byte count is negative: {byteCount}"
-                |> raise
-
-            let remaining = fileLen - footerSize - offset - BLOOM_COUNT_BYTE_SIZE
-
-            if int64 byteCount > remaining then
-                System.IO.InvalidDataException $"SSTable bloom filter of {byteCount} bytes would exceed remaining space"
-                |> raise
-
-            let bfBytes = br.ReadBytes byteCount
-            BloomFilter(bfBytes, BloomFilter.numHashFunctions)
 
         if fileLen >= FOOTER_SIZE then
             fs.Seek(-FOOTER_SIZE, System.IO.SeekOrigin.End) |> ignore
@@ -82,22 +100,13 @@ module SSTable =
             let bloomOffset = br.ReadInt64()
             let maxSeq = br.ReadInt64()
             let magic = br.ReadInt64()
+            validateSSTableMagic magic
+            validateIndexOffset fileLen indexOffset FOOTER_SIZE
+            validateBloomOffset fileLen indexOffset bloomOffset FOOTER_SIZE
 
-            if magic <> MAGIC then
-                System.IO.InvalidDataException $"Invalid SSTable magic number: expected 0x{MAGIC:x}, got 0x{magic:x}"
-                |> raise
-
-            if indexOffset < 0L || indexOffset > fileLen - FOOTER_SIZE then
-                System.IO.InvalidDataException
-                    $"SSTable index offset {indexOffset} is out of range (file size: {fileLen})"
-                |> raise
-
-            if bloomOffset < indexOffset || bloomOffset > fileLen - FOOTER_SIZE then
-                System.IO.InvalidDataException
-                    $"SSTable bloom offset {bloomOffset} is out of range (index offset: {indexOffset})"
-                |> raise
-
-            loadOffsets indexOffset FOOTER_SIZE, loadBloomFilter bloomOffset FOOTER_SIZE, maxSeq
+            loadOffsets fs br fileLen indexOffset FOOTER_SIZE,
+            loadBloomFilter fs br fileLen indexOffset bloomOffset FOOTER_SIZE,
+            maxSeq
         else
             [||], BloomFilter([||], 0), 0L
 

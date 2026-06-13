@@ -1,0 +1,21 @@
+<Project>
+
+  <!-- Cyclomatic complexity check: runs after coverlet generates coverage report -->
+  <Target Name="CheckComplexityAfterCoverage"
+          AfterTargets="GenerateCoverageResultAfterTest"
+          Condition="'$(CheckComplexityEnabled)'=='true'
+                     and Exists('$(MSBuildProjectDirectory)/coverage.cobertura.xml')">
+
+    <PropertyGroup>
+      <_ComplexityScript>$(MSBuildThisFileDirectory)$(ComplexityScriptPath)</_ComplexityScript>
+      <_CoverageFile>$(MSBuildProjectDirectory)/coverage.cobertura.xml</_CoverageFile>
+    </PropertyGroup>
+
+    <Message Text="[complexity] Checking cyclomatic complexity from $(_CoverageFile) ..."
+             Importance="high" />
+
+    <Exec Command="dotnet fsi &quot;$(_ComplexityScript)&quot; --coverage-file &quot;$(_CoverageFile)&quot; --threshold $(ComplexityThreshold) --warn-threshold $(ComplexityWarnThreshold)"
+          ContinueOnError="false" />
+  </Target>
+
+</Project>

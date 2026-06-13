@@ -1,0 +1,11 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Complexity check global settings -->
+    <CheckComplexityEnabled Condition="'$(CheckComplexityEnabled)'==''">true</CheckComplexityEnabled>
+    <ComplexityThreshold Condition="'$(ComplexityThreshold)'==''">15</ComplexityThreshold>
+    <ComplexityWarnThreshold Condition="'$(ComplexityWarnThreshold)'==''">10</ComplexityWarnThreshold>
+    <ComplexityScriptPath Condition="'$(ComplexityScriptPath)'==''">scripts/check-complexity.fsx</ComplexityScriptPath>
+  </PropertyGroup>
+
+</Project>

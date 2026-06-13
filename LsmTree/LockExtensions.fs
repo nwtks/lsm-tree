@@ -1,5 +1,8 @@
 namespace LsmTree
 
+type ICoordinatorError =
+    abstract Error: exn option with get, set
+
 module LockExtensions =
     let withReadLock (lock: System.Threading.ReaderWriterLockSlim) f =
         lock.EnterReadLock()
@@ -22,3 +25,19 @@ module LockExtensions =
             d.Dispose()
         with _ ->
             ()
+
+    let checkCoordError (coord: ICoordinatorError) lockObj context =
+        lock lockObj (fun () ->
+            match coord.Error with
+            | Some ex ->
+                coord.Error <- None
+                raise (System.AggregateException(context, ex))
+            | None -> ())
+
+    let logCoordError (coord: ICoordinatorError) lockObj context =
+        lock lockObj (fun () ->
+            match coord.Error with
+            | Some ex ->
+                coord.Error <- None
+                eprintfn $"[WARN] LsmTree: {context} error during dispose: {ex.Message}"
+            | None -> ())

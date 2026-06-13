@@ -5,15 +5,8 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let syncOnCommit = defaultArg syncOnCommit true
 
     let compactLevelLimits =
-        let limits = defaultArg compactLevelLimits [| 4; 10; 100; 1000 |]
-
-        if limits.Length = 0 then
-            invalidArg "compactLevelLimits" "compactLevelLimits must not be empty"
-
-        if limits |> Array.exists (fun x -> x < 0) then
-            invalidArg "compactLevelLimits" "compactLevelLimits must not contain negative values"
-
-        limits
+        defaultArg compactLevelLimits [| 4; 10; 100; 1000 |]
+        |> LsmTreeLoader.validateCompactLevelLimits
 
     let walPath = System.IO.Path.Combine(dataDir, "wal.log")
     let mutable memTable = MemTable()
@@ -29,56 +22,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let flushCoordinator = FlushCoordinator()
     let mutable disposed = false
 
-    let parseSstLevel (path: string) =
-        let name = System.IO.Path.GetFileName path
-
-        if name.StartsWith "L" then
-            System.Int32.Parse(name.Substring(1, name.IndexOf '_' - 1))
-        else
-            0
-
-    let loadSSTables () =
-        System.IO.Directory.GetFiles(dataDir, "*.sst.tmp")
-        |> Array.iter System.IO.File.Delete
-
-        let mutable maxSeq = 0L
-
-        System.IO.Directory.GetFiles(dataDir, "*.sst")
-        |> Array.iter (fun path ->
-            let level = parseSstLevel path
-
-            if level < ssTables.Length then
-                let sst = new SSTable(path)
-                ssTables.[level] <- sst :: ssTables.[level]
-
-                if sst.MaxSeq > maxSeq then
-                    maxSeq <- sst.MaxSeq)
-
-        for i = 0 to ssTables.Length - 1 do
-            ssTables.[i] <-
-                ssTables.[i]
-                |> List.sortWith (fun a b ->
-                    let cmp = compare b.MaxSeq a.MaxSeq
-                    if cmp <> 0 then cmp else compare a.Path b.Path)
-
-        if maxSeq > 0L then
-            snapshotManager.AdvanceSequence maxSeq
-
-    let loadWal () =
-        let logs = System.IO.Directory.GetFiles(dataDir, "wal*.log")
-        let olds = System.IO.Directory.GetFiles(dataDir, "wal*.old")
-
-        Array.append logs olds
-        |> Seq.collect WALRecovery.recover
-        |> Seq.sortBy (fun (seq, _, _) -> seq)
-        |> Seq.iter (function
-            | seq, k, Some v ->
-                memTable.Put(k, seq, v)
-                snapshotManager.AdvanceSequence seq
-            | seq, k, None ->
-                memTable.Delete(k, seq)
-                snapshotManager.AdvanceSequence seq)
-
     do
         if not (System.IO.Directory.Exists dataDir) then
             System.IO.Directory.CreateDirectory dataDir |> ignore
@@ -86,8 +29,8 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let mutable wal = new WAL(walPath)
 
     do
-        loadSSTables ()
-        loadWal ()
+        LsmTreeLoader.loadSSTables dataDir ssTables snapshotManager
+        LsmTreeLoader.loadWal dataDir memTable snapshotManager
 
     let flushMemTable () =
         flushCoordinator.AcquireAndReset()
@@ -180,23 +123,11 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     member _.Flush() =
         flushMemTable ()
         flushCoordinator.WaitForCompletion()
-
-        lock ssTablesLock (fun () ->
-            match flushCoordinator.Error with
-            | Some ex ->
-                flushCoordinator.Error <- None
-                raise (System.AggregateException("Flush failed", ex))
-            | None -> ())
+        LockExtensions.checkCoordError flushCoordinator ssTablesLock "Flush failed"
 
     member _.WaitForCompaction() =
         LsmTreeFlush.waitForCompaction compaction
-
-        lock ssTablesLock (fun () ->
-            match compaction.Error with
-            | Some ex ->
-                compaction.Error <- None
-                raise (System.AggregateException("Compaction failed", ex))
-            | None -> ())
+        LockExtensions.checkCoordError compaction ssTablesLock "Compaction failed"
 
     member _.SyncOnCommit = syncOnCommit
 
@@ -213,25 +144,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
                 try
                     LsmTreeFlush.waitForCompaction compaction
-
-                    lock ssTablesLock (fun () ->
-                        match compaction.Error with
-                        | Some ex ->
-                            compaction.Error <- None
-                            eprintfn $"[WARN] LsmTree: compaction error during dispose: {ex.Message}"
-                        | None -> ())
+                    LockExtensions.logCoordError compaction ssTablesLock "compaction"
                 with _ ->
                     ()
 
                 try
                     flushCoordinator.WaitForCompletion()
-
-                    lock ssTablesLock (fun () ->
-                        match flushCoordinator.Error with
-                        | Some ex ->
-                            flushCoordinator.Error <- None
-                            eprintfn $"[WARN] LsmTree: flush error during dispose: {ex.Message}"
-                        | None -> ())
+                    LockExtensions.logCoordError flushCoordinator ssTablesLock "flush"
                 with _ ->
                     ()
 

@@ -24,30 +24,51 @@ module WALRecovery =
     let base64ToUtf8 value =
         value |> System.Convert.FromBase64String |> System.Text.Encoding.UTF8.GetString
 
-    let parseEntry (item: string) =
-        let parts = item.Split ' '
-
+    let tryParseSeq (parts: string[]) =
         if parts.Length < 2 then
             None
         else
             match System.Int64.TryParse parts.[1] with
-            | true, seq ->
-                try
-                    match parts.[0] with
-                    | PUT when parts.Length = 4 ->
-                        let k = base64ToUtf8 parts.[2]
-                        let v = base64ToUtf8 parts.[3]
-                        Some(seq, Op(k, Some v))
-                    | DEL when parts.Length = 3 ->
-                        let k = base64ToUtf8 parts.[2]
-                        Some(seq, Op(k, None))
-                    | BEGIN when parts.Length = 2 -> Some(seq, Begin)
-                    | COMMIT when parts.Length = 2 -> Some(seq, Commit)
-                    | _ -> None
-                with :? System.FormatException ->
-                    eprintfn $"[WARN] WAL recovery: skipping malformed line: {item}"
-                    None
+            | true, seq -> Some seq
             | _ -> None
+
+    let parsePut seq (parts: string[]) =
+        if parts.Length = 4 then
+            let k = base64ToUtf8 parts.[2]
+            let v = base64ToUtf8 parts.[3]
+            Some(seq, Op(k, Some v))
+        else
+            None
+
+    let parseDel seq (parts: string[]) =
+        if parts.Length = 3 then
+            let k = base64ToUtf8 parts.[2]
+            Some(seq, Op(k, None))
+        else
+            None
+
+    let parseBeginCommit seq (parts: string[]) entry =
+        if parts.Length = 2 then Some(seq, entry) else None
+
+    let parseCommand seq (parts: string[]) =
+        match parts.[0] with
+        | PUT -> parsePut seq parts
+        | DEL -> parseDel seq parts
+        | BEGIN -> parseBeginCommit seq parts Begin
+        | COMMIT -> parseBeginCommit seq parts Commit
+        | _ -> None
+
+    let parseEntry (item: string) =
+        let parts = item.Split ' '
+
+        match tryParseSeq parts with
+        | Some seq ->
+            try
+                parseCommand seq parts
+            with :? System.FormatException ->
+                eprintfn $"[WARN] WAL recovery: skipping malformed line: {item}"
+                None
+        | None -> None
 
     let recover path =
         if System.IO.File.Exists path then
@@ -77,6 +98,14 @@ type WAL(path: string) =
     let walLock = obj ()
     let mutable disposed = false
 
+    let writeSync sync (log: string) =
+        lock walLock (fun () ->
+            writer.WriteLine log
+
+            if sync then
+                writer.Flush()
+                stream.Flush true)
+
     member _.Put(seq: int64, key: string, value: string) =
         let k = WALRecovery.utf8ToBase64 key
         let v = WALRecovery.utf8ToBase64 value
@@ -87,14 +116,7 @@ type WAL(path: string) =
         let sync = defaultArg sync true
         let k = WALRecovery.utf8ToBase64 key
         let v = WALRecovery.utf8ToBase64 value
-        let log = $"{WALRecovery.PUT} {seq} {k} {v}"
-
-        lock walLock (fun () ->
-            writer.WriteLine log
-
-            if sync then
-                writer.Flush()
-                stream.Flush true)
+        $"{WALRecovery.PUT} {seq} {k} {v}" |> writeSync sync
 
     member _.Delete(seq: int64, key: string) =
         let k = WALRecovery.utf8ToBase64 key
@@ -104,14 +126,7 @@ type WAL(path: string) =
     member _.DeleteSingle(seq: int64, key: string, ?sync: bool) =
         let sync = defaultArg sync true
         let k = WALRecovery.utf8ToBase64 key
-        let log = $"{WALRecovery.DEL} {seq} {k}"
-
-        lock walLock (fun () ->
-            writer.WriteLine log
-
-            if sync then
-                writer.Flush()
-                stream.Flush true)
+        $"{WALRecovery.DEL} {seq} {k}" |> writeSync sync
 
     member _.Begin(seq: int64) =
         let log = $"{WALRecovery.BEGIN} {seq}"
@@ -119,14 +134,7 @@ type WAL(path: string) =
 
     member _.Commit(seq: int64, ?sync: bool) =
         let sync = defaultArg sync true
-        let log = $"{WALRecovery.COMMIT} {seq}"
-
-        lock walLock (fun () ->
-            writer.WriteLine log
-
-            if sync then
-                writer.Flush()
-                stream.Flush true)
+        $"{WALRecovery.COMMIT} {seq}" |> writeSync sync
 
     member this.Close() = (this :> System.IDisposable).Dispose()
 

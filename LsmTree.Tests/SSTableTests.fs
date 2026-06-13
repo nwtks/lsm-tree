@@ -8,197 +8,44 @@ let writeSst dataDir name entries =
     SSTableWriter.write path entries |> ignore
     path
 
-let writeSstWith dataDir name (writeSections: System.IO.BinaryWriter -> System.IO.FileStream -> int64 * int64) =
-    let path = System.IO.Path.Combine(dataDir, name)
-
-    do
-        use fs =
-            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
-
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write 1L
-        bw.Write 2
-        bw.Write "k1"B
-        bw.Write false
-        bw.Write 2
-        bw.Write "v1"B
-
-        let indexPos, bloomPos = writeSections bw fs
-        bw.Write indexPos
-        bw.Write bloomPos
-        bw.Write 0L
-        bw.Write SSTable.MAGIC
-
-    path
-
-let writeRawSst dataDir name (action: System.IO.BinaryWriter -> int64 -> int64 -> unit) =
-    let path = System.IO.Path.Combine(dataDir, name)
-
-    do
-        use fs =
-            new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write)
-
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write 1L // seq
-        bw.Write 2 // key length
-        bw.Write "k1"B // key
-        bw.Write false // has value
-        bw.Write 2 // value length
-        bw.Write "v1"B // value
-        let dataEnd = fs.Position
-        bw.Write 1 // count
-        bw.Write 0L // offset of the single entry
-        let bloomPos = fs.Position
-        bw.Write 1 // byte count
-        bw.Write 0uy // bloom byte
-        action bw dataEnd bloomPos
-        fs.Flush true
-
-    path
+[<Fact>]
+let ``SSTable validateSSTableMagic throws for invalid magic number`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateSSTableMagic 0xFEEDFACEL)
 
 [<Fact>]
-let ``SSTable invalid magic number throws InvalidDataException`` () =
-    let testDataDir = getTestDir "sst_bad_magic"
-    let sstPath = System.IO.Path.Combine(testDataDir, "bad.sst")
-
-    do
-        use fs =
-            new System.IO.FileStream(sstPath, System.IO.FileMode.Create, System.IO.FileAccess.Write)
-
-        use bw = new System.IO.BinaryWriter(fs)
-        bw.Write [| 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy; 0uy |] // data
-        bw.Write 0L // index offset
-        bw.Write 0L // bloom offset
-        bw.Write 0xFEEDFACEL // bad magic
-
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(sstPath) |> ignore)
+let ``SSTable validateIndexOffset throws for out-of-range offset`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateIndexOffset 100L 100L SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable index offset out of range throws`` () =
-    let testDataDir = getTestDir "sst_idx_ofs"
-
-    writeRawSst testDataDir "L0_bad_idx_ofs.sst" (fun bw _dataEnd bloomPos ->
-        bw.Write(bloomPos + 9999L)
-        bw.Write bloomPos
-        bw.Write 0L
-        bw.Write SSTable.MAGIC)
-    |> ignore
-
+let ``SSTable validateBloomOffset throws for bloom before index`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () ->
-        new SSTable(System.IO.Path.Combine(testDataDir, "L0_bad_idx_ofs.sst")) |> ignore)
+        SSTable.validateBloomOffset 100L 50L 30L SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable bloom offset before index offset throws`` () =
-    let testDataDir = getTestDir "sst_bloom_before_idx"
+let ``SSTable validateIndexCount throws for negative count`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateIndexCount 100L 50L -1 SSTable.FOOTER_SIZE)
 
-    writeRawSst testDataDir "L0_bloom_before_idx.sst" (fun bw dataEnd _bloomPos ->
-        bw.Write dataEnd
-        bw.Write 0L
-        bw.Write 0L
-        bw.Write SSTable.MAGIC)
-    |> ignore
-
+[<Fact>]
+let ``SSTable validateIndexCount throws when count exceeds remaining space`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () ->
-        new SSTable(System.IO.Path.Combine(testDataDir, "L0_bloom_before_idx.sst"))
-        |> ignore)
+        SSTable.validateIndexCount 100L 50L 100000 SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable negative index entry count throws`` () =
-    let testDataDir = getTestDir "sst_neg_count"
-
-    let path =
-        writeSstWith testDataDir "L0_neg_count.sst" (fun bw fs ->
-            let indexPos = fs.Position
-            bw.Write -1
-            bw.Write 0L
-            let bloomPos = fs.Position
-            bw.Write 1
-            bw.Write 0uy
-            indexPos, bloomPos)
-
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
+let ``SSTable validateEntryOffsets throws for negative offset`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateEntryOffsets 100L [| -1L |])
 
 [<Fact>]
-let ``SSTable index entry count exceeds remaining space throws`` () =
-    let testDataDir = getTestDir "sst_count_overflow"
-
-    let path =
-        writeSstWith testDataDir "L0_count_overflow.sst" (fun bw fs ->
-            let indexPos = fs.Position
-            bw.Write 100000
-
-            for _ = 0 to 9999 do
-                bw.Write 0L
-
-            let bloomPos = fs.Position
-            bw.Write 1
-            bw.Write 0uy
-            indexPos, bloomPos)
-
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
+let ``SSTable validateEntryOffsets throws for offset at index position`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateEntryOffsets 100L [| 100L |])
 
 [<Fact>]
-let ``SSTable entry offset out of range throws`` () =
-    let testDataDir = getTestDir "sst_entry_ofs"
-
-    let path =
-        writeSstWith testDataDir "L0_entry_ofs.sst" (fun bw fs ->
-            let indexPos = fs.Position
-            bw.Write 1
-            bw.Write -1L
-            let bloomPos = fs.Position
-            bw.Write 1
-            bw.Write 0uy
-            indexPos, bloomPos)
-
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
+let ``SSTable validateBloomCount throws for negative byte count`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateBloomCount 100L 60L -1 SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable entry offset at index position throws`` () =
-    let testDataDir = getTestDir "sst_entry_at_idx"
-
-    let path =
-        writeSstWith testDataDir "L0_entry_at_idx.sst" (fun bw fs ->
-            let indexPos = fs.Position
-            bw.Write 1
-            bw.Write indexPos
-            let bloomPos = fs.Position
-            bw.Write 1
-            bw.Write 0uy
-            indexPos, bloomPos)
-
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
-
-[<Fact>]
-let ``SSTable negative bloom byte count throws`` () =
-    let testDataDir = getTestDir "sst_neg_bloom"
-
-    let path =
-        writeSstWith testDataDir "L0_neg_bloom.sst" (fun bw fs ->
-            let indexPos = fs.Position
-            bw.Write 1
-            bw.Write 0L
-            let bloomPos = fs.Position
-            bw.Write -1
-            bw.Write 0uy
-            indexPos, bloomPos)
-
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
-
-[<Fact>]
-let ``SSTable bloom byte count exceeds remaining space throws`` () =
-    let testDataDir = getTestDir "sst_bloom_overflow"
-
-    let path =
-        writeSstWith testDataDir "L0_bloom_overflow.sst" (fun bw fs ->
-            let indexPos = fs.Position
-            bw.Write 1
-            bw.Write 0L
-            let bloomPos = fs.Position
-            bw.Write 10000
-            indexPos, bloomPos)
-
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> new SSTable(path) |> ignore)
+let ``SSTable validateBloomCount throws when count exceeds remaining space`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () ->
+        SSTable.validateBloomCount 100L 60L 10000 SSTable.FOOTER_SIZE)
 
 [<Fact>]
 let ``SSTable short file below footer size returns zero entries`` () =

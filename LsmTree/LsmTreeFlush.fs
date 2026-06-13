@@ -3,11 +3,21 @@ namespace LsmTree
 type CompactionCoordinator() =
     let completedEvent = new System.Threading.ManualResetEvent(true)
     let cts = new System.Threading.CancellationTokenSource()
+    let mutable error: exn option = None
     member val IsCompacting = false with get, set
-    member val Error: exn option = None with get, set
+
+    member _.Error
+        with get () = error
+        and set v = error <- v
+
     member _.CompletedEvent = completedEvent
     member _.Token = cts.Token
     member _.Cancel() = cts.Cancel()
+
+    interface ICoordinatorError with
+        member _.Error
+            with get () = error
+            and set v = error <- v
 
     interface System.IDisposable with
         member _.Dispose() =
@@ -17,7 +27,16 @@ type CompactionCoordinator() =
 type FlushCoordinator() =
     let flushLock = obj ()
     let completedEvent = new System.Threading.ManualResetEvent(true)
-    member val Error: exn option = None with get, set
+    let mutable error: exn option = None
+
+    member _.Error
+        with get () = error
+        and set v = error <- v
+
+    interface ICoordinatorError with
+        member _.Error
+            with get () = error
+            and set v = error <- v
 
     member _.AcquireAndReset() =
         lock flushLock (fun () ->

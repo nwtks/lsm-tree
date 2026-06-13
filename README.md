@@ -8,8 +8,8 @@ This project demonstrates the core architectural concepts behind modern database
 ## 🚀 Key Features
 
 ### Write-Ahead Log (WAL)
-Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted sequentially to a `.log` file before memory allocation, guaranteeing full recovery upon engine restart.
-- **Configurable `fsync`**: `SyncOnCommit` toggles whether `fsync` is called on every commit — balancing durability and throughput.
+Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted sequentially to a `.log` file before being applied to the in-memory MemTable, guaranteeing full recovery upon engine restart.
+- **Configurable `fsync`**: `syncOnCommit` toggles whether `fsync` is called on every commit — balancing durability and throughput.
 - **Explicit buffer flush**: `StreamWriter.AutoFlush` is disabled — the StreamWriter buffer is explicitly flushed (`writer.Flush()`) before the `fsync` call (`stream.Flush(true)`) on every commit or direct write. This avoids redundant page-cache flushes on every `WriteLine`.
 - **Non-transactional direct writes**: `PutSingle` / `DeleteSingle` bypass `BEGIN`/`COMMIT` markers for single-key operations — the orphaned `PUT`/`DEL` lines are recovered as committed on crash (safe under last-writer-wins semantics).
 - **Atomic transaction recovery**: Uncommitted transactions (missing `COMMIT` marker) are automatically discarded on restart.
@@ -57,7 +57,7 @@ See [docs/architecture.md](docs/architecture.md) for the WAL format, SSTable bin
 
 - **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL). Binary data is supported via base64 encoding by the caller.
 - **No range queries**: The public API supports point lookups only (`Get`). `SSTable.GetAll()` is internal, used exclusively during compaction.
-- **Single WAL file**: One WAL per instance; renamed to `wal_<guid>.old` on MemTable swap. Very old `.old` files may accumulate if the engine crashes mid-swap.
+- **Single WAL file**: One active WAL per instance; renamed to `wal_<guid>.old` on each MemTable flush. All `.old` files are replayed during recovery but never automatically deleted, so they accumulate over time.
 - **`fsync` overhead**: `syncOnCommit = true` (default) calls `fsync` on every commit, limiting throughput on spinning disks. Set to `false` for higher throughput at the cost of losing the last ~second of data on crash.
 - **`LsmTransaction.Get` O(n) local scan**: Within a transaction, the local pending-ops list is scanned linearly (`Seq.tryFind`). Avoid putting thousands of keys in a single transaction if you need fast reads within it.
 - **No explicit checkpoint/archive**: The WAL grows indefinitely until the next MemTable swap. There is no periodic WAL archival independent of flush.

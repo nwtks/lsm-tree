@@ -53,7 +53,7 @@ L{level}_{timestamp_ms}_{guid}.sst
 | Compaction of Ln → L(n+1) | L(n+1) |
 | Legacy files (no `L` prefix) | L0 |
 
-During SSTable writing, data is first written to a `.tmp` file and then atomically renamed to `.sst` (see `SSTableWriter.writeCore`). Stale `.tmp` files from a crash are ignored on startup.
+During SSTable writing, data is first written to a `.tmp` file and then atomically renamed to `.sst` (see `SSTableWriter.writeCore`). Stale `.tmp` files from a crash are automatically deleted on startup (`loadSSTables`).
 
 ---
 
@@ -121,8 +121,9 @@ The entire lookup chain uses `(string option) option` to distinguish three cases
 | `Some None` | Tombstone found (key was deleted — stops further search) |
 | `None` | Key not found at this storage level |
 
-- `SkipList.Find` → `MemTable.Get` → `findValue` (MemTable/immutable branch): return `string option option`. This is inherent because `SkipListNode.Value` is `string option` and `Find` returns `Some current.Value`.
-- `SSTable.Get`: wraps `readItem br` (which returns `string option`) with an outer `Some(...)`, producing `(string option) option`.
+- `SkipList.Find` returns `(string option) option` — inherent because `SkipListNode.Value` is `string option` and `Find` returns `Some current.Value`.
+- `MemTable.Get` passes through the `(string option) option` from `SkipList.Find`.
+- `SSTable.Get` wraps `readItem br` (which returns `string option`) with an outer `Some(...)`, producing `(string option) option`.
 - `searchInTables`: `List.tryPick` on `(string option) option` returns `(string option) option` — a tombstone (`Some None`) stops `tryPick` because the match is `Some _`, correctly preventing fall-through to upper-level stale values.
 - `searchLevel`: passes through `(string option) option` unchanged.
-- `findValue` (SSTable branch): uses `Option.flatten` to convert `(string option) option` → `string option`.
+- `findValue` destructures MemTable/immutable results via pattern matching (`Some v → v`) and uses `Option.flatten` on the SSTable result from `searchLevel`, converting the entire chain to `string option`.

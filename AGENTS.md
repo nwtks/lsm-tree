@@ -56,17 +56,19 @@ All code — including test code — must work on **both Windows and Linux**. Av
 - **Leverage discriminated unions** — Model domain concepts (messages, roles, configuration phases, timer actions, pending reads) with DUs for exhaustiveness checking.
 - **Use `[<TailCall>]` on recursive functions** that loop (e.g., `agentLoop`, `findFirstIdx`) to prevent stack overflows.
 - Do not introduce new external NuGet packages without checking existing dependencies in the `.fsproj` files first.
+- **Cyclomatic complexity** — Every function/method must keep its Coverlet complexity ≤ 15 (hard limit). Keep it ≤ 10 where practical. The `scripts/check-complexity.fsx` script checks this automatically from `coverage.cobertura.xml` after `dotnet test`. See `Directory.Build.props` for threshold configuration. If the check fails, split the function into smaller helpers or simplify branching.
 
 ---
 
 ## Testing Conventions
 
 - After any code change, run `dotnet test` and confirm **all tests pass**.
-- Maintain high unit test coverage (target: ≥ 80% line coverage).If line coverage falls below 80%, add test code to restore it above the threshold before merging.
+- The `dotnet test` output includes a **Cyclomatic Complexity Report** (from coverage data). Check that no function exceeds complexity 15 (error threshold). Warnings above 10 should be addressed where practical.
+- Maintain high unit test coverage (target: ≥ 90% line coverage).If line coverage falls below 90%, add test code to restore it above the threshold before merging.
 - **Test ordering rules**:
   1. Within each test file, `[<Fact>]` functions must appear in the same order as the corresponding functions/methods/constructors in the source file under test.
   2. When multiple test cases target the same source function, order them by **test priority**: normal (happy path) → error cases → fault/failure scenarios.
-  3. **Prefer data-driven tests** (`[<Theory>]` + `[<InlineData>]`) when multiple test cases share the same test logic but differ only in inputs or expected outputs. This reduces code duplication and makes it easy to add new cases.
+- **Prefer data-driven tests** (`[<Theory>]` + `[<InlineData>]`) when multiple test cases share the same test logic but differ only in inputs or expected outputs. This reduces code duplication and makes it easy to add new cases.
 - **Use a unique suffix** per test — tests may run in parallel.
 - Each test calls `getTestDir "<unique_name>"` to get an isolated temp directory (it deletes and recreates the dir).
 - Use `assertEqual expected actual msg` (wraps `Assert.True`) for readable failure output.

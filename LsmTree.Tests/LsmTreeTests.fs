@@ -9,21 +9,6 @@ let ``LsmTree constructor throws for empty path`` () =
     |> ignore
 
 [<Fact>]
-let ``LsmTree constructor throws for empty compactLevelLimits`` () =
-    let path = getTestDir "neg_limits"
-
-    Assert.Throws<System.ArgumentException>(fun () -> new LsmTree(path, compactLevelLimits = [||]) |> ignore)
-    |> ignore
-
-[<Fact>]
-let ``LsmTree constructor throws for negative compactLevelLimits`` () =
-    let path = getTestDir "neg_limits2"
-
-    Assert.Throws<System.ArgumentException>(fun () ->
-        new LsmTree(path, compactLevelLimits = [| 4; -1; 100 |]) |> ignore)
-    |> ignore
-
-[<Fact>]
 let ``LsmTree startup creates directory if missing`` () =
     let testDir = getTestDir "startup_create_dir"
     let treePath = System.IO.Path.Combine(testDir, "nested", "tree", "path")
