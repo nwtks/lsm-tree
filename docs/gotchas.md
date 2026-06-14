@@ -37,3 +37,14 @@ When testing compaction cascading across multiple levels, set `memTableSizeLimit
 ### Benchmark syncOnCommit toggle
 
 The benchmark uses `[<Params(false, true)>] member val Sync` to toggle `syncOnCommit`. When adding new benchmarks, always expose this parameter to capture the durability-vs-throughput tradeoff. Use `[<IterationSetup>]` to create a fresh engine for each run — never reuse a dirty engine across iterations.
+
+### CompactionCoordinator race on Dispose
+
+`LsmTree.Dispose()` cancels the compaction (`compaction.Cancel()`) and waits for it (`waitForCompaction()`), then disposes the `CompactionCoordinator`. However, a fire-and-forget `asyncFlushToSSTable` may call `triggerCompaction` **after** `Dispose()` has already disposed the coordinator's `ManualResetEvent`. The new compaction's `finally` block then calls `SetCompleted()` on the disposed event → `ObjectDisposedException`.
+
+**Fix** (two-fold, see `LsmTreeFlush.fs`):
+1. `triggerCompaction` checks `compaction.Token.IsCancellationRequested` — prevents starting new compactions after `Cancel()` during dispose.
+2. `CompactionCoordinator.SetCompleted()` has a `disposed` flag guard.
+3. `Token` is captured with `member val` (not `member _`) so the `CancellationToken` object survives CTS disposal.
+
+If you ever change the `CompactionCoordinator` or add a new background async operation that calls back into it, ensure the disposed-guard pattern is preserved.

@@ -184,7 +184,16 @@ let current = db.Get("config:theme")       // Some "light"
 let past = db.Get("config:theme", v1)      // Some "dark" — historical view
 ```
 
-### Durability Configuration
+### Constructor Options
+
+The data directory is **auto-created** if it doesn't exist. All parameters are optional:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dataDir` | `string` | (required) | Path to the data directory |
+| `syncOnCommit` | `bool` | `true` | Call `fsync` on every commit |
+| `memTableSizeLimit` | `int` | 1 MB | MemTable size threshold for flush |
+| `compactLevelLimits` | `int[]` | `[\| 4; 10; 100; 1000 \|]` | Max files per level before compaction (validated: must be non-empty, no negatives) |
 
 ```fsharp
 // Maximum throughput — no fsync on commit
@@ -203,5 +212,5 @@ let db = new LsmTree("./data", compactLevelLimits = [| 2; 5; 50 |])
 // LsmTree implements IDisposable — use 'use' or call .Close()/.Dispose()
 use db = new LsmTree("./data")
 // ... work ...
-// db.Close() is called automatically at the end of the scope
+// db.Dispose() is called automatically at the end of the 'use' scope
 ```

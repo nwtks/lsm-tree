@@ -37,7 +37,6 @@ let ``BloomFilter Add and MightContain for specific keys`` () =
     bf.Add "apple"
     bf.Add "banana"
     bf.Add "cherry"
-
     assertEqual true (bf.MightContain "apple") "apple should be found"
     assertEqual true (bf.MightContain "banana") "banana should be found"
     assertEqual true (bf.MightContain "cherry") "cherry should be found"

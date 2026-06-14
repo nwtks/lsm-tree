@@ -53,6 +53,7 @@ let ``MemTable Entries returns all entries in sorted order`` () =
     mt.Put("a", 1L, "a_val")
     mt.Put("m", 2L, "m_val")
     let entries = mt.Entries
+
     assertEqual
         [ "a", 1L, Some "a_val"; "m", 2L, Some "m_val"; "z", 3L, Some "z_val" ]
         entries
@@ -64,7 +65,7 @@ let ``MemTable Entries includes tombstone entries`` () =
     mt.Put("k", 1L, "v1")
     mt.Delete("k", 2L)
     let entries = mt.Entries
-    assertEqual [ "k", 1L, Some "v1"; "k", 2L, None ] entries "Entries should include tombstone"
+    assertEqual [ "k", 2L, None; "k", 1L, Some "v1" ] entries "Entries returns highest seq first"
 
 [<Fact>]
 let ``MemTable Entries on empty returns empty list`` () =

@@ -15,8 +15,9 @@ This file provides guidance for AI agents working in this repository.
 | Design trade-offs | `docs/trade-off.md` |
 | Common mistakes / gotchas | `docs/gotchas.md` |
 
-- Only keep project-specific implicit rules in AGENTS.md. The topics above belong in their corresponding `docs/*.md` files.
+- **When a design decision, trade-off, bug fix, or known issue occurs, update `docs/trade-off.md` or `docs/gotchas.md` immediately (in the same session) — do not defer.**
 - When a new trade-off or gotcha arises, first consider appending to the relevant `docs/` file. Only add to AGENTS.md if it's an "implicit rule not obvious from the codebase."
+- Only keep project-specific implicit rules in AGENTS.md. The topics above belong in their corresponding `docs/*.md` files.
 
 ---
 

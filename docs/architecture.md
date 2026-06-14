@@ -13,7 +13,7 @@ COMMIT <seq>
 
 - **Committed transactions** are fully recovered.
 - **Uncommitted transactions** (`BEGIN` without matching `COMMIT`) are discarded.
-- **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — their sequence number never appeared in a `BEGIN` line, so they fall through as visible entries.
+- **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — their sequence number never appeared in a `BEGIN` line, so they fall through as visible entries. This is by design: `PutSingle`/`DeleteSingle` (the fast-path for single-key writes) intentionally produce orphaned entries, which are safe under the engine's last-writer-wins semantics.
 - `WALRecovery.recover` handles malformed lines gracefully by returning `None` for unrecognized entries.
 
 ---
@@ -64,9 +64,10 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 | `memTable` / `immutableMemTable` | `ReaderWriterLockSlim` (`mainLock`) |
 | `ssTables` array | `lock ssTablesLock` |
 | Per‑SSTable seek+read / GetAll / Dispose | `ReaderWriterLockSlim` (`rwLock` per SSTable) |
-| `activeSnapshots` set | `lock activeSnapshotsLock` |
+| `activeSnapshots` (`Set<int64>`) | `lock activeSnapshotsLock` |
 | `globalSeq` | `Interlocked.Increment` / `Interlocked.Read` / `Interlocked.CompareExchange` |
 | SkipList nodes | Lock-free CAS (`Interlocked.CompareExchange`) |
+| WAL writes (`StreamWriter`/`FileStream`) | `lock walLock` |
 
 **Lock ordering rules:**
 1. You may hold `ssTablesLock` while acquiring `mainLock` (write), but **never the reverse** — this prevents deadlocks.
@@ -74,6 +75,8 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 3. At most one compaction runs at a time; coordination uses `ManualResetEvent` (`CompactionCoordinator.AwaitCompletion()` returns `Async<unit>`).
 4. The WAL instance is protected by its own `walLock` object; WAL operations are serialized.
 5. Per‑SSTable `rwLock` is independent — do not acquire `mainLock` or `ssTablesLock` while holding a SSTable read/write lock (to avoid unexpected contention).
+6. `activeSnapshotsLock` is independent — hold only while reading/writing the active snapshot set. Never acquire `mainLock` or `ssTablesLock` while holding `activeSnapshotsLock`.
+7. `globalSeq` uses `Interlocked` operations exclusively — no lock is required to read or advance the sequence number.
 
 ---
 

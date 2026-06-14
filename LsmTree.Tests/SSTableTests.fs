@@ -53,7 +53,9 @@ let ``SSTable load returns empty for short file`` () =
     let path = System.IO.Path.Combine(testDataDir, "short.sst")
     System.IO.File.WriteAllBytes(path, [| 0uy .. 9uy |])
 
-    use fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+    use fs =
+        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+
     use br = new System.IO.BinaryReader(fs)
     let offsets, _, maxSeq = SSTable.load fs br
     assertEqual [||] offsets "Short file should have no offsets"
@@ -64,7 +66,9 @@ let ``SSTable load and loadIndex handle empty SSTable`` () =
     let testDataDir = getTestDir "sst_empty"
     let path = writeSst testDataDir "L0_empty.sst" []
 
-    use fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+    use fs =
+        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+
     use br = new System.IO.BinaryReader(fs)
     let offsets, _, maxSeq = SSTable.load fs br
     let index = SSTable.loadIndex fs br offsets
@@ -78,7 +82,9 @@ let ``SSTable loadIndex handles tombstone and value entries`` () =
     let path = System.IO.Path.Combine(testDataDir, "idx_tomb.sst")
     SSTableWriter.write path [ "gone", 2L, None; "keep", 1L, Some "val" ] |> ignore
 
-    use fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+    use fs =
+        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+
     use br = new System.IO.BinaryReader(fs)
     let offsets, _, _ = SSTable.load fs br
     let index = SSTable.loadIndex fs br offsets
@@ -96,7 +102,9 @@ let ``SSTable readAllEntries preserves tombstone entries`` () =
     SSTableWriter.write path [ "k1", 1L, Some "v1"; "k2", 2L, None; "k3", 3L, Some "v3" ]
     |> ignore
 
-    use fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+    use fs =
+        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+
     use br = new System.IO.BinaryReader(fs)
     let offsets, _, _ = SSTable.load fs br
     fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
@@ -109,7 +117,10 @@ let ``SSTable readAllEntries preserves tombstone entries`` () =
 [<Fact>]
 let ``SSTable binSearchIndex returns None for missing key`` () =
     let index =
-        [| { Key = "present"; Seq = 1L; Offset = 0L; KeyByteLen = 7 } |]
+        [| { Key = "present"
+             Seq = 1L
+             Offset = 0L
+             KeyByteLen = 7 } |]
 
     let result = SSTable.binSearchIndex index "missing" System.Int64.MaxValue 0 0 None
     assertEqual None result "Missing key returns None"
@@ -117,7 +128,10 @@ let ``SSTable binSearchIndex returns None for missing key`` () =
 [<Fact>]
 let ``SSTable binSearchIndex finds existing key`` () =
     let index =
-        [| { Key = "present"; Seq = 1L; Offset = 0L; KeyByteLen = 7 } |]
+        [| { Key = "present"
+             Seq = 1L
+             Offset = 0L
+             KeyByteLen = 7 } |]
 
     let result = SSTable.binSearchIndex index "present" System.Int64.MaxValue 0 0 None
     assertEqual (Some 0) result "Existing key returns correct index"
@@ -125,21 +139,18 @@ let ``SSTable binSearchIndex finds existing key`` () =
 [<Fact>]
 let ``SSTable binSearchIndex respects snapshot isolation`` () =
     let index =
-        [| { Key = "k"; Seq = 10L; Offset = 0L; KeyByteLen = 1 }
-           { Key = "k"; Seq = 5L; Offset = 10L; KeyByteLen = 1 } |]
+        [| { Key = "k"
+             Seq = 10L
+             Offset = 0L
+             KeyByteLen = 1 }
+           { Key = "k"
+             Seq = 5L
+             Offset = 10L
+             KeyByteLen = 1 } |]
 
-    assertEqual
-        None
-        (SSTable.binSearchIndex index "k" 3L 0 1 None)
-        "Snapshot below all seqs returns None"
-    assertEqual
-        (Some 1)
-        (SSTable.binSearchIndex index "k" 7L 0 1 None)
-        "Snapshot between seqs finds older version"
-    assertEqual
-        (Some 0)
-        (SSTable.binSearchIndex index "k" 10L 0 1 None)
-        "Snapshot at max seq finds newest"
+    assertEqual None (SSTable.binSearchIndex index "k" 3L 0 1 None) "Snapshot below all seqs returns None"
+    assertEqual (Some 1) (SSTable.binSearchIndex index "k" 7L 0 1 None) "Snapshot between seqs finds older version"
+    assertEqual (Some 0) (SSTable.binSearchIndex index "k" 10L 0 1 None) "Snapshot at max seq finds newest"
 
 [<Fact>]
 let ``SSTable readValue roundtrips correctly`` () =
@@ -179,7 +190,6 @@ let ``SSTable double dispose does not throw`` () =
 
     let sst = new SSTable(sstPath)
     (sst :> System.IDisposable).Dispose()
-
     (sst :> System.IDisposable).Dispose()
 
 [<Fact>]
@@ -193,6 +203,7 @@ let ``SSTableWriter writeBytes writes length-prefixed bytes`` () =
     use br = new System.IO.BinaryReader(ms)
     let len = br.ReadInt32()
     assertEqual bytes.Length len "Length prefix should match"
+
     let data = br.ReadBytes len
     assertEqual "hello" (System.Text.Encoding.UTF8.GetString data) "Data should roundtrip"
 
@@ -217,6 +228,7 @@ let ``SSTableWriter writeItem writes Some value`` () =
     ms.Position <- 0L
     use br = new System.IO.BinaryReader(ms)
     assertEqual false (br.ReadBoolean()) "Some value should write false (has value)"
+
     let len = br.ReadInt32()
     let data = br.ReadBytes len
     assertEqual "item_val" (System.Text.Encoding.UTF8.GetString data) "Item value should roundtrip"

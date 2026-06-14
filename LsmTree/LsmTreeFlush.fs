@@ -4,16 +4,21 @@ type CompactionCoordinator() =
     let cts = new System.Threading.CancellationTokenSource()
     let mutable completedEvent = new System.Threading.ManualResetEvent true
     let mutable error: exn option = None
+    let mutable disposed = false
     member val IsCompacting = false with get, set
+    member val Token = cts.Token with get
 
     member _.Error
         with get () = error
         and set v = error <- v
 
-    member _.Token = cts.Token
     member _.Cancel() = cts.Cancel()
     member _.ResetCompletion() = completedEvent.Reset() |> ignore
-    member _.SetCompleted() = completedEvent.Set() |> ignore
+
+    member _.SetCompleted() =
+        if not disposed then
+            completedEvent.Set() |> ignore
+
     member _.WaitForCompletion() = completedEvent.WaitOne() |> ignore
 
     member _.AwaitCompletion() =
@@ -26,8 +31,10 @@ type CompactionCoordinator() =
 
     interface System.IDisposable with
         member _.Dispose() =
-            cts.Dispose()
-            (completedEvent :> System.IDisposable).Dispose()
+            if not disposed then
+                disposed <- true
+                cts.Dispose()
+                (completedEvent :> System.IDisposable).Dispose()
 
 type FlushCoordinator() =
     let flushLock = obj ()
@@ -131,11 +138,7 @@ module LsmTreeFlush =
         | Some o -> List.append newer [ o ]
         | None -> newer
 
-    let mergeSortedEntriesData
-        (tableData: (string * int64 * string option)[][])
-        isLastLevel
-        minSnap
-        =
+    let mergeSortedEntriesData (tableData: (string * int64 * string option)[][]) isLastLevel minSnap =
         seq {
             let pos = Array.zeroCreate tableData.Length
 
@@ -255,7 +258,7 @@ module LsmTreeFlush =
         =
         let shouldStart =
             lock ssTablesLock (fun () ->
-                if not compaction.IsCompacting then
+                if not compaction.IsCompacting && not compaction.Token.IsCancellationRequested then
                     compaction.IsCompacting <- true
                     compaction.ResetCompletion()
                     true
