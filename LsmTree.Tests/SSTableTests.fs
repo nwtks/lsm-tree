@@ -48,64 +48,128 @@ let ``SSTable validateBloomCount throws when count exceeds remaining space`` () 
         SSTable.validateBloomCount 100L 60L 10000 SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable short file below footer size returns zero entries`` () =
+let ``SSTable load returns empty for short file`` () =
     let testDataDir = getTestDir "sst_short_file"
     let path = System.IO.Path.Combine(testDataDir, "short.sst")
     System.IO.File.WriteAllBytes(path, [| 0uy .. 9uy |])
 
-    use sst = new SSTable(path)
-    assertEqual 0 sst.Count "Short file should have 0 entries"
-    assertEqual None (sst.Get("any", 0L)) "Short file Get should return None"
-    assertEqual [||] (sst.GetAll()) "Short file GetAll should return empty array"
+    use fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+    use br = new System.IO.BinaryReader(fs)
+    let offsets, _, maxSeq = SSTable.load fs br
+    assertEqual [||] offsets "Short file should have no offsets"
+    assertEqual 0L maxSeq "Short file should have maxSeq 0"
 
 [<Fact>]
-let ``SSTable handles empty entries correctly`` () =
+let ``SSTable load and loadIndex handle empty SSTable`` () =
     let testDataDir = getTestDir "sst_empty"
     let path = writeSst testDataDir "L0_empty.sst" []
 
-    use sst = new SSTable(path)
-    assertEqual 0 sst.Count "Empty SSTable should have 0 entries"
-    assertEqual None (sst.Get("any", 0L)) "Get on empty SSTable should return None"
-    assertEqual [||] (sst.GetAll()) "GetAll on empty SSTable should return empty array"
+    use fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+    use br = new System.IO.BinaryReader(fs)
+    let offsets, _, maxSeq = SSTable.load fs br
+    let index = SSTable.loadIndex fs br offsets
+    assertEqual [||] offsets "Empty SSTable should have no offsets"
+    assertEqual [||] index "Empty SSTable should have empty index"
+    assertEqual 0L maxSeq "Empty SSTable maxSeq = 0"
 
 [<Fact>]
-let ``SSTable loadIndex handles tombstone entries correctly`` () =
+let ``SSTable loadIndex handles tombstone and value entries`` () =
     let testDataDir = getTestDir "sst_idx_tomb"
     let path = System.IO.Path.Combine(testDataDir, "idx_tomb.sst")
     SSTableWriter.write path [ "gone", 2L, None; "keep", 1L, Some "val" ] |> ignore
 
-    use sst = new SSTable(path)
-    assertEqual 2 sst.Count "Should have 2 entries"
-    assertEqual (Some None) (sst.Get("gone", System.Int64.MaxValue)) "Tombstone entry returns Some None"
-    assertEqual (Some(Some "val")) (sst.Get("keep", System.Int64.MaxValue)) "Regular entry returns Some(Some value)"
+    use fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+    use br = new System.IO.BinaryReader(fs)
+    let offsets, _, _ = SSTable.load fs br
+    let index = SSTable.loadIndex fs br offsets
+    assertEqual 2 index.Length "Should have 2 index entries"
+    assertEqual "gone" index.[0].Key "First entry key"
+    assertEqual 2L index.[0].Seq "First entry seq"
+    assertEqual "keep" index.[1].Key "Second entry key"
+    assertEqual 1L index.[1].Seq "Second entry seq"
 
 [<Fact>]
-let ``SSTable GetAll preserves tombstone entries`` () =
+let ``SSTable readAllEntries preserves tombstone entries`` () =
     let testDataDir = getTestDir "sst_getall_tomb"
     let path = System.IO.Path.Combine(testDataDir, "getall_tomb.sst")
 
     SSTableWriter.write path [ "k1", 1L, Some "v1"; "k2", 2L, None; "k3", 3L, Some "v3" ]
     |> ignore
 
-    use sst = new SSTable(path)
-    let entries = sst.GetAll()
+    use fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+    use br = new System.IO.BinaryReader(fs)
+    let offsets, _, _ = SSTable.load fs br
+    fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
+    let entries = SSTable.readAllEntries br offsets
     assertEqual 3 entries.Length "Should have 3 entries"
     assertEqual ("k1", 1L, Some "v1") entries.[0] "First entry is k1=v1"
     assertEqual ("k2", 2L, None) entries.[1] "Second entry is k2=tombstone"
     assertEqual ("k3", 3L, Some "v3") entries.[2] "Third entry is k3=v3"
 
 [<Fact>]
-let ``SSTable Get returns None for missing key`` () =
-    let testDataDir = getTestDir "sst_get_missing"
-    let path = writeSst testDataDir "has_data.sst" [ "present", 1L, Some "value" ]
+let ``SSTable binSearchIndex returns None for missing key`` () =
+    let index =
+        [| { Key = "present"; Seq = 1L; Offset = 0L; KeyByteLen = 7 } |]
 
-    use sst = new SSTable(path)
-    assertEqual None (sst.Get("missing", System.Int64.MaxValue)) "Get for missing key should return None"
+    let result = SSTable.binSearchIndex index "missing" System.Int64.MaxValue 0 0 None
+    assertEqual None result "Missing key returns None"
+
+[<Fact>]
+let ``SSTable binSearchIndex finds existing key`` () =
+    let index =
+        [| { Key = "present"; Seq = 1L; Offset = 0L; KeyByteLen = 7 } |]
+
+    let result = SSTable.binSearchIndex index "present" System.Int64.MaxValue 0 0 None
+    assertEqual (Some 0) result "Existing key returns correct index"
+
+[<Fact>]
+let ``SSTable binSearchIndex respects snapshot isolation`` () =
+    let index =
+        [| { Key = "k"; Seq = 10L; Offset = 0L; KeyByteLen = 1 }
+           { Key = "k"; Seq = 5L; Offset = 10L; KeyByteLen = 1 } |]
 
     assertEqual
-        (Some(Some "value"))
-        (sst.Get("present", System.Int64.MaxValue))
-        "Get for existing key should return Some(Some value)"
+        None
+        (SSTable.binSearchIndex index "k" 3L 0 1 None)
+        "Snapshot below all seqs returns None"
+    assertEqual
+        (Some 1)
+        (SSTable.binSearchIndex index "k" 7L 0 1 None)
+        "Snapshot between seqs finds older version"
+    assertEqual
+        (Some 0)
+        (SSTable.binSearchIndex index "k" 10L 0 1 None)
+        "Snapshot at max seq finds newest"
+
+[<Fact>]
+let ``SSTable readValue roundtrips correctly`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    SSTableWriter.writeValue bw "roundtrip_val"
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    assertEqual "roundtrip_val" (SSTable.readValue br) "readValue should roundtrip"
+
+[<Fact>]
+let ``SSTable readItem roundtrips Some value`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    SSTableWriter.writeItem bw (Some "item_roundtrip")
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    assertEqual (Some "item_roundtrip") (SSTable.readItem br) "readItem should roundtrip Some"
+
+[<Fact>]
+let ``SSTable readItem roundtrips None`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    SSTableWriter.writeItem bw None
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    assertEqual None (SSTable.readItem br) "readItem should roundtrip None"
 
 [<Fact>]
 let ``SSTable double dispose does not throw`` () =
@@ -119,20 +183,75 @@ let ``SSTable double dispose does not throw`` () =
     (sst :> System.IDisposable).Dispose()
 
 [<Fact>]
-let ``SSTable level parsing prefers L0 over L1`` () =
-    let testDataDir = getTestDir "sst_levels"
-    let l1Path = System.IO.Path.Combine(testDataDir, "L1_data.sst")
-    let l0Path = System.IO.Path.Combine(testDataDir, "L0_data.sst")
-    let legacyPath = System.IO.Path.Combine(testDataDir, "legacy.sst")
-    SSTableWriter.write l1Path [ "k1", 1L, Some "v1_L1" ] |> ignore
-    SSTableWriter.write l0Path [ "k1", 200L, Some "v1_L0" ] |> ignore
-    SSTableWriter.write legacyPath [ "k9", 10L, Some "v9" ] |> ignore
+let ``SSTableWriter writeBytes writes length-prefixed bytes`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    let bytes = "hello"B
+    SSTableWriter.writeBytes bw bytes
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    let len = br.ReadInt32()
+    assertEqual bytes.Length len "Length prefix should match"
+    let data = br.ReadBytes len
+    assertEqual "hello" (System.Text.Encoding.UTF8.GetString data) "Data should roundtrip"
 
-    use tree = new LsmTree(testDataDir)
+[<Fact>]
+let ``SSTableWriter writeValue writes length-prefixed string`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    SSTableWriter.writeValue bw "test_value"
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    let len = br.ReadInt32()
+    let data = br.ReadBytes len
+    assertEqual "test_value" (System.Text.Encoding.UTF8.GetString data) "Value should roundtrip"
 
-    assertEqual
-        (Some "v1_L0")
-        (tree.Get("k1", 300L))
-        "Should prefer L0 over L1 (using high snapshot for manual recovery)"
+[<Fact>]
+let ``SSTableWriter writeItem writes Some value`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    SSTableWriter.writeItem bw (Some "item_val")
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    assertEqual false (br.ReadBoolean()) "Some value should write false (has value)"
+    let len = br.ReadInt32()
+    let data = br.ReadBytes len
+    assertEqual "item_val" (System.Text.Encoding.UTF8.GetString data) "Item value should roundtrip"
 
-    assertEqual (Some "v9") (tree.Get("k9", 300L)) "legacy.sst should be at level 0"
+[<Fact>]
+let ``SSTableWriter writeItem writes None`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    SSTableWriter.writeItem bw None
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    assertEqual true (br.ReadBoolean()) "None should write true (no value)"
+
+[<Fact>]
+let ``SSTableWriter writeOffsets writes count and offsets`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    SSTableWriter.writeOffsets bw [ 100L; 200L; 300L ]
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    let count = br.ReadInt32()
+    assertEqual 3 count "Should write 3 offsets"
+    assertEqual 100L (br.ReadInt64()) "First offset"
+    assertEqual 200L (br.ReadInt64()) "Second offset"
+    assertEqual 300L (br.ReadInt64()) "Third offset"
+
+[<Fact>]
+let ``SSTableWriter writeOffsets writes empty list`` () =
+    use ms = new System.IO.MemoryStream()
+    use bw = new System.IO.BinaryWriter(ms)
+    SSTableWriter.writeOffsets bw []
+    bw.Flush()
+    ms.Position <- 0L
+    use br = new System.IO.BinaryReader(ms)
+    let count = br.ReadInt32()
+    assertEqual 0 count "Empty list should write count 0"

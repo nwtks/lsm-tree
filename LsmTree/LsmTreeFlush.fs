@@ -1,8 +1,8 @@
 namespace LsmTree
 
 type CompactionCoordinator() =
-    let completedEvent = new System.Threading.ManualResetEvent(true)
     let cts = new System.Threading.CancellationTokenSource()
+    let mutable completedEvent = new System.Threading.ManualResetEvent true
     let mutable error: exn option = None
     member val IsCompacting = false with get, set
 
@@ -10,9 +10,14 @@ type CompactionCoordinator() =
         with get () = error
         and set v = error <- v
 
-    member _.CompletedEvent = completedEvent
     member _.Token = cts.Token
     member _.Cancel() = cts.Cancel()
+    member _.ResetCompletion() = completedEvent.Reset() |> ignore
+    member _.SetCompleted() = completedEvent.Set() |> ignore
+    member _.WaitForCompletion() = completedEvent.WaitOne() |> ignore
+
+    member _.AwaitCompletion() =
+        Async.AwaitWaitHandle completedEvent |> Async.Ignore
 
     interface ICoordinatorError with
         member _.Error
@@ -26,7 +31,7 @@ type CompactionCoordinator() =
 
 type FlushCoordinator() =
     let flushLock = obj ()
-    let completedEvent = new System.Threading.ManualResetEvent(true)
+    let mutable completedEvent = new System.Threading.ManualResetEvent true
     let mutable error: exn option = None
 
     member _.Error
@@ -45,6 +50,9 @@ type FlushCoordinator() =
 
     member _.SignalCompleted() = completedEvent.Set() |> ignore
     member _.WaitForCompletion() = completedEvent.WaitOne() |> ignore
+
+    member _.AwaitCompletion() =
+        Async.AwaitWaitHandle completedEvent |> Async.Ignore
 
 module LsmTreeFlush =
     let timestamp () =
@@ -123,9 +131,12 @@ module LsmTreeFlush =
         | Some o -> List.append newer [ o ]
         | None -> newer
 
-    let mergeSortedEntries (tables: SSTable list) isLastLevel minSnap =
+    let mergeSortedEntriesData
+        (tableData: (string * int64 * string option)[][])
+        isLastLevel
+        minSnap
+        =
         seq {
-            let tableData = tables |> List.map (fun t -> t.GetAll()) |> List.toArray
             let pos = Array.zeroCreate tableData.Length
 
             let entryAt i =
@@ -149,6 +160,10 @@ module LsmTreeFlush =
                         yield key, s, v
                 | None -> running <- false
         }
+
+    let mergeSortedEntries (tables: SSTable list) isLastLevel minSnap =
+        let tableData = tables |> List.map (fun t -> t.GetAll()) |> List.toArray
+        mergeSortedEntriesData tableData isLastLevel minSnap
 
     let mergeSSTables
         dataDir
@@ -242,13 +257,13 @@ module LsmTreeFlush =
             lock ssTablesLock (fun () ->
                 if not compaction.IsCompacting then
                     compaction.IsCompacting <- true
-                    compaction.CompletedEvent.Reset() |> ignore
+                    compaction.ResetCompletion()
                     true
                 else
                     false)
 
         if shouldStart then
-            System.Threading.Tasks.Task.Run(fun () ->
+            async {
                 try
                     try
                         compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits compaction.Token 0
@@ -258,8 +273,9 @@ module LsmTreeFlush =
                 finally
                     lock ssTablesLock (fun () ->
                         compaction.IsCompacting <- false
-                        compaction.CompletedEvent.Set() |> ignore))
-            |> ignore
+                        compaction.SetCompleted())
+            }
+            |> Async.Start
 
     let asyncFlushToSSTable
         (mainLock: System.Threading.ReaderWriterLockSlim)
@@ -274,7 +290,7 @@ module LsmTreeFlush =
         (oldWalPath: string)
         (clearState: unit -> unit)
         =
-        System.Threading.Tasks.Task.Run(fun () ->
+        async {
             try
                 try
                     flushToSSTable dataDir oldMemTable
@@ -287,8 +303,10 @@ module LsmTreeFlush =
                 with ex ->
                     lock ssTablesLock (fun () -> flushCoordinator.Error <- Some ex)
             finally
-                flushCoordinator.SignalCompleted())
-        |> ignore
+                flushCoordinator.SignalCompleted()
+        }
+        |> Async.Start
 
-    let waitForCompaction (compaction: CompactionCoordinator) =
-        compaction.CompletedEvent.WaitOne() |> ignore
+    let waitForCompaction (compaction: CompactionCoordinator) = compaction.WaitForCompletion()
+
+    let waitForCompactionAsync (compaction: CompactionCoordinator) = compaction.AwaitCompletion()

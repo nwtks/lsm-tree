@@ -18,7 +18,7 @@ Ensures crash safety and immediate durability. All `Put` and `Delete` operations
 ### MemTable (Lock-Free SkipList)
 In-memory mutations are buffered within a performant, custom-built mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
 - **Lock-Free Concurrency**: Uses `Interlocked.CompareExchange` CAS loops to splice nodes without blocking, supporting massive multi-threaded `Put` operations simultaneously.
-- **Automatic flush**: When the MemTable exceeds `memTableSizeLimit`, it is atomically swapped (under a write lock) to an immutable MemTable, then **asynchronously** flushed to an SSTable via `Task.Run`. Flushes are sequentialized by `FlushCoordinator` (at most one in-flight flush at a time). Background compaction runs as a separate `Task` after each flush completes.
+- **Automatic flush**: When the MemTable exceeds `memTableSizeLimit`, it is atomically swapped (under a write lock) to an immutable MemTable, then **asynchronously** flushed to an SSTable via `async { } |> Async.Start`. Flushes are sequentialized by `FlushCoordinator` (at most one in-flight flush at a time). Background compaction runs as a separate async computation after each flush completes.
 
 ### SSTable (Sorted String Table)
 Immutable on-disk files produced when the MemTable is flushed:
@@ -31,6 +31,14 @@ Immutable on-disk files produced when the MemTable is flushed:
 - **Snapshot-aware pruning**: Versions still visible to any active snapshot are preserved; stale versions are purged.
 - **Tombstone elimination**: In the final storage level, deletion markers (`None` values) are completely removed from the output.
 - **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels if each level's limit is exceeded.
+
+### Asynchronous Flush & Compaction
+
+Both MemTable flush and background compaction are dispatched via F#'s `async { } |> Async.Start` — fire-and-forget computations that run on the thread pool. Coordination uses `ManualResetEvent` internally:
+
+- **FlushCoordinator**: Serializes flushes — at most one in-flight flush at a time. Exposes `AwaitCompletion()` (`Async<unit>`) for async waiting.
+- **CompactionCoordinator**: Ensures at most one compaction runs at a time. Exposes `AwaitCompletion()` (`Async<unit>`) for async waiting.
+- `FlushAsync()` / `WaitForCompactionAsync()` on `LsmTree` return `Async<unit>` for use from F# `async { }` workflows.
 
 ### Direct Put/Delete (Fast Path)
 Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` and applied to the MemTable in one atomic step. This eliminates allocation and lock churn for the common single-key write case.

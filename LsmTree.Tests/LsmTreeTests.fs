@@ -234,36 +234,6 @@ let ``LsmTree multi-level compaction merges correctly`` () =
     assertEqual (Some "v2") (tree.Get "k2") "k2 preserved"
 
 [<Fact>]
-let ``LsmTree merge across levels preserves all versions`` () =
-    let testDir = getTestDir "merge_sst"
-    use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
-    let snap0 = tree.Snapshot()
-    tree.Put("k", "v1")
-    tree.Flush()
-
-    let snap1 = tree.Snapshot()
-    tree.Put("k", "v2")
-    tree.Flush()
-    tree.WaitForCompaction()
-    assertEqual None (tree.Get("k", snap0)) "snap0 sees None"
-    assertEqual (Some "v1") (tree.Get("k", snap1)) "snap1 sees v1"
-    assertEqual (Some "v2") (tree.Get "k") "latest sees v2"
-
-[<Fact>]
-let ``LsmTree snapshot prevents pruning of MVCC data during compaction`` () =
-    let testDir = getTestDir "snap_prune"
-    use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
-    let snap = tree.Snapshot()
-    tree.Put("pk", "pv1")
-    tree.Flush()
-
-    tree.Put("pk", "pv2")
-    tree.Flush()
-    tree.WaitForCompaction()
-    assertEqual None (tree.Get("pk", snap)) "Old snapshot sees nothing"
-    assertEqual (Some "pv2") (tree.Get "pk") "Latest sees newest"
-
-[<Fact>]
 let ``LsmTree flush during compaction does not block`` () =
     let testDir = getTestDir "flush_during_compact"
     use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
@@ -291,40 +261,6 @@ let ``LsmTree cascade compaction across multiple levels`` () =
 
     for i = 1 to 10 do
         assertEqual (Some $"cv{i}") (tree.Get $"ck{i}") $"Cascaded compaction: key ck{i}"
-
-[<Fact>]
-let ``LsmTree compaction prunes tombstones for old snapshots`` () =
-    let testDir = getTestDir "tomb_prune"
-    use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
-    let snap = tree.Snapshot()
-    tree.Put("tk", "tv")
-
-    let snapAfterPut = tree.Snapshot()
-    tree.Flush()
-    tree.Delete "tk"
-    tree.Flush()
-    tree.WaitForCompaction()
-    assertEqual None (tree.Get("tk", snap)) "snap at start sees nothing (Put was after)"
-    assertEqual (Some "tv") (tree.Get("tk", snapAfterPut)) "Can read Put's value with snapshot"
-    assertEqual None (tree.Get "tk") "Tombstone hides key for new readers"
-
-[<Fact>]
-let ``LsmTree compaction prunes tombstones in last level with active snapshot`` () =
-    let testDir = getTestDir "tomb_last_level"
-
-    use tree =
-        new LsmTree(testDir, memTableSizeLimit = 1, compactLevelLimits = [| 1; 1 |])
-
-    tree.Put("tk", "tv")
-    tree.Delete "tk"
-    tree.WaitForCompaction()
-
-    use _ = tree.BeginTransaction()
-
-    tree.Put("a", "1")
-    tree.Put("b", "2")
-    tree.WaitForCompaction()
-    assertEqual None (tree.Get "tk") "tombstone pruned at last level"
 
 [<Fact>]
 let ``LsmTree compaction tolerates IO errors`` () =

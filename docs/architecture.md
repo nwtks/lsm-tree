@@ -71,7 +71,7 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 **Lock ordering rules:**
 1. You may hold `ssTablesLock` while acquiring `mainLock` (write), but **never the reverse** — this prevents deadlocks.
 2. `CompactionCoordinator` auto-properties (`IsCompacting`, `Error`) are always read/written under `ssTablesLock`.
-3. At most one compaction `Task` runs at a time; coordination uses `ManualResetEvent` (`CompactionCoordinator.CompletedEvent`).
+3. At most one compaction runs at a time; coordination uses `ManualResetEvent` (`CompactionCoordinator.AwaitCompletion()` returns `Async<unit>`).
 4. The WAL instance is protected by its own `walLock` object; WAL operations are serialized.
 5. Per‑SSTable `rwLock` is independent — do not acquire `mainLock` or `ssTablesLock` while holding a SSTable read/write lock (to avoid unexpected contention).
 
@@ -81,7 +81,7 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 
 ### Algorithm
 
-1. **Trigger**: A MemTable flush calls `triggerCompaction`, which starts a background `Task` if no compaction is currently running.
+1. **Trigger**: A MemTable flush calls `triggerCompaction`, which starts a background `async { } |> Async.Start` computation if no compaction is currently running.
 2. **Level selection**: Starting from L0, if `ssTables[level].Length > compactLevelLimits[level]`, **all** files at that level are selected for compaction.
 3. **Merge**: A k-way streaming merge (`mergeSortedEntries`) reads all entries from selected SSTables, deduplicates by key (highest sequence number wins), and applies snapshot pruning.
 4. **Output**: A single new SSTable is written to the next level via `SSTableWriter.writeStream`.
@@ -92,7 +92,7 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 
 ### Rules
 
-- Compaction runs on a background `Task`; all shared-state mutations must be guarded by `ssTablesLock`.
+- Compaction runs as a background F# `async { } |> Async.Start` computation; all shared-state mutations must be guarded by `ssTablesLock`.
 - `CompactionCoordinator` uses auto-properties (`IsCompacting`, `Error`) — always read/write under `ssTablesLock`.
 - **Re-query `minActiveSnapshot` at the start of each merge** — never cache it across merge operations.
 - **Compaction at any level selects ALL files in that level** — L0 files overlap in key range; files in higher levels can also overlap due to L0→L1 merges covering the entire key range, so partial compaction would shadow newer versions.

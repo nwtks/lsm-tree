@@ -125,9 +125,18 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         flushCoordinator.WaitForCompletion()
         LockExtensions.checkCoordError flushCoordinator ssTablesLock "Flush failed"
 
+    member _.FlushAsync() =
+        async {
+            flushMemTable ()
+            do! flushCoordinator.AwaitCompletion()
+        }
+
     member _.WaitForCompaction() =
         LsmTreeFlush.waitForCompaction compaction
         LockExtensions.checkCoordError compaction ssTablesLock "Compaction failed"
+
+    member _.WaitForCompactionAsync() =
+        async { do! LsmTreeFlush.waitForCompactionAsync compaction }
 
     member _.SyncOnCommit = syncOnCommit
 

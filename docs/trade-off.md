@@ -100,7 +100,7 @@
 
 | Mitigation | Drawback |
 |---|---|
-| **① Move SSTable write to `Task.Run`; sequentialize via `FlushCoordinator` ✅** | Latency on the calling thread is reduced to the swap + `Task.Run` overhead (~microseconds). However, flushes are sequentialized — at most one in-flight flush at a time. If a flush is still running when the next MemTable fills up, the caller blocks on `flushDoneEvent.WaitOne()` until the previous flush completes |
+| **① Move SSTable write to `async { } |> Async.Start`; sequentialize via `FlushCoordinator` ✅** | Latency on the calling thread is reduced to the swap + dispatch overhead (~microseconds). However, flushes are sequentialized — at most one in-flight flush at a time. If a flush is still running when the next MemTable fills up, the caller blocks on `completedEvent.WaitOne()` until the previous flush completes |
 | **② Allow parallel flushes (one per MemTable swap)** | Higher throughput under burst writes but increases peak memory and disk I/O. Race conditions on SSTable installation order (which flush's data is newest?) require careful sequence-number gating |
 | **③ Keep synchronous flush** | Simple and predictable. Caller blocks for the full SSTable write duration — acceptable for low-write-throughput use cases |
 

@@ -11,10 +11,12 @@ let ``WALRecovery base64ToUtf8 decodes correctly`` () =
     assertEqual "Hello, WAL!" decoded "Valid Base64 string should decode correctly"
 
 [<Fact>]
-let ``WALRecovery invalid base64 returns None via parseEntry`` () =
-    let line = "PUT 1 !!invalid!! !!base64!!"
-    let result = WALRecovery.parseEntry line
-    assertEqual None result "parseEntry returns None for invalid base64"
+let ``WALRecovery base64ToUtf8 throws on invalid base64`` () =
+    Assert.Throws<System.FormatException>(fun () -> WALRecovery.base64ToUtf8 "!!invalid!!" |> ignore) |> ignore
+
+[<Fact>]
+let ``WALRecovery parseEntry catches FormatException from invalid base64`` () =
+    assertEqual None (WALRecovery.parseEntry "PUT 1 !!invalid!! !!base64!!") "parseEntry returns None for invalid base64"
 
 [<Fact>]
 let ``WALRecovery recover on non-existent file returns empty list`` () =
@@ -157,17 +159,29 @@ let ``WAL double dispose does not throw`` () =
     (wal :> System.IDisposable).Dispose()
 
 [<Fact>]
-let ``WALRecovery parseEntry PUT with wrong length returns None`` () =
-    assertEqual None (WALRecovery.parseEntry "PUT 1 a2V5MQ==") "PUT with 3 parts returns None"
+let ``WALRecovery parsePut returns None when parts length is not 4`` () =
+    assertEqual None (WALRecovery.parsePut 1L [|"PUT"; "1"; "a2V5MQ=="|]) "PUT with 3 parts returns None"
 
 [<Fact>]
-let ``WALRecovery parseEntry DEL with wrong length returns None`` () =
-    assertEqual None (WALRecovery.parseEntry "DEL 1 a2V5MQ== dmFsMQ==") "DEL with 4 parts returns None"
+let ``WALRecovery parsePut decodes base64 key and value`` () =
+    let expected = Some(1L, WALRecovery.RecoveryEntry.Op("key1", Some "val1"))
+    assertEqual expected (WALRecovery.parsePut 1L [|"PUT"; "1"; "a2V5MQ=="; "dmFsMQ=="|]) "PUT with 4 parts and valid base64 succeeds"
 
 [<Fact>]
-let ``WALRecovery parseEntry BEGIN with wrong length returns None`` () =
-    assertEqual None (WALRecovery.parseEntry "BEGIN 1 extra") "BEGIN with 3 parts returns None"
+let ``WALRecovery parseDel returns None when parts length is not 3`` () =
+    assertEqual None (WALRecovery.parseDel 1L [|"DEL"; "1"; "a2V5MQ=="; "dmFsMQ=="|]) "DEL with 4 parts returns None"
 
 [<Fact>]
-let ``WALRecovery parseEntry COMMIT with wrong length returns None`` () =
-    assertEqual None (WALRecovery.parseEntry "COMMIT 1 extra") "COMMIT with 3 parts returns None"
+let ``WALRecovery parseDel decodes base64 key with tombstone value`` () =
+    let expected = Some(1L, WALRecovery.RecoveryEntry.Op("key1", None))
+    assertEqual expected (WALRecovery.parseDel 1L [|"DEL"; "1"; "a2V5MQ=="|]) "DEL with 3 parts and valid base64 succeeds"
+
+[<Fact>]
+let ``WALRecovery parseBeginCommit returns None when parts length is not 2`` () =
+    assertEqual None (WALRecovery.parseBeginCommit 1L [|"BEGIN"; "1"; "extra"|] WALRecovery.RecoveryEntry.Begin) "BEGIN with 3 parts returns None"
+    assertEqual None (WALRecovery.parseBeginCommit 1L [|"COMMIT"; "1"; "extra"|] WALRecovery.RecoveryEntry.Commit) "COMMIT with 3 parts returns None"
+
+[<Fact>]
+let ``WALRecovery parseBeginCommit returns entry for 2 parts`` () =
+    assertEqual (Some(1L, WALRecovery.RecoveryEntry.Begin)) (WALRecovery.parseBeginCommit 1L [|"BEGIN"; "1"|] WALRecovery.RecoveryEntry.Begin) "BEGIN with 2 parts succeeds"
+    assertEqual (Some(1L, WALRecovery.RecoveryEntry.Commit)) (WALRecovery.parseBeginCommit 1L [|"COMMIT"; "1"|] WALRecovery.RecoveryEntry.Commit) "COMMIT with 2 parts succeeds"

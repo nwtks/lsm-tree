@@ -1,16 +1,16 @@
 #!/usr/bin/env dotnet fsi
-/// check-complexity.fsx
-///
-/// Parses a coverlet coverage.cobertura.xml file and reports methods
-/// whose cyclomatic complexity exceeds the specified threshold.
-///
-/// Usage:
-///   dotnet fsi scripts/check-complexity.fsx --coverage-file <path> [--threshold <n>] [--warn-threshold <n>]
-///
-/// Defaults:
-///   --coverage-file coverage.cobertura.xml
-///   --threshold      15   (error level)
-///   --warn-threshold 10   (warning level)
+// check-complexity.fsx
+//
+// Parses a coverlet coverage.cobertura.xml file and reports methods
+// whose cyclomatic complexity exceeds the specified threshold.
+//
+// Usage:
+//   dotnet fsi scripts/check-complexity.fsx --coverage-file <path> [--threshold <n>] [--warn-threshold <n>]
+//
+// Defaults:
+//   --coverage-file coverage.cobertura.xml
+//   --threshold      15   (error level)
+//   --warn-threshold 10   (warning level)
 
 open System.IO
 open System.Xml.Linq
