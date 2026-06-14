@@ -221,6 +221,14 @@ let ``LsmTree Flush propagates flush coordinator errors`` () =
     |> ignore
 
 [<Fact>]
+let ``LsmTree FlushAsync completes successfully`` () =
+    let testDir = getTestDir "flush_async"
+    use tree = new LsmTree(testDir)
+    tree.Put("k", "v")
+    tree.FlushAsync() |> Async.RunSynchronously
+    assertEqual (Some "v") (tree.Get "k") "Data accessible after FlushAsync"
+
+[<Fact>]
 let ``LsmTree multi-level compaction merges correctly`` () =
     let testDir = getTestDir "multi_level"
     use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
@@ -302,6 +310,20 @@ let ``LsmTree WaitForCompaction propagates compaction coordinator errors`` () =
     |> ignore
 
 [<Fact>]
+let ``LsmTree WaitForCompactionAsync completes successfully`` () =
+    let testDir = getTestDir "wait_compact_async"
+    use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+
+    for i = 1 to 5 do
+        tree.Put($"k{i}", $"v{i}")
+        tree.Flush()
+
+    tree.WaitForCompactionAsync() |> Async.RunSynchronously
+
+    for i = 1 to 5 do
+        assertEqual (Some $"v{i}") (tree.Get $"k{i}") $"Key k{i} preserved after WaitForCompactionAsync"
+
+[<Fact>]
 let ``LsmTree compaction cancellation during Dispose`` () =
     let testDir = getTestDir "compact_cancel"
     let tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
@@ -353,3 +375,13 @@ let ``LsmTree Dispose handles flush coordinator errors`` () =
     let fc = flField.GetValue tree :?> FlushCoordinator
     fc.Error <- Some(exn "injected flush error")
     (tree :> System.IDisposable).Dispose()
+
+[<Fact>]
+let ``LsmTree SyncOnCommit defaults to true`` () =
+    use tree = new LsmTree(getTestDir "sync_default")
+    Assert.True tree.SyncOnCommit
+
+[<Fact>]
+let ``LsmTree SyncOnCommit respects false`` () =
+    use tree = new LsmTree(getTestDir "sync_false", syncOnCommit = false)
+    Assert.False tree.SyncOnCommit

@@ -39,24 +39,6 @@ let ``SkipList returns None for non-existent key`` () =
     assertEqual None (sl.Find("k1", 0L)) "Should return None when snapshot precedes entry"
 
 [<Fact>]
-let ``SkipList maintains sorted order by key`` () =
-    let sl = SkipList()
-    sl.Put("k3", 1L, "v3")
-    sl.Put("k1", 2L, "v1")
-    sl.Put("k2", 3L, "v2")
-    let entries = sl.Entries()
-
-    assertEqual
-        [ "k1", 2L, Some "v1"; "k2", 3L, Some "v2"; "k3", 1L, Some "v3" ]
-        entries
-        "SkipList should maintain sorted order"
-
-[<Fact>]
-let ``SkipList Entries on empty list returns empty`` () =
-    let sl = SkipList()
-    assertEqual [] (sl.Entries()) "Empty SkipList should return []"
-
-[<Fact>]
 let ``SkipList handles concurrent access without crashing`` () =
     let list = SkipList()
     let numThreads = 20
@@ -102,3 +84,21 @@ let ``SkipList handles extreme CAS contention on same key`` () =
         Option.isSome (list.Find("sameKey", System.Int64.MaxValue)),
         "sameKey should have a value after concurrent puts"
     )
+
+[<Fact>]
+let ``SkipList maintains sorted order by key`` () =
+    let sl = SkipList()
+    sl.Put("k3", 1L, "v3")
+    sl.Put("k1", 2L, "v1")
+    sl.Put("k2", 3L, "v2")
+    let entries = sl.Entries()
+
+    assertEqual
+        [ "k1", 2L, Some "v1"; "k2", 3L, Some "v2"; "k3", 1L, Some "v3" ]
+        entries
+        "SkipList should maintain sorted order"
+
+[<Fact>]
+let ``SkipList Entries on empty list returns empty`` () =
+    let sl = SkipList()
+    assertEqual [] (sl.Entries()) "Empty SkipList should return []"

@@ -10,9 +10,19 @@ let ``MemTable Put and Get returns inserted value`` () =
     assertEqual (Some(Some "v1")) (mt.Get("k", System.Int64.MaxValue)) "Put then Get returns value"
 
 [<Fact>]
-let ``MemTable Get returns None for non-existent key`` () =
+let ``MemTable overwrite returns latest value`` () =
     let mt = MemTable()
-    assertEqual None (mt.Get("nonexistent", System.Int64.MaxValue)) "Get missing key returns None"
+    mt.Put("k", 1L, "v1")
+    mt.Put("k", 2L, "v2")
+    assertEqual (Some(Some "v2")) (mt.Get("k", System.Int64.MaxValue)) "Overwritten key returns latest value"
+
+[<Fact>]
+let ``MemTable Delete creates tombstone`` () =
+    let mt = MemTable()
+    mt.Put("k", 1L, "v1")
+    mt.Delete("k", 2L)
+    assertEqual (Some None) (mt.Get("k", System.Int64.MaxValue)) "Deleted key returns tombstone"
+    assertEqual (Some(Some "v1")) (mt.Get("k", 1L)) "Earlier snapshot still sees value"
 
 [<Fact>]
 let ``MemTable Get respects snapshot isolation`` () =
@@ -25,12 +35,9 @@ let ``MemTable Get respects snapshot isolation`` () =
     assertEqual (Some(Some "v2")) (mt.Get("k", System.Int64.MaxValue)) "Max snapshot sees latest"
 
 [<Fact>]
-let ``MemTable Delete creates tombstone`` () =
+let ``MemTable Get returns None for non-existent key`` () =
     let mt = MemTable()
-    mt.Put("k", 1L, "v1")
-    mt.Delete("k", 2L)
-    assertEqual (Some None) (mt.Get("k", System.Int64.MaxValue)) "Deleted key returns tombstone"
-    assertEqual (Some(Some "v1")) (mt.Get("k", 1L)) "Earlier snapshot still sees value"
+    assertEqual None (mt.Get("nonexistent", System.Int64.MaxValue)) "Get missing key returns None"
 
 [<Fact>]
 let ``MemTable SizeBytes increases after Put`` () =
@@ -71,10 +78,3 @@ let ``MemTable Entries includes tombstone entries`` () =
 let ``MemTable Entries on empty returns empty list`` () =
     let mt = MemTable()
     assertEqual [] mt.Entries "Empty MemTable returns []"
-
-[<Fact>]
-let ``MemTable overwrite returns latest value`` () =
-    let mt = MemTable()
-    mt.Put("k", 1L, "v1")
-    mt.Put("k", 2L, "v2")
-    assertEqual (Some(Some "v2")) (mt.Get("k", System.Int64.MaxValue)) "Overwritten key returns latest value"
