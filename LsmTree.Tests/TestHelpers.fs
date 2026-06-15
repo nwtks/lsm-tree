@@ -4,14 +4,19 @@ open Xunit
 
 [<AutoOpen>]
 module TestHelpers =
-    let getTestDir name =
+    let withTestDir name f =
         let dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "test_data_" + name)
 
         if System.IO.Directory.Exists dir then
             System.IO.Directory.Delete(dir, true)
 
         System.IO.Directory.CreateDirectory dir |> ignore
-        dir
+
+        try
+            f dir
+        finally
+            if System.IO.Directory.Exists dir then
+                System.IO.Directory.Delete(dir, true)
 
     let assertEqual expected actual msg =
         Assert.True((expected = actual), $"{msg}\n  Expected: {expected}\n  Actual: {actual}")

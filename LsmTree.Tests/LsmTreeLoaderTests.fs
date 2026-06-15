@@ -38,28 +38,28 @@ let ``LsmTreeLoader parseSstLevel handles path with directory prefix`` () =
 
 [<Fact>]
 let ``LsmTreeLoader compareSSTables orders by MaxSeq descending then by path`` () =
-    let testDir = getTestDir "cmp_sst"
-    let p1 = System.IO.Path.Combine(testDir, "L0_a.sst")
-    let p2 = System.IO.Path.Combine(testDir, "L0_b.sst")
-    SSTableWriter.write p1 [ "k", 10L, Some "v" ] |> ignore
-    SSTableWriter.write p2 [ "k", 20L, Some "v" ] |> ignore
+    withTestDir "cmp_sst" (fun testDir ->
+        let p1 = System.IO.Path.Combine(testDir, "L0_a.sst")
+        let p2 = System.IO.Path.Combine(testDir, "L0_b.sst")
+        SSTableWriter.write p1 [ "k", 10L, Some "v" ] |> ignore
+        SSTableWriter.write p2 [ "k", 20L, Some "v" ] |> ignore
 
-    use sst1 = new SSTable(p1)
-    use sst2 = new SSTable(p2)
+        use sst1 = new SSTable(p1)
+        use sst2 = new SSTable(p2)
 
-    let cmp = LsmTreeLoader.compareSSTables sst1 sst2
-    Assert.True(cmp > 0, "sst1 (MaxSeq=10) should compare after sst2 (MaxSeq=20)")
+        let cmp = LsmTreeLoader.compareSSTables sst1 sst2
+        Assert.True(cmp > 0, "sst1 (MaxSeq=10) should compare after sst2 (MaxSeq=20)"))
 
 [<Fact>]
 let ``LsmTreeLoader compareSSTables ties broken by path`` () =
-    let testDir = getTestDir "cmp_sst_tie"
-    let p1 = System.IO.Path.Combine(testDir, "L0_a.sst")
-    let p2 = System.IO.Path.Combine(testDir, "L0_b.sst")
-    SSTableWriter.write p1 [ "k", 10L, Some "v" ] |> ignore
-    SSTableWriter.write p2 [ "k", 10L, Some "v" ] |> ignore
+    withTestDir "cmp_sst_tie" (fun testDir ->
+        let p1 = System.IO.Path.Combine(testDir, "L0_a.sst")
+        let p2 = System.IO.Path.Combine(testDir, "L0_b.sst")
+        SSTableWriter.write p1 [ "k", 10L, Some "v" ] |> ignore
+        SSTableWriter.write p2 [ "k", 10L, Some "v" ] |> ignore
 
-    use sst1 = new SSTable(p1)
-    use sst2 = new SSTable(p2)
+        use sst1 = new SSTable(p1)
+        use sst2 = new SSTable(p2)
 
-    let cmp = LsmTreeLoader.compareSSTables sst1 sst2
-    Assert.True(cmp < 0, "Path 'a' should come before path 'b' when MaxSeq ties")
+        let cmp = LsmTreeLoader.compareSSTables sst1 sst2
+        Assert.True(cmp < 0, "Path 'a' should come before path 'b' when MaxSeq ties"))

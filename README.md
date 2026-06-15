@@ -57,7 +57,7 @@ See [docs/architecture.md](docs/architecture.md) for the WAL format, SSTable bin
 
 - **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL). Binary data must be base64-encoded by the caller.
 - **No range queries**: The public API supports point lookups only (`Get`). `SSTable.GetAll()` is internal for compaction.
-- **Single WAL file**: One active WAL per instance. Renamed to `wal_<guid>.old` on each flush; replayed during recovery but never auto-deleted.
+- **Single WAL file**: One active WAL per instance. Renamed to `wal_<guid>.old` on each flush (deleted after the SSTable is successfully written); stale `.old` files from crashes remain on disk and are replayed during recovery.
 - **`fsync` overhead**: `syncOnCommit = true` calls `fsync` on every commit. Set to `false` for higher throughput at the cost of losing the last ~second of data on crash.
 - **`LsmTransaction.Get` O(n) local scan**: The pending ops list is scanned linearly (`Seq.tryFind`). Avoid thousands of keys in a single transaction if you need fast local reads.
 - **No replication/clustering**: Single-node storage engine only.

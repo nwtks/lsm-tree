@@ -44,8 +44,8 @@ See [docs/gotchas.md](docs/gotchas.md).
 All code — including test code — must work on **both Windows and Linux**. Avoid:
 
 - Hard-coded path separators; use `System.IO.Path.Combine`.
-- Platform-specific APIs without fallback (e.g., `File.Flush(true)` is supported on both).
-- Assumptions about case-sensitive file paths (tests use `getTestDir` with unique lowercase names).
+- Platform-specific APIs without fallback (e.g., `stream.Flush(true)` / `FileStream.Flush(bool)` is supported on both).
+- Assumptions about case-sensitive file paths (tests use `withTestDir` with unique lowercase names).
 - Process-level locks on files that outlive the test scope (`FileShare.Read` on SSTables, etc.).
 
 ---
@@ -71,7 +71,7 @@ All code — including test code — must work on **both Windows and Linux**. Av
   2. When multiple test cases target the same source function, order them by **test priority**: normal (happy path) → error cases → fault/failure scenarios.
 - **Prefer data-driven tests** (`[<Theory>]` + `[<InlineData>]`) when multiple test cases share the same test logic but differ only in inputs or expected outputs. This reduces code duplication and makes it easy to add new cases.
 - **Use a unique suffix** per test — tests may run in parallel.
-- Each test calls `getTestDir "<unique_name>"` to get an isolated temp directory (it deletes and recreates the dir).
+- Each test uses `withTestDir "<unique_name>" (fun testDir -> ...)` to get an isolated temp directory (creates before use, cleans up after in `try`/`finally`).
 - Use `assertEqual expected actual msg` (wraps `Assert.True`) for readable failure output.
 - To simulate IO errors deterministically (e.g., for error propagation tests), use reflection to close private `FileStream` handles. Never use file truncation (`SetLength`), as .NET's `FileStream` internal buffer can mask the corruption.
 
@@ -81,6 +81,6 @@ All code — including test code — must work on **both Windows and Linux**. Av
 
 1. Identify the owning layer: WAL, SkipList, MemTable, BloomFilter, SSTable, or LsmTree coordinator.
 2. Respect the `LsmTree.fsproj` compilation order (insert new files after their dependencies).
-3. Add `[<Fact>]` tests in the appropriate test file (`BloomFilterTests.fs`, `SkipListTests.fs`, etc.) with a unique `getTestDir` name.
+3. Add `[<Fact>]` tests in the appropriate test file (`BloomFilterTests.fs`, `SkipListTests.fs`, etc.) with a unique `withTestDir` name.
 4. Run `dotnet test` — all tests must pass.
 5. If the feature changes the WAL or SSTable format, update both README.md and the recovery path, and add regression tests for backward compatibility.

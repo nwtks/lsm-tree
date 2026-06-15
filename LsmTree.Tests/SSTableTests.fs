@@ -59,32 +59,42 @@ let ``SSTable validateSSTableMagic throws for invalid magic number`` () =
 
 [<Fact>]
 let ``SSTable load returns empty for short file`` () =
-    let testDataDir = getTestDir "sst_short_file"
-    let path = System.IO.Path.Combine(testDataDir, "short.sst")
-    System.IO.File.WriteAllBytes(path, [| 0uy .. 9uy |])
+    withTestDir "sst_short_file" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "short.sst")
+        System.IO.File.WriteAllBytes(path, [| 0uy .. 9uy |])
 
-    use fs =
-        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
 
-    use br = new System.IO.BinaryReader(fs)
-    let offsets, _, maxSeq = SSTable.load fs br
-    assertEqual [||] offsets "Short file should have no offsets"
-    assertEqual 0L maxSeq "Short file should have maxSeq 0"
+        use br = new System.IO.BinaryReader(fs)
+        let offsets, _, maxSeq = SSTable.load fs br
+        assertEqual [||] offsets "Short file should have no offsets"
+        assertEqual 0L maxSeq "Short file should have maxSeq 0")
 
 [<Fact>]
 let ``SSTable load and loadIndex handle empty SSTable`` () =
-    let testDataDir = getTestDir "sst_empty"
-    let path = writeSst testDataDir "L0_empty.sst" []
+    withTestDir "sst_empty" (fun testDataDir ->
+        let path = writeSst testDataDir "L0_empty.sst" []
 
-    use fs =
-        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
 
-    use br = new System.IO.BinaryReader(fs)
-    let offsets, _, maxSeq = SSTable.load fs br
-    let index = SSTable.loadIndex fs br offsets
-    assertEqual [||] offsets "Empty SSTable should have no offsets"
-    assertEqual [||] index "Empty SSTable should have empty index"
-    assertEqual 0L maxSeq "Empty SSTable maxSeq = 0"
+        use br = new System.IO.BinaryReader(fs)
+        let offsets, _, maxSeq = SSTable.load fs br
+        let index = SSTable.loadIndex fs br offsets
+        assertEqual [||] offsets "Empty SSTable should have no offsets"
+        assertEqual [||] index "Empty SSTable should have empty index"
+        assertEqual 0L maxSeq "Empty SSTable maxSeq = 0")
 
 [<Fact>]
 let ``SSTable readValue roundtrips correctly`` () =
@@ -118,41 +128,51 @@ let ``SSTable readItem roundtrips None`` () =
 
 [<Fact>]
 let ``SSTable readAllEntries preserves tombstone entries`` () =
-    let testDataDir = getTestDir "sst_getall_tomb"
-    let path = System.IO.Path.Combine(testDataDir, "getall_tomb.sst")
+    withTestDir "sst_getall_tomb" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "getall_tomb.sst")
 
-    SSTableWriter.write path [ "k1", 1L, Some "v1"; "k2", 2L, None; "k3", 3L, Some "v3" ]
-    |> ignore
+        SSTableWriter.write path [ "k1", 1L, Some "v1"; "k2", 2L, None; "k3", 3L, Some "v3" ]
+        |> ignore
 
-    use fs =
-        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
 
-    use br = new System.IO.BinaryReader(fs)
-    let offsets, _, _ = SSTable.load fs br
-    fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
-    let entries = SSTable.readAllEntries br offsets
-    assertEqual 3 entries.Length "Should have 3 entries"
-    assertEqual ("k1", 1L, Some "v1") entries.[0] "First entry is k1=v1"
-    assertEqual ("k2", 2L, None) entries.[1] "Second entry is k2=tombstone"
-    assertEqual ("k3", 3L, Some "v3") entries.[2] "Third entry is k3=v3"
+        use br = new System.IO.BinaryReader(fs)
+        let offsets, _, _ = SSTable.load fs br
+        fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
+        let entries = SSTable.readAllEntries br offsets
+        assertEqual 3 entries.Length "Should have 3 entries"
+        assertEqual ("k1", 1L, Some "v1") entries.[0] "First entry is k1=v1"
+        assertEqual ("k2", 2L, None) entries.[1] "Second entry is k2=tombstone"
+        assertEqual ("k3", 3L, Some "v3") entries.[2] "Third entry is k3=v3")
 
 [<Fact>]
 let ``SSTable loadIndex handles tombstone and value entries`` () =
-    let testDataDir = getTestDir "sst_idx_tomb"
-    let path = System.IO.Path.Combine(testDataDir, "idx_tomb.sst")
-    SSTableWriter.write path [ "gone", 2L, None; "keep", 1L, Some "val" ] |> ignore
+    withTestDir "sst_idx_tomb" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "idx_tomb.sst")
+        SSTableWriter.write path [ "gone", 2L, None; "keep", 1L, Some "val" ] |> ignore
 
-    use fs =
-        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
 
-    use br = new System.IO.BinaryReader(fs)
-    let offsets, _, _ = SSTable.load fs br
-    let index = SSTable.loadIndex fs br offsets
-    assertEqual 2 index.Length "Should have 2 index entries"
-    assertEqual "gone" index.[0].Key "First entry key"
-    assertEqual 2L index.[0].Seq "First entry seq"
-    assertEqual "keep" index.[1].Key "Second entry key"
-    assertEqual 1L index.[1].Seq "Second entry seq"
+        use br = new System.IO.BinaryReader(fs)
+        let offsets, _, _ = SSTable.load fs br
+        let index = SSTable.loadIndex fs br offsets
+        assertEqual 2 index.Length "Should have 2 index entries"
+        assertEqual "gone" index.[0].Key "First entry key"
+        assertEqual 2L index.[0].Seq "First entry seq"
+        assertEqual "keep" index.[1].Key "Second entry key"
+        assertEqual 1L index.[1].Seq "Second entry seq")
 
 [<Fact>]
 let ``SSTable binSearchIndex finds existing key`` () =
@@ -194,30 +214,30 @@ let ``SSTable binSearchIndex returns None for missing key`` () =
 
 [<Fact>]
 let ``SSTable Get returns None for empty SSTable`` () =
-    let testDataDir = getTestDir "sst_get_empty"
-    let path = writeSst testDataDir "L0_empty.sst" []
-    let sst = new SSTable(path)
-    assertEqual NotFound (sst.Get("some_key", System.Int64.MaxValue)) "Get on empty SSTable returns NotFound"
-    (sst :> System.IDisposable).Dispose()
+    withTestDir "sst_get_empty" (fun testDataDir ->
+        let path = writeSst testDataDir "L0_empty.sst" []
+        let sst = new SSTable(path)
+        assertEqual NotFound (sst.Get("some_key", System.Int64.MaxValue)) "Get on empty SSTable returns NotFound"
+        (sst :> System.IDisposable).Dispose())
 
 [<Fact>]
 let ``SSTable Get returns None for missing key`` () =
-    let testDataDir = getTestDir "sst_get_missing"
-    let path = writeSst testDataDir "L0_data.sst" [ "k", 1L, Some "v" ]
-    let sst = new SSTable(path)
-    let result = sst.Get("missing", System.Int64.MaxValue)
-    assertEqual NotFound result "Get for missing key returns NotFound"
-    (sst :> System.IDisposable).Dispose()
+    withTestDir "sst_get_missing" (fun testDataDir ->
+        let path = writeSst testDataDir "L0_data.sst" [ "k", 1L, Some "v" ]
+        let sst = new SSTable(path)
+        let result = sst.Get("missing", System.Int64.MaxValue)
+        assertEqual NotFound result "Get for missing key returns NotFound"
+        (sst :> System.IDisposable).Dispose())
 
 [<Fact>]
 let ``SSTable double dispose does not throw`` () =
-    let testDataDir = getTestDir "sst_double_dispose"
-    let sstPath = System.IO.Path.Combine(testDataDir, "double_dispose.sst")
-    SSTableWriter.write sstPath [] |> ignore
+    withTestDir "sst_double_dispose" (fun testDataDir ->
+        let sstPath = System.IO.Path.Combine(testDataDir, "double_dispose.sst")
+        SSTableWriter.write sstPath [] |> ignore
 
-    let sst = new SSTable(sstPath)
-    (sst :> System.IDisposable).Dispose()
-    (sst :> System.IDisposable).Dispose()
+        let sst = new SSTable(sstPath)
+        (sst :> System.IDisposable).Dispose()
+        (sst :> System.IDisposable).Dispose())
 
 [<Fact>]
 let ``SSTableWriter writeBytes writes length-prefixed bytes`` () =
@@ -297,9 +317,9 @@ let ``SSTableWriter writeOffsets writes empty list`` () =
 
 [<Fact>]
 let ``SSTableWriter writeStream throws on cancellation`` () =
-    let testDataDir = getTestDir "sst_cancel"
-    let path = System.IO.Path.Combine(testDataDir, "cancel.sst")
-    let ct = System.Threading.CancellationToken true
+    withTestDir "sst_cancel" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "cancel.sst")
+        let ct = System.Threading.CancellationToken true
 
-    Assert.Throws<System.OperationCanceledException>(fun () ->
-        SSTableWriter.writeStream path ct 64 [ "k", 1L, Some "v" ] |> ignore)
+        Assert.Throws<System.OperationCanceledException>(fun () ->
+            SSTableWriter.writeStream path ct 64 [ "k", 1L, Some "v" ] |> ignore))

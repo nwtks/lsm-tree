@@ -74,143 +74,143 @@ let ``WALRecovery parseEntry catches FormatException from invalid base64`` () =
 
 [<Fact>]
 let ``WALRecovery recover on non-existent file returns empty list`` () =
-    let testDir = getTestDir "wal_non_existent"
-    let path = System.IO.Path.Combine(testDir, "nonexistent.wal")
+    withTestDir "wal_non_existent" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "nonexistent.wal")
 
-    let recovered = WALRecovery.recover path
-    assertEqual Seq.empty recovered "Non-existent WAL file should return empty sequence"
+        let recovered = WALRecovery.recover path
+        assertEqual Seq.empty recovered "Non-existent WAL file should return empty sequence")
 
 [<Fact>]
 let ``WALRecovery recover handles empty WAL file`` () =
-    let testDir = getTestDir "wal_empty"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
-    System.IO.File.WriteAllText(path, "")
+    withTestDir "wal_empty" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        System.IO.File.WriteAllText(path, "")
 
-    let recovered = WALRecovery.recover path |> Seq.toList
-    assertEqual [] recovered "Empty WAL file should return empty list"
+        let recovered = WALRecovery.recover path |> Seq.toList
+        assertEqual [] recovered "Empty WAL file should return empty list")
 
 [<Fact>]
 let ``WALRecovery malformed log lines are skipped`` () =
-    let testDir = getTestDir "wal_malformed"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
-    System.IO.File.WriteAllText(path, "garbage|line\n")
+    withTestDir "wal_malformed" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        System.IO.File.WriteAllText(path, "garbage|line\n")
 
-    let recovered = WALRecovery.recover path |> Seq.toList
-    assertEqual [] recovered "Malformed lines should be skipped"
+        let recovered = WALRecovery.recover path |> Seq.toList
+        assertEqual [] recovered "Malformed lines should be skipped")
 
 [<Fact>]
 let ``WALRecovery orphaned PUT outside transaction is recovered`` () =
-    let testDir = getTestDir "wal_orphan_put"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
-    System.IO.File.WriteAllText(path, "PUT 1 a2V5MQ== dmFsMQ==")
+    withTestDir "wal_orphan_put" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        System.IO.File.WriteAllText(path, "PUT 1 a2V5MQ== dmFsMQ==")
 
-    let recovered = WALRecovery.recover path |> Seq.toList
-    let expected = [ 1L, "key1", Some "val1" ]
-    assertEqual expected recovered "Orphaned PUT outside a transaction must be recovered"
+        let recovered = WALRecovery.recover path |> Seq.toList
+        let expected = [ 1L, "key1", Some "val1" ]
+        assertEqual expected recovered "Orphaned PUT outside a transaction must be recovered")
 
 [<Fact>]
 let ``WALRecovery orphaned COMMIT is skipped on recovery`` () =
-    let testDir = getTestDir "wal_orphan_commit"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
-    let lines = [ "BEGIN 1"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1"; "COMMIT 2" ]
-    System.IO.File.WriteAllLines(path, lines)
+    withTestDir "wal_orphan_commit" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        let lines = [ "BEGIN 1"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1"; "COMMIT 2" ]
+        System.IO.File.WriteAllLines(path, lines)
 
-    let recovered = WALRecovery.recover path |> Seq.toList
-    let expected = [ 1L, "key1", Some "val1" ]
-    assertEqual expected recovered "Orphaned COMMIT should be ignored, valid txn recovered"
+        let recovered = WALRecovery.recover path |> Seq.toList
+        let expected = [ 1L, "key1", Some "val1" ]
+        assertEqual expected recovered "Orphaned COMMIT should be ignored, valid txn recovered")
 
 [<Fact>]
 let ``WALRecovery unknown entry types are skipped`` () =
-    let testDir = getTestDir "wal_unknown"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
-    let lines = [ "BEGIN 1"; "UNKNOWN foo bar"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1" ]
-    System.IO.File.WriteAllLines(path, lines)
+    withTestDir "wal_unknown" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        let lines = [ "BEGIN 1"; "UNKNOWN foo bar"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1" ]
+        System.IO.File.WriteAllLines(path, lines)
 
-    let recovered = WALRecovery.recover path |> Seq.toList
-    let expected = [ 1L, "key1", Some "val1" ]
-    assertEqual expected recovered "Unknown entry types should be gracefully skipped"
+        let recovered = WALRecovery.recover path |> Seq.toList
+        let expected = [ 1L, "key1", Some "val1" ]
+        assertEqual expected recovered "Unknown entry types should be gracefully skipped")
 
 [<Fact>]
 let ``WALRecovery DEL entries are recovered as tombstones`` () =
-    let testDir = getTestDir "wal_del_entries"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
+    withTestDir "wal_del_entries" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
 
-    let lines =
-        [ "BEGIN 1"
-          "PUT 1 a2V5MQ== dmFsMQ=="
-          "PUT 1 a2V5Mg== dmFsMg=="
-          "DEL 1 a2V5MQ=="
-          "COMMIT 1" ]
+        let lines =
+            [ "BEGIN 1"
+              "PUT 1 a2V5MQ== dmFsMQ=="
+              "PUT 1 a2V5Mg== dmFsMg=="
+              "DEL 1 a2V5MQ=="
+              "COMMIT 1" ]
 
-    System.IO.File.WriteAllLines(path, lines)
+        System.IO.File.WriteAllLines(path, lines)
 
-    let recovered = WALRecovery.recover path |> Seq.toList
+        let recovered = WALRecovery.recover path |> Seq.toList
 
-    let expected =
-        [ 1L, "key1", Some "val1"; 1L, "key2", Some "val2"; 1L, "key1", None ]
+        let expected =
+            [ 1L, "key1", Some "val1"; 1L, "key2", Some "val2"; 1L, "key1", None ]
 
-    assertEqual expected recovered "DEL entries should be recovered as tombstones along with all committed ops"
+        assertEqual expected recovered "DEL entries should be recovered as tombstones along with all committed ops")
 
 [<Fact>]
 let ``WALRecovery uncommitted transactions are excluded on recovery`` () =
-    let testDir = getTestDir "wal_atomic"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
+    withTestDir "wal_atomic" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
 
-    let lines =
-        [ "BEGIN 1"
-          "PUT 1 a2V5MQ== dmFsMQ=="
-          "BEGIN 2"
-          "PUT 2 a2V5Mg== dmFsMg=="
-          "COMMIT 2" ]
+        let lines =
+            [ "BEGIN 1"
+              "PUT 1 a2V5MQ== dmFsMQ=="
+              "BEGIN 2"
+              "PUT 2 a2V5Mg== dmFsMg=="
+              "COMMIT 2" ]
 
-    System.IO.File.WriteAllLines(path, lines)
+        System.IO.File.WriteAllLines(path, lines)
 
-    let recovered = WALRecovery.recover path |> Seq.toList
-    let expected = [ 2L, "key2", Some "val2" ]
-    assertEqual expected recovered "Only committed transactions should survive recovery"
+        let recovered = WALRecovery.recover path |> Seq.toList
+        let expected = [ 2L, "key2", Some "val2" ]
+        assertEqual expected recovered "Only committed transactions should survive recovery")
 
 [<Fact>]
 let ``WAL Put and recover restores data correctly`` () =
-    let testDir = getTestDir "wal_restore"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
+    withTestDir "wal_restore" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
 
-    do
-        use wal = new WAL(path)
-        wal.Put(1L, "key1", "val1")
-        wal.Put(2L, "key2", "val2")
-        wal.Close()
+        do
+            use wal = new WAL(path)
+            wal.Put(1L, "key1", "val1")
+            wal.Put(2L, "key2", "val2")
+            wal.Close()
 
-    let recovered = WALRecovery.recover path |> Seq.toList
-    let expected = [ 1L, "key1", Some "val1"; 2L, "key2", Some "val2" ]
-    assertEqual expected recovered "WAL data should be recovered correctly after Close"
+        let recovered = WALRecovery.recover path |> Seq.toList
+        let expected = [ 1L, "key1", Some "val1"; 2L, "key2", Some "val2" ]
+        assertEqual expected recovered "WAL data should be recovered correctly after Close")
 
 [<Fact>]
 let ``WAL IO errors are propagated to the caller`` () =
-    let testDir = getTestDir "wal_io_errors"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
-    use wal = new WAL(path)
+    withTestDir "wal_io_errors" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        use wal = new WAL(path)
 
-    let handleField =
-        typeof<WAL>
-            .GetField(
-                "stream",
-                System.Reflection.BindingFlags.NonPublic
-                ||| System.Reflection.BindingFlags.Instance
-            )
+        let handleField =
+            typeof<WAL>
+                .GetField(
+                    "stream",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
 
-    let fs = handleField.GetValue wal :?> System.IO.FileStream
-    fs.Close()
+        let fs = handleField.GetValue wal :?> System.IO.FileStream
+        fs.Close()
 
-    wal.Put(1L, "k2", "v2")
+        wal.Put(1L, "k2", "v2")
 
-    Assert.Throws<System.ObjectDisposedException>(fun () -> wal.PutSingle(2L, "k3", "v3", true))
-    |> ignore
+        Assert.Throws<System.ObjectDisposedException>(fun () -> wal.PutSingle(2L, "k3", "v3", true))
+        |> ignore)
 
 [<Fact>]
 let ``WAL double dispose does not throw`` () =
-    let testDir = getTestDir "wal_double_dispose"
-    let path = System.IO.Path.Combine(testDir, "data.wal")
+    withTestDir "wal_double_dispose" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
 
-    let wal = new WAL(path)
-    wal.Close()
-    (wal :> System.IDisposable).Dispose()
+        let wal = new WAL(path)
+        wal.Close()
+        (wal :> System.IDisposable).Dispose())
