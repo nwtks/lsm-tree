@@ -165,7 +165,7 @@ The data directory is **auto-created** if it doesn't exist. All parameters are o
 |-----------|------|---------|-------------|
 | `dataDir` | `string` | (required) | Path to the data directory |
 | `syncOnCommit` | `bool` | `true` | Call `fsync` on every commit |
-| `memTableSizeLimit` | `int` | 1 MB | MemTable size threshold for flush |
+| `memTableSizeLimit` | `int` | 1,048,576 (≈1 MB) | MemTable size threshold for flush |
 | `compactLevelLimits` | `int[]` | `[\| 4; 10; 100; 1000 \|]` | Max files per level before compaction (validated: must be non-empty, no negatives) |
 
 ```fsharp

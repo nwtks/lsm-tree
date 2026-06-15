@@ -40,6 +40,7 @@ type FlushCoordinator() =
     let flushLock = obj ()
     let mutable completedEvent = new System.Threading.ManualResetEvent true
     let mutable error: exn option = None
+    let mutable disposed = false
 
     member _.Error
         with get () = error
@@ -51,15 +52,29 @@ type FlushCoordinator() =
             and set v = error <- v
 
     member _.AcquireAndReset() =
-        lock flushLock (fun () ->
-            completedEvent.WaitOne() |> ignore
-            completedEvent.Reset() |> ignore)
+        completedEvent.WaitOne() |> ignore
+        lock flushLock (fun () -> completedEvent.Reset() |> ignore)
 
-    member _.SignalCompleted() = completedEvent.Set() |> ignore
-    member _.WaitForCompletion() = completedEvent.WaitOne() |> ignore
+    member _.SignalCompleted() =
+        lock flushLock (fun () ->
+            if not disposed then
+                completedEvent.Set() |> ignore)
+
+    member _.WaitForCompletion() =
+        try
+            completedEvent.WaitOne() |> ignore
+        with :? System.ObjectDisposedException ->
+            ()
 
     member _.AwaitCompletion() =
         Async.AwaitWaitHandle completedEvent |> Async.Ignore
+
+    interface System.IDisposable with
+        member _.Dispose() =
+            lock flushLock (fun () ->
+                if not disposed then
+                    disposed <- true
+                    (completedEvent :> System.IDisposable).Dispose())
 
 module LsmTreeFlush =
     let timestamp () =

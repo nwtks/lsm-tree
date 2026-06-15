@@ -262,8 +262,17 @@ let ``Transaction finished transaction throws`` () =
     let tx = tree.BeginTransaction()
     tx.Commit()
 
-    Assert.Throws<System.Exception>(fun () -> tx.Put("k", "v") |> ignore) |> ignore
-    Assert.Throws<System.Exception>(fun () -> tx.Delete "k" |> ignore) |> ignore
-    Assert.Throws<System.Exception>(fun () -> tx.Get "k" |> ignore) |> ignore
-    Assert.Throws<System.Exception>(fun () -> tx.Commit() |> ignore) |> ignore
-    Assert.Throws<System.Exception>(fun () -> tx.Rollback() |> ignore) |> ignore
+    Assert.Throws<System.InvalidOperationException>(fun () -> tx.Put("k", "v") |> ignore)
+    |> ignore
+
+    Assert.Throws<System.InvalidOperationException>(fun () -> tx.Delete "k" |> ignore)
+    |> ignore
+
+    Assert.Throws<System.InvalidOperationException>(fun () -> tx.Get "k" |> ignore)
+    |> ignore
+
+    Assert.Throws<System.InvalidOperationException>(fun () -> tx.Commit() |> ignore)
+    |> ignore
+
+    Assert.Throws<System.InvalidOperationException>(fun () -> tx.Rollback() |> ignore)
+    |> ignore

@@ -13,7 +13,7 @@ COMMIT <seq>
 
 - **Committed transactions** are fully recovered.
 - **Uncommitted transactions** (`BEGIN` without matching `COMMIT`) are discarded.
-- **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — their sequence number never appeared in a `BEGIN` line, so they fall through as visible entries. This is by design: `PutSingle`/`DeleteSingle` (the fast-path for single-key writes) intentionally produce orphaned entries, which are safe under the engine's last-writer-wins semantics.
+- **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — recovery includes entries whose seq is in a `COMMIT` line or was never seen in a `BEGIN` line. The latter case covers `PutSingle`/`DeleteSingle` (fast-path single-key writes) which intentionally omit `BEGIN`/`COMMIT` markers. This is safe under the engine's last-writer-wins semantics.
 - `WALRecovery.recover` handles malformed lines gracefully by returning `None` for unrecognized entries.
 - **Streaming recovery**: Uses `File.ReadLines` (lazy enumeration, not `File.ReadAllLines`) in two passes — first to find committed/begun sequences, second to emit entries. Memory use is O(unique sequence count), not O(file size).
 
@@ -69,15 +69,17 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 | `globalSeq` | `Interlocked.Increment` / `Interlocked.Read` / `Interlocked.CompareExchange` |
 | SkipList nodes | Lock-free CAS (`Interlocked.CompareExchange`) |
 | WAL writes (`StreamWriter`/`FileStream`) | `lock walLock` |
+| `FlushCoordinator.completedEvent` | `lock flushLock` + disposed flag (`IDisposable`) |
 
 **Lock ordering rules:**
 1. You may hold `ssTablesLock` while acquiring `mainLock` (write), but **never the reverse** — this prevents deadlocks.
 2. `CompactionCoordinator` auto-properties (`IsCompacting`, `Error`) are always read/written under `ssTablesLock`.
-3. At most one compaction runs at a time; coordination uses `ManualResetEvent` (`CompactionCoordinator.AwaitCompletion()` returns `Async<unit>`).
+3. At most one compaction runs at a time. Both `CompactionCoordinator` and `FlushCoordinator` use a `ManualResetEvent` for completion signaling and implement `IDisposable` with a disposed-flag guard; they are disposed in `LsmTree.Dispose()` after waiting for in-flight operations.
 4. The WAL instance is protected by its own `walLock` object; WAL operations are serialized.
 5. Per‑SSTable `rwLock` is independent — do not acquire `mainLock` or `ssTablesLock` while holding a SSTable read/write lock (to avoid unexpected contention).
 6. `activeSnapshotsLock` is independent — hold only while reading/writing the active snapshot set. Never acquire `mainLock` or `ssTablesLock` while holding `activeSnapshotsLock`.
 7. `globalSeq` uses `Interlocked` operations exclusively — no lock is required to read or advance the sequence number.
+8. `flushLock` is independent — `AcquireAndReset` performs `WaitOne()` outside the lock then `Reset()` inside; `SignalCompleted` and `Dispose` take the lock. Never acquire `flushLock` while holding `mainLock` or `ssTablesLock`.
 
 ---
 

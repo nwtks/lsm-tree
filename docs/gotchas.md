@@ -2,7 +2,7 @@
 
 ### MemTable flush races with Put/Delete
 
-See [trade-off.md](trade-off.md) (`MemTable flush races with Put/Delete`). No data loss occurs, but an empty SSTable may be produced. Be aware when asserting post-flush SSTable file counts in tests.
+See [trade-off.md](trade-off.md) (`MemTable flush: async, fire-and-forget, sequentialized`). No data loss occurs, but an empty SSTable may be produced — `MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList, so a flush triggered between the increment and insert can produce an empty SSTable. Be aware when asserting post-flush SSTable file counts in tests.
 
 ### `SSTable.Get` returns `SearchResult` (three cases, not two)
 
@@ -36,13 +36,13 @@ If you ever change this pattern, ensure `rwLock.Dispose()` is called **outside**
 
 When testing compaction cascading across multiple levels, set `memTableSizeLimit` large enough (e.g., `1024 * 1024`) to prevent auto-flushes during data loading. Create L0 files via manual `Flush()` calls followed by `WaitForCompaction()` to let each cascade round complete before the next.
 
-### CompactionCoordinator race on Dispose
+### Background coordinator races on Dispose
 
-`LsmTree.Dispose()` cancels the compaction (`compaction.Cancel()`) and waits for it (`waitForCompaction()`), then disposes the `CompactionCoordinator`. However, a fire-and-forget `asyncFlushToSSTable` may call `triggerCompaction` **after** `Dispose()` has already disposed the coordinator's `ManualResetEvent`. The new compaction's `finally` block then calls `SetCompleted()` on the disposed event → `ObjectDisposedException`.
+`LsmTree.Dispose()` cancels compaction, waits for both compaction and flush, then disposes both `CompactionCoordinator` and `FlushCoordinator`. However, the fire-and-forget `asyncFlushToSSTable` may call `triggerCompaction` or `flushCoordinator.SignalCompleted()` **after** `Dispose()` has already disposed the coordinator's `ManualResetEvent`.
 
-**Fix** (two-fold, see `LsmTreeFlush.fs`):
+**Fix** (see `LsmTreeFlush.fs`):
 1. `triggerCompaction` checks `compaction.Token.IsCancellationRequested` — prevents starting new compactions after `Cancel()` during dispose.
-2. `CompactionCoordinator.SetCompleted()` has a `disposed` flag guard.
-3. `Token` is captured with `member val` (not `member _`) so the `CancellationToken` object survives CTS disposal.
+2. `CompactionCoordinator.SetCompleted()` and `FlushCoordinator.SignalCompleted()` have a `disposed` flag guard.
+3. `CompactionCoordinator.Token` is captured with `member val` (not `member _`) so the `CancellationToken` object survives CTS disposal.
 
-If you ever change the `CompactionCoordinator` or add a new background async operation that calls back into it, ensure the disposed-guard pattern is preserved.
+If you ever change these coordinators or add a new background async operation that calls back into them, ensure the disposed-guard pattern is preserved.

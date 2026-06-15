@@ -19,7 +19,7 @@ type LsmTransaction(lsm: ILsmTree, snapshot: int64) =
 
     let checkFinished () =
         if finished then
-            failwith "Transaction already finished."
+            invalidOp "Transaction already finished."
 
     interface ITransaction with
         member _.Put(key, value) =

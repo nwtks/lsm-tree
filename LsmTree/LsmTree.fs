@@ -19,7 +19,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
     let ssTablesLock = obj ()
     let compaction = new CompactionCoordinator()
-    let flushCoordinator = FlushCoordinator()
+    let flushCoordinator = new FlushCoordinator()
     let mutable disposed = false
 
     do
@@ -169,6 +169,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                 |> Array.iter (fun level -> level |> Seq.iter (fun sst -> LockExtensions.disposeOf sst))
 
                 LockExtensions.disposeOf compaction
+                LockExtensions.disposeOf flushCoordinator
 
     interface ILsmTree with
         member this.Get(key, snapshot) = this.Get(key, ?snapshot = snapshot)

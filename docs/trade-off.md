@@ -164,7 +164,7 @@
 
 **Why**: Simple coordination model that avoids the complexity of `Async` cancellation token propagation chains. The `ManualResetEvent` pattern is well-understood and easy to reason about.
 
-**Trade-off**: A fire-and-forget flush's `finally` block may execute after `LsmTree.Dispose()` has already disposed the coordinator's `ManualResetEvent`, causing `ObjectDisposedException`. This is mitigated by the `disposed` guard in `CompactionCoordinator.SetCompleted()` and the `IsCancellationRequested` check in `triggerCompaction`. New background operations must follow the same guard pattern.
+**Trade-off**: A fire-and-forget flush's `finally` block may execute after `LsmTree.Dispose()` has already disposed the coordinator's `ManualResetEvent`, causing `ObjectDisposedException`. This is mitigated by the `disposed` guard in `CompactionCoordinator.SetCompleted()` and `FlushCoordinator.SignalCompleted()`, plus the `IsCancellationRequested` check in `triggerCompaction`. New background operations must follow the same guard pattern.
 
 **Alternatives considered**:
 - **Linked `CancellationTokenSource`**: ensures child tasks are cancelled before parent disposal, but adds complexity for coordinating three independent async scopes (flush, compaction, dispose).
