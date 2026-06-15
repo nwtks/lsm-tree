@@ -8,6 +8,12 @@ type SkipListNode(key: string, seq: int64, value: string option, level: int) =
     member val Value = value with get, set
     member val Next = next
 
+[<Struct>]
+type SearchResult =
+    | Found of value: string
+    | Tombstone
+    | NotFound
+
 module SkipList =
     [<Literal>]
     let MAX_LEVEL = 16
@@ -103,9 +109,11 @@ type SkipList() =
         let current = System.Threading.Volatile.Read(&pred.Next.[0])
 
         if not (isNull current) && current.Key = key && current.Seq <= snapshot then
-            Some current.Value
+            match current.Value with
+            | Some v -> Found v
+            | None -> Tombstone
         else
-            None
+            NotFound
 
     member _.Put(key: string, seq: int64, ?value: string) =
         let lvl = SkipList.randomLevel ()

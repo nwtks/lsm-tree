@@ -197,7 +197,7 @@ let ``SSTable Get returns None for empty SSTable`` () =
     let testDataDir = getTestDir "sst_get_empty"
     let path = writeSst testDataDir "L0_empty.sst" []
     let sst = new SSTable(path)
-    assertEqual None (sst.Get("some_key", System.Int64.MaxValue)) "Get on empty SSTable returns None"
+    assertEqual NotFound (sst.Get("some_key", System.Int64.MaxValue)) "Get on empty SSTable returns NotFound"
     (sst :> System.IDisposable).Dispose()
 
 [<Fact>]
@@ -206,7 +206,7 @@ let ``SSTable Get returns None for missing key`` () =
     let path = writeSst testDataDir "L0_data.sst" [ "k", 1L, Some "v" ]
     let sst = new SSTable(path)
     let result = sst.Get("missing", System.Int64.MaxValue)
-    assertEqual None result "Get for missing key returns None"
+    assertEqual NotFound result "Get for missing key returns NotFound"
     (sst :> System.IDisposable).Dispose()
 
 [<Fact>]

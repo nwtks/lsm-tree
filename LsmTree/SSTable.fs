@@ -1,5 +1,6 @@
 namespace LsmTree
 
+[<Struct>]
 type IndexEntry =
     { Key: string
       Seq: int64
@@ -206,10 +207,12 @@ type SSTable(path: string) =
                     )
                     |> ignore
 
-                    Some(SSTable.readItem br))
-            | None -> None
+                    match SSTable.readItem br with
+                    | Some v -> Found v
+                    | None -> Tombstone)
+            | None -> NotFound
         else
-            None
+            NotFound
 
     interface System.IDisposable with
         member _.Dispose() =

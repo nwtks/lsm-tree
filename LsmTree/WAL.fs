@@ -72,20 +72,19 @@ module WALRecovery =
 
     let recover path =
         if System.IO.File.Exists path then
-            let lines = System.IO.File.ReadAllLines path |> Array.choose parseEntry
-
             let committedSeqs, begunSeqs =
-                ((Set.empty, Set.empty), lines)
-                ||> Array.fold (fun (committed, begun) (seq, entry) ->
-                    match entry with
-                    | Begin -> committed, Set.add seq begun
-                    | Commit -> Set.add seq committed, begun
-                    | Op _ -> committed, begun)
+                ((Set.empty, Set.empty), System.IO.File.ReadLines path)
+                ||> Seq.fold (fun (committed, begun) line ->
+                    match parseEntry line with
+                    | Some(seq, Begin) -> committed, Set.add seq begun
+                    | Some(seq, Commit) -> Set.add seq committed, begun
+                    | _ -> committed, begun)
 
-            lines
-            |> Seq.choose (fun (seq, entry) ->
-                match entry with
-                | Op(k, v) when Set.contains seq committedSeqs || not (Set.contains seq begunSeqs) -> Some(seq, k, v)
+            System.IO.File.ReadLines path
+            |> Seq.choose (fun line ->
+                match parseEntry line with
+                | Some(seq, Op(k, v)) when Set.contains seq committedSeqs || not (Set.contains seq begunSeqs) ->
+                    Some(seq, k, v)
                 | _ -> None)
         else
             Seq.empty

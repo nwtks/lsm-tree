@@ -1,17 +1,26 @@
 namespace LsmTree
 
 module LsmTreeSearch =
-    let searchInTables ssTablesLock (ssTables: SSTable list[]) key snap level =
-        lock ssTablesLock (fun () -> ssTables.[level] |> List.tryPick (fun t -> t.Get(key, snap)))
+    [<TailCall>]
+    let rec searchInTable key snap =
+        function
+        | [] -> NotFound
+        | t: SSTable :: rest ->
+            match t.Get(key, snap) with
+            | NotFound -> searchInTable key snap rest
+            | r -> r
+
+    let searchInTables ssTablesLock (ssTables: SSTable list[]) key snap level : SearchResult =
+        lock ssTablesLock (fun () -> searchInTable key snap ssTables.[level])
 
     [<TailCall>]
-    let rec searchLevel ssTablesLock (ssTables: SSTable list[]) key snap level =
+    let rec searchLevel ssTablesLock (ssTables: SSTable list[]) key snap level : SearchResult =
         if level >= ssTables.Length then
-            None
+            NotFound
         else
             match searchInTables ssTablesLock ssTables key snap level with
-            | Some res -> Some res
-            | None -> searchLevel ssTablesLock ssTables key snap (level + 1)
+            | NotFound -> searchLevel ssTablesLock ssTables key snap (level + 1)
+            | r -> r
 
     let findValue
         (mainLock: System.Threading.ReaderWriterLockSlim)
@@ -27,11 +36,16 @@ module LsmTreeSearch =
                 memTable.Get(key, snap),
                 match immutableMemTable with
                 | Some m -> m.Get(key, snap)
-                | None -> None)
+                | None -> NotFound)
 
         match memRes with
-        | Some v -> v
-        | None ->
+        | Found v -> Some v
+        | Tombstone -> None
+        | NotFound ->
             match immRes with
-            | Some v -> v
-            | None -> searchLevel ssTablesLock ssTables key snap 0 |> Option.flatten
+            | Found v -> Some v
+            | Tombstone -> None
+            | NotFound ->
+                match searchLevel ssTablesLock ssTables key snap 0 with
+                | Found v -> Some v
+                | _ -> None

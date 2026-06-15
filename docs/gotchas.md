@@ -4,9 +4,11 @@
 
 See [trade-off.md](trade-off.md) (`MemTable flush races with Put/Delete`). No data loss occurs, but an empty SSTable may be produced. Be aware when asserting post-flush SSTable file counts in tests.
 
-### `SSTable.Get` outer `Some` prevents tombstone masking
+### `SSTable.Get` returns `SearchResult` (three cases, not two)
 
-`SSTable.Get` wraps `readItem br` with `Some(...)` to return `(string option) option`. This ensures `tryPick` in `searchInTables` can distinguish "tombstone found" (`Some None`) from "key not found" (`None`). If the outer `Some` is missing, a tombstone returns `None` (of `string option`), `tryPick` treats it as "not found", and the search falls through to upper-level stale values — the key appears resurrected after deletion. Always verify the `Some(...)` wrapper exists in `SSTable.Get`.
+`SSTable.Get` now returns the `SearchResult` struct DU: `Found v` / `Tombstone` / `NotFound`. The old `(string option) option` encoding (`Some None` = tombstone) is eliminated. When changing `SSTable.Get`'s return type, ensure all callers in the search chain (`LsmTreeSearch.searchInTable`, `searchLevel`, `findValue`) are updated together — a single missed match arm causes a compiler error (exhaustiveness check).
+
+The `searchInTable` helper recursively walks a `SSTable list`: on `NotFound` it tries the next table; on `Found` or `Tombstone` it short-circuits immediately. This is equivalent to the old `tryPick` behavior but expressed explicitly with a `SearchResult` return.
 
 ### `do...use` scoping avoids double-dispose
 
@@ -33,10 +35,6 @@ If you ever change this pattern, ensure `rwLock.Dispose()` is called **outside**
 ### Full-level cascade in tests
 
 When testing compaction cascading across multiple levels, set `memTableSizeLimit` large enough (e.g., `1024 * 1024`) to prevent auto-flushes during data loading. Create L0 files via manual `Flush()` calls followed by `WaitForCompaction()` to let each cascade round complete before the next.
-
-### Benchmark syncOnCommit toggle
-
-The benchmark uses `[<Params(false, true)>] member val Sync` to toggle `syncOnCommit`. When adding new benchmarks, always expose this parameter to capture the durability-vs-throughput tradeoff. Use `[<IterationSetup>]` to create a fresh engine for each run — never reuse a dirty engine across iterations.
 
 ### CompactionCoordinator race on Dispose
 

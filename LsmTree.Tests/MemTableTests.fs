@@ -7,37 +7,37 @@ open LsmTree
 let ``MemTable Put and Get returns inserted value`` () =
     let mt = MemTable()
     mt.Put("k", 1L, "v1")
-    assertEqual (Some(Some "v1")) (mt.Get("k", System.Int64.MaxValue)) "Put then Get returns value"
+    assertEqual (Found "v1") (mt.Get("k", System.Int64.MaxValue)) "Put then Get returns value"
 
 [<Fact>]
 let ``MemTable overwrite returns latest value`` () =
     let mt = MemTable()
     mt.Put("k", 1L, "v1")
     mt.Put("k", 2L, "v2")
-    assertEqual (Some(Some "v2")) (mt.Get("k", System.Int64.MaxValue)) "Overwritten key returns latest value"
+    assertEqual (Found "v2") (mt.Get("k", System.Int64.MaxValue)) "Overwritten key returns latest value"
 
 [<Fact>]
 let ``MemTable Delete creates tombstone`` () =
     let mt = MemTable()
     mt.Put("k", 1L, "v1")
     mt.Delete("k", 2L)
-    assertEqual (Some None) (mt.Get("k", System.Int64.MaxValue)) "Deleted key returns tombstone"
-    assertEqual (Some(Some "v1")) (mt.Get("k", 1L)) "Earlier snapshot still sees value"
+    assertEqual Tombstone (mt.Get("k", System.Int64.MaxValue)) "Deleted key returns tombstone"
+    assertEqual (Found "v1") (mt.Get("k", 1L)) "Earlier snapshot still sees value"
 
 [<Fact>]
 let ``MemTable Get respects snapshot isolation`` () =
     let mt = MemTable()
     mt.Put("k", 10L, "v1")
     mt.Put("k", 20L, "v2")
-    assertEqual None (mt.Get("k", 5L)) "Snapshot before all entries returns None"
-    assertEqual (Some(Some "v1")) (mt.Get("k", 10L)) "Snapshot at seq 10 sees v1"
-    assertEqual (Some(Some "v2")) (mt.Get("k", 20L)) "Snapshot at seq 20 sees v2"
-    assertEqual (Some(Some "v2")) (mt.Get("k", System.Int64.MaxValue)) "Max snapshot sees latest"
+    assertEqual NotFound (mt.Get("k", 5L)) "Snapshot before all entries returns NotFound"
+    assertEqual (Found "v1") (mt.Get("k", 10L)) "Snapshot at seq 10 sees v1"
+    assertEqual (Found "v2") (mt.Get("k", 20L)) "Snapshot at seq 20 sees v2"
+    assertEqual (Found "v2") (mt.Get("k", System.Int64.MaxValue)) "Max snapshot sees latest"
 
 [<Fact>]
 let ``MemTable Get returns None for non-existent key`` () =
     let mt = MemTable()
-    assertEqual None (mt.Get("nonexistent", System.Int64.MaxValue)) "Get missing key returns None"
+    assertEqual NotFound (mt.Get("nonexistent", System.Int64.MaxValue)) "Get missing key returns NotFound"
 
 [<Fact>]
 let ``MemTable SizeBytes increases after Put`` () =

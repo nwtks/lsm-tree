@@ -50,6 +50,8 @@
 
 **Trade-off**: Memory cost is ~32+ bytes per entry (two `int64` fields, one `int32`, plus the key string reference). For 1M entries, that's ~32 MB across all SSTables. At this project's scale, bounded by `memTableSizeLimit`, the trade-off is favorable.
 
+`IndexEntry` is a `[<Struct>]` record — the array stores entries inline, improving CPU cache locality during binary search and avoiding a separate heap allocation per entry.
+
 **Alternatives considered**:
 - **Disk-based binary search**: zero index memory, but log₂N seeks per lookup.
 - **Memory-mapped I/O**: lets the OS page lazily, but cross-platform behavior varies.
@@ -138,6 +140,21 @@
 **Alternatives considered**:
 - **Binary keys/values**: more general, but complicates WAL parsing and index comparison.
 - **Range queries**: requires iterator merging across all storage levels; significant API and implementation complexity.
+
+---
+
+## SearchResult: struct DU replaces `(string option) option`
+
+**Choice**: The internal lookup chain returns `SearchResult`, a `[<Struct>]` discriminated union with three cases: `Found of string`, `Tombstone`, `NotFound`. Previously it used nested `string option option` where `Some(Some v)` = live, `Some None` = tombstone, `None` = not found.
+
+**Why**: Every `Get` on the hot path (MemTable → immutable → SSTable search) allocated two heap objects (`Some` and `Some`) just to return a three-state result. The `SearchResult` struct eliminates all allocation — `Found`, `Tombstone`, and `NotFound` are all value types. It also makes the three cases explicit in the type system, so the compiler enforces exhaustive matching.
+
+**Trade-off**: The `SearchResult` type is defined in `SkipList.fs` (the earliest compilation unit that needs it). Every internal `Get`-like method now returns `SearchResult`; the conversion to `string option` happens only at the public API boundary (`LsmTree.Get`, `ITransaction.Get`). This adds a small match overhead at the boundary, but the hot path (inside the engine) avoids the boxing entirely.
+
+**Alternatives considered**:
+- **Nested `string option option`**: simple to understand, but 2 heap objects per lookup.
+- **Custom enum + payload field**: avoids allocation but requires manual payload extraction and is not idiomatic F#.
+- **Unmanaged union (manual `byref`-based)**: maximum performance, but fragile and unidiomatic.
 
 ---
 

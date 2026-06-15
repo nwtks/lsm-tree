@@ -20,23 +20,23 @@ let ``SkipList Find respects snapshot isolation`` () =
     sl.Put("k", 10L, "v1")
     sl.Put("k", 20L, "v2")
     sl.Put("k", 30L, "v3")
-    assertEqual None (sl.Find("k", 5L)) "Snapshot before all entries returns None"
-    assertEqual (Some(Some "v1")) (sl.Find("k", 10L)) "Snapshot at seq 10 sees v1"
-    assertEqual (Some(Some "v2")) (sl.Find("k", 20L)) "Snapshot at seq 20 sees v2"
-    assertEqual (Some(Some "v3")) (sl.Find("k", System.Int64.MaxValue)) "Max snapshot sees latest"
+    assertEqual NotFound (sl.Find("k", 5L)) "Snapshot before all entries returns NotFound"
+    assertEqual (Found "v1") (sl.Find("k", 10L)) "Snapshot at seq 10 sees v1"
+    assertEqual (Found "v2") (sl.Find("k", 20L)) "Snapshot at seq 20 sees v2"
+    assertEqual (Found "v3") (sl.Find("k", System.Int64.MaxValue)) "Max snapshot sees latest"
 
 [<Fact>]
 let ``SkipList Find returns tombstone for deleted key`` () =
     let sl = SkipList()
     sl.Put("k", 1L)
-    assertEqual (Some None) (sl.Find("k", System.Int64.MaxValue)) "Tombstone should return Some None"
+    assertEqual Tombstone (sl.Find("k", System.Int64.MaxValue)) "Tombstone should return Tombstone"
 
 [<Fact>]
 let ``SkipList returns None for non-existent key`` () =
     let sl = SkipList()
     sl.Put("k1", 1L, "v1")
-    assertEqual None (sl.Find("nonexistent", System.Int64.MaxValue)) "Should return None for missing key"
-    assertEqual None (sl.Find("k1", 0L)) "Should return None when snapshot precedes entry"
+    assertEqual NotFound (sl.Find("nonexistent", System.Int64.MaxValue)) "Should return NotFound for missing key"
+    assertEqual NotFound (sl.Find("k1", 0L)) "Should return NotFound when snapshot precedes entry"
 
 [<Fact>]
 let ``SkipList handles concurrent access without crashing`` () =
@@ -81,7 +81,9 @@ let ``SkipList handles extreme CAS contention on same key`` () =
     Assert.True(entries.Length > 0)
 
     Assert.True(
-        Option.isSome (list.Find("sameKey", System.Int64.MaxValue)),
+        (match list.Find("sameKey", System.Int64.MaxValue) with
+         | Found _ -> true
+         | _ -> false),
         "sameKey should have a value after concurrent puts"
     )
 

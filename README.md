@@ -19,6 +19,7 @@ Ensures crash safety and immediate durability. All `Put` and `Delete` operations
 In-memory mutations are buffered within a performant, custom-built mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
 - **Lock-Free Concurrency**: Uses `Interlocked.CompareExchange` CAS loops to splice nodes without blocking, supporting massive multi-threaded `Put` operations simultaneously.
 - **Automatic flush**: When the MemTable exceeds `memTableSizeLimit`, it is atomically swapped (under a write lock) to an immutable MemTable, then **asynchronously** flushed to an SSTable via `async { } |> Async.Start`. Flushes are sequentialized by `FlushCoordinator` (at most one in-flight flush at a time). Background compaction runs as a separate async computation after each flush completes.
+- **Async waiting**: `FlushAsync()` and `WaitForCompactionAsync()` return `Async<unit>` for use from F# `async { }` workflows.
 
 ### SSTable (Sorted String Table)
 Immutable on-disk files produced when the MemTable is flushed:
@@ -32,16 +33,10 @@ Immutable on-disk files produced when the MemTable is flushed:
 - **Tombstone elimination**: In the final storage level, deletion markers (`None` values) are completely removed from the output.
 - **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels if each level's limit is exceeded.
 
-### Asynchronous Flush & Compaction
 
-Both MemTable flush and background compaction are dispatched via F#'s `async { } |> Async.Start` — fire-and-forget computations that run on the thread pool. Coordination uses `ManualResetEvent` internally:
-
-- **FlushCoordinator**: Serializes flushes — at most one in-flight flush at a time. Exposes `AwaitCompletion()` (`Async<unit>`) for async waiting.
-- **CompactionCoordinator**: Ensures at most one compaction runs at a time. Exposes `AwaitCompletion()` (`Async<unit>`) for async waiting.
-- `FlushAsync()` / `WaitForCompactionAsync()` on `LsmTree` return `Async<unit>` for use from F# `async { }` workflows.
 
 ### Direct Put/Delete (Fast Path)
-Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` and applied to the MemTable in one atomic step. This eliminates allocation and lock churn for the common single-key write case.
+Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` (with `fsync` if `syncOnCommit` is set) and applied to the MemTable in one atomic step.
 
 ### Atomic Transactions with Snapshot Isolation
 Multi-key atomic updates via a dedicated `ITransaction` API:
@@ -49,9 +44,6 @@ Multi-key atomic updates via a dedicated `ITransaction` API:
 - **Read Own Writes**: `ITransaction.Get` reads pending writes within the same transaction before falling back to the snapshot.
 - **Snapshot Isolation**: Each transaction operates on a stable snapshot, ensuring consistent reads even during concurrent writes.
 - **`IDisposable` lifecycle**: Active snapshots are automatically released when the transaction is disposed.
-
-### Immutable Data Structures & Functional Design
-Uses F# purely functional `Set` and `list` for deterministic state transitions during WAL recovery and snapshot management. Lock helpers (`withReadLock`/`withWriteLock`) eliminate raw `try`/`finally` boilerplate.
 
 ---
 
@@ -63,16 +55,13 @@ See [docs/architecture.md](docs/architecture.md) for the WAL format, SSTable bin
 
 ## ⚠️ Known Limitations
 
-- **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL). Binary data is supported via base64 encoding by the caller.
-- **No range queries**: The public API supports point lookups only (`Get`). `SSTable.GetAll()` is internal, used exclusively during compaction.
-- **Single WAL file**: One active WAL per instance; renamed to `wal_<guid>.old` on each MemTable flush. All `.old` files are replayed during recovery but never automatically deleted, so they accumulate over time.
-- **`fsync` overhead**: `syncOnCommit = true` (default) calls `fsync` on every commit, limiting throughput on spinning disks. Set to `false` for higher throughput at the cost of losing the last ~second of data on crash.
-- **`LsmTransaction.Get` O(n) local scan**: Within a transaction, the local pending-ops list is scanned linearly (`Seq.tryFind`). Avoid putting thousands of keys in a single transaction if you need fast reads within it.
-- **No explicit checkpoint/archive**: The WAL grows indefinitely until the next MemTable swap. There is no periodic WAL archival independent of flush.
+- **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL). Binary data must be base64-encoded by the caller.
+- **No range queries**: The public API supports point lookups only (`Get`). `SSTable.GetAll()` is internal for compaction.
+- **Single WAL file**: One active WAL per instance. Renamed to `wal_<guid>.old` on each flush; replayed during recovery but never auto-deleted.
+- **`fsync` overhead**: `syncOnCommit = true` calls `fsync` on every commit. Set to `false` for higher throughput at the cost of losing the last ~second of data on crash.
+- **`LsmTransaction.Get` O(n) local scan**: The pending ops list is scanned linearly (`Seq.tryFind`). Avoid thousands of keys in a single transaction if you need fast local reads.
 - **No replication/clustering**: Single-node storage engine only.
-- **Empty SSTable flush race**: `MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList. A flush check between the increment and the insert can produce an empty SSTable (no data loss — the WAL guarantees full recovery).
-- **BloomFilter memory**: Each open SSTable holds a full `byte[]` bloom filter in memory (≈1.25 MB per million entries). BloomFilter lifetimes are tied to SSTable lifetimes; compaction disposes both together.
-- **`.sst.tmp` Stale files**: If the process crashes during `SSTableWriter.writeCore` (before the atomic rename), a `.sst.tmp` file may remain. Startup automatically deletes `*.sst.tmp` files — they are cosmetic and never affect correctness.
+- **Empty SSTable flush race**: `MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList. A flush between increment and insert can produce an empty SSTable (no data loss — WAL guarantees recovery).
 
 ---
 
@@ -84,28 +73,12 @@ Run benchmarks locally with:
 dotnet run -c Release --project Benchmark
 ```
 
-The benchmark suite is built with [BenchmarkDotNet](https://benchmarkdotnet.org/) and consists of two test classes:
+Benchmarks use [BenchmarkDotNet](https://benchmarkdotnet.org/) with `[<MemoryDiagnoser>]`:
 
-### `PutBenchmark` (single/parallel writes)
-
-| Benchmark | Description |
-|---|---|
-| `SequentialPut` | Single-threaded `Put` with `syncOnCommit` toggled (`[<Params(false, true)>]`) |
-| `ConcurrentPut` | `Parallel.For`-based `Put` workload |
-| `TransactionPut` | Batched puts inside a single `BeginTransaction`/`Commit` |
-
-All put benchmarks use `[<IterationSetup>]` to create a fresh engine per run. `[<MemoryDiagnoser>]` captures allocation statistics.
-
-### `GetBenchmark` (point lookups)
-
-| Benchmark | Description |
-|---|---|
-| `RandomHitGet` | Point lookup of existing keys (randomly selected) |
-| `RandomMissGet` | Point lookup of non-existent keys (randomly selected) |
-
-Get benchmarks pre-populate the database in `[<GlobalSetup>]` with `N = 10000` or `30000` entries.
-
-Results vary by storage medium (NVMe vs HDD), CPU, and the `syncOnCommit` setting. For highest throughput, set `syncOnCommit = false`.
+| Class | Benchmarks | Description |
+|---|---|---|
+| `PutBenchmark` | `SequentialPut`, `ConcurrentPut`, `TransactionPut` | Single/parallel writes with `syncOnCommit` toggled |
+| `GetBenchmark` | `RandomHitGet`, `RandomMissGet` | Point lookups (N = 10000 / 30000) |
 
 ---
 

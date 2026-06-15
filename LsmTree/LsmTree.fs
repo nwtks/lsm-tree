@@ -26,11 +26,10 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
         if not (System.IO.Directory.Exists dataDir) then
             System.IO.Directory.CreateDirectory dataDir |> ignore
 
-    let mutable wal = new WAL(walPath)
-
-    do
         LsmTreeLoader.loadSSTables dataDir ssTables snapshotManager
         LsmTreeLoader.loadWal dataDir memTable snapshotManager
+
+    let mutable wal = new WAL(walPath)
 
     let flushMemTable () =
         flushCoordinator.AcquireAndReset()

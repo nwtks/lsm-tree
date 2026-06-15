@@ -15,6 +15,7 @@ COMMIT <seq>
 - **Uncommitted transactions** (`BEGIN` without matching `COMMIT`) are discarded.
 - **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — their sequence number never appeared in a `BEGIN` line, so they fall through as visible entries. This is by design: `PutSingle`/`DeleteSingle` (the fast-path for single-key writes) intentionally produce orphaned entries, which are safe under the engine's last-writer-wins semantics.
 - `WALRecovery.recover` handles malformed lines gracefully by returning `None` for unrecognized entries.
+- **Streaming recovery**: Uses `File.ReadLines` (lazy enumeration, not `File.ReadAllLines`) in two passes — first to find committed/begun sequences, second to emit entries. Memory use is O(unique sequence count), not O(file size).
 
 ---
 
@@ -93,15 +94,11 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 
 > **Why all files?** In this implementation, all levels (including Ln for n>0) may contain overlapping key ranges. Partial compaction would leave old versions shadowing newer ones in higher levels.
 
-### Rules
+### Key Rules
 
-- Compaction runs as a background F# `async { } |> Async.Start` computation; all shared-state mutations must be guarded by `ssTablesLock`.
-- `CompactionCoordinator` uses auto-properties (`IsCompacting`, `Error`) — always read/write under `ssTablesLock`.
 - **Re-query `minActiveSnapshot` at the start of each merge** — never cache it across merge operations.
-- **Compaction at any level selects ALL files in that level** — L0 files overlap in key range; files in higher levels can also overlap due to L0→L1 merges covering the entire key range, so partial compaction would shadow newer versions.
+- **All shared-state mutations must be guarded by `ssTablesLock`** — compaction runs on the thread pool.
 - After merge, `Dispose()` old SSTable objects and `File.Delete` the files.
-- Compaction respects `minActiveSnapshot` — versions still visible to active snapshots are never pruned.
-- `mergeSortedEntries` uses a k-way streaming merge; helper functions `findMinKey`, `collectVersions`, and `pruneVersions` keep the main loop readable.
 
 ---
 
@@ -114,19 +111,23 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 
 ---
 
-## Type Convention (all Get methods)
+## Type Convention: `SearchResult` (struct DU)
 
-The entire lookup chain uses `(string option) option` to distinguish three cases:
+The internal lookup chain uses `SearchResult` — a `[<Struct>]` discriminated union that distinguishes three cases without heap allocation:
 
 | Value | Meaning |
 |---|---|
-| `Some(Some "v")` | Live value found |
-| `Some None` | Tombstone found (key was deleted — stops further search) |
-| `None` | Key not found at this storage level |
+| `Found "v"` | Live value found |
+| `Tombstone` | Key was deleted (stops further search) |
+| `NotFound` | Key not found at this storage level |
 
-- `SkipList.Find` returns `(string option) option` — inherent because `SkipListNode.Value` is `string option` and `Find` returns `Some current.Value`.
-- `MemTable.Get` passes through the `(string option) option` from `SkipList.Find`.
-- `SSTable.Get` wraps `readItem br` (which returns `string option`) with an outer `Some(...)`, producing `(string option) option`.
-- `searchInTables`: `List.tryPick` on `(string option) option` returns `(string option) option` — a tombstone (`Some None`) stops `tryPick` because the match is `Some _`, correctly preventing fall-through to upper-level stale values.
-- `searchLevel`: passes through `(string option) option` unchanged.
-- `findValue` destructures MemTable/immutable results via pattern matching (`Some v → v`) and uses `Option.flatten` on the SSTable result from `searchLevel`, converting the entire chain to `string option`.
+- `SkipList.Find` returns `SearchResult`. It inspects `current.Value` (`string option`): `Some v → Found v`, `None → Tombstone`, `null → NotFound`.
+- `MemTable.Get` passes through the `SearchResult` from `data.Find`.
+- `SSTable.Get` returns `SearchResult`: `SSTable.readItem br` returns `string option`; `None → Tombstone`, `Some v → Found v`. If the bloom filter rejects or binary search misses, it returns `NotFound`.
+- `LsmTreeSearch.searchInTable` (internal helper) recurses on `NotFound` and short-circuits on `Found`/`Tombstone` — no `tryPick` involved.
+- `LsmTreeSearch.findValue` matches on the three cases and converts to `string option` (`Found v → Some v`, `Tombstone → None`, `NotFound → None`) — this is the only public boundary.
+
+### Benefits over nested `string option option`
+
+- **Zero heap allocation**: `SearchResult` is a `[<Struct>]` — `Found "v"`/`Tombstone`/`NotFound` are all value types. The previous `Some(Some "v")` incurred 2 heap objects per `Get`.
+- **Static safety**: The three cases are exhaustive; the compiler warns on missing patterns. `string option option` relied on runtime convention.
