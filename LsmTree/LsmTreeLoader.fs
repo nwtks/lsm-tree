@@ -53,11 +53,13 @@ module LsmTreeLoader =
             snapshotManager.AdvanceSequence maxSeq
 
     let loadWal dataDir (memTable: MemTable) (snapshotManager: LsmTreeSnapshot) =
+        let currentSeq = snapshotManager.CurrentSequence()
         let logs = System.IO.Directory.GetFiles(dataDir, "wal*.log")
         let olds = System.IO.Directory.GetFiles(dataDir, "wal*.old")
 
         Array.append logs olds
         |> Seq.collect WALRecovery.recover
+        |> Seq.filter (fun (seq, _, _) -> seq > currentSeq)
         |> Seq.sortBy (fun (seq, _, _) -> seq)
         |> Seq.iter (function
             | seq, k, Some v ->
