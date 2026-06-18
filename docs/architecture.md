@@ -126,7 +126,8 @@ The internal lookup chain uses `SearchResult` — a `[<Struct>]` discriminated u
 - `SkipList.Find` returns `SearchResult`. It inspects `current.Value` (`string option`): `Some v → Found v`, `None → Tombstone`, `null → NotFound`.
 - `MemTable.Get` passes through the `SearchResult` from `data.Find`.
 - `SSTable.Get` returns `SearchResult`: `SSTable.readItem br` returns `string option`; `None → Tombstone`, `Some v → Found v`. If the bloom filter rejects or binary search misses, it returns `NotFound`.
-- `LsmTreeSearch.searchInTable` (internal helper) recurses on `NotFound` and short-circuits on `Found`/`Tombstone` — no `tryPick` involved.
+- `LsmTreeSearch.searchInTable` (internal helper) recurses on `NotFound` and short-circuits on `Found`/`Tombstone` within a single level's SSTable list.
+- `LsmTreeSearch.searchLevel` iterates across levels: on `NotFound` at level N it proceeds to level N+1; on `Found`/`Tombstone` it short-circuits immediately.
 - `LsmTreeSearch.findValue` matches on the three cases and converts to `string option` (`Found v → Some v`, `Tombstone → None`, `NotFound → None`) — this is the only public boundary.
 
 ### Benefits over nested `string option option`

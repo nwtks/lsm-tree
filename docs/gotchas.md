@@ -4,12 +4,6 @@
 
 See [trade-off.md](trade-off.md) (`MemTable flush: async, fire-and-forget, sequentialized`). No data loss occurs, but an empty SSTable may be produced — `MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList, so a flush triggered between the increment and insert can produce an empty SSTable. Be aware when asserting post-flush SSTable file counts in tests.
 
-### `SSTable.Get` returns `SearchResult` (three cases, not two)
-
-`SSTable.Get` now returns the `SearchResult` struct DU: `Found v` / `Tombstone` / `NotFound`. The old `(string option) option` encoding (`Some None` = tombstone) is eliminated. When changing `SSTable.Get`'s return type, ensure all callers in the search chain (`LsmTreeSearch.searchInTable`, `searchLevel`, `findValue`) are updated together — a single missed match arm causes a compiler error (exhaustiveness check).
-
-The `searchInTable` helper recursively walks a `SSTable list`: on `NotFound` it tries the next table; on `Found` or `Tombstone` it short-circuits immediately. This is equivalent to the old `tryPick` behavior but expressed explicitly with a `SearchResult` return.
-
 ### `do...use` scoping avoids double-dispose
 
 When testing restart (create engine → close → reopen), use `do...use tree = new LsmTree(...)` to scope the first engine's lifetime explicitly, then `use tree2 = new LsmTree(...)` for the second. Calling `.Close()` before a `use` block ends triggers a double-dispose — `LsmTree.Dispose()` guards against this with a `disposed` flag and `LockExtensions.disposeOf`, but relying on this is fragile and violates the `IDisposable` contract.

@@ -8,32 +8,29 @@ This project demonstrates the core architectural concepts behind modern database
 ## 🚀 Key Features
 
 ### Write-Ahead Log (WAL)
-Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted sequentially to a `.log` file before being applied to the in-memory MemTable, guaranteeing full recovery upon engine restart.
-- **Configurable `fsync`**: `syncOnCommit` toggles whether `fsync` is called on every commit — balancing durability and throughput.
-- **Explicit buffer flush**: `StreamWriter.AutoFlush` is disabled — the StreamWriter buffer is explicitly flushed (`writer.Flush()`) before the `fsync` call (`stream.Flush(true)`) on every commit or direct write. This avoids redundant page-cache flushes on every `WriteLine`.
-- **Non-transactional direct writes**: `PutSingle` / `DeleteSingle` bypass `BEGIN`/`COMMIT` markers for single-key operations — the orphaned `PUT`/`DEL` lines are recovered as committed on crash (safe under last-writer-wins semantics).
-- **Atomic transaction recovery**: Uncommitted transactions (missing `COMMIT` marker) are automatically discarded on restart.
-- **Fault-tolerant parser**: Malformed lines and unknown entries are skipped (invalid base64 logs a warning to stderr); orphaned `PUT`/`DEL` lines (without a surrounding `BEGIN`/`COMMIT`) are recovered as committed.
+Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted to a `.log` file before being applied to the in-memory MemTable, guaranteeing full recovery upon engine restart.
+- **Configurable durability**: `syncOnCommit` toggles `fsync` on every write — balance crash safety vs. throughput.
+- **Fast single-key path**: `PutSingle`/`DeleteSingle` bypass transaction markers, reducing WAL overhead for single-key operations.
+- **Atomic transaction recovery**: Uncommitted transactions (missing `COMMIT`) are automatically discarded on restart.
+- **Fault-tolerant parser**: Malformed lines are skipped; orphaned entries are safely recovered under last-writer-wins semantics.
 
 ### MemTable (Lock-Free SkipList)
-In-memory mutations are buffered within a performant, custom-built mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
-- **Lock-Free Concurrency**: Uses `Interlocked.CompareExchange` CAS loops to splice nodes without blocking, supporting massive multi-threaded `Put` operations simultaneously.
-- **Automatic flush**: When the MemTable exceeds `memTableSizeLimit`, it is atomically swapped (under a write lock) to an immutable MemTable, then **asynchronously** flushed to an SSTable via `async { } |> Async.Start`. Flushes are sequentialized by `FlushCoordinator` (at most one in-flight flush at a time). Background compaction runs as a separate async computation after each flush completes.
-- **Async waiting**: `FlushAsync()` and `WaitForCompactionAsync()` return `Async<unit>` for use from F# `async { }` workflows.
+In-memory mutations are buffered within a custom mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
+- **Lock-Free Concurrency**: CAS-based node insertion enables concurrent `Put` operations without blocking.
+- **Automatic flush**: When the MemTable exceeds `memTableSizeLimit`, it is atomically swapped to an immutable MemTable and **asynchronously** flushed to an SSTable. Flushes are sequentialized (at most one in-flight at a time).
+- **Async waiting**: `FlushAsync()` and `WaitForCompactionAsync()` return `Async<unit>`.
 
 ### SSTable (Sorted String Table)
 Immutable on-disk files produced when the MemTable is flushed:
-- **In-memory index**: At startup, each SSTable loads an `IndexEntry[]` (key, sequence number, disk offset, key byte length) and Bloom filter into RAM. Lookups perform pure in-memory binary search on the index, then do a single `Seek`+`Read` for the value payload on a hit — the key and sequence number are skipped via `KeyByteLen`, avoiding re-reading from disk.
-- **Concurrent reads**: Uses `ReaderWriterLockSlim` — concurrent readers proceed in parallel (`withReadLock`), while `GetAll` and `Dispose` serialise via `withWriteLock`.
-- **Bloom filters** (FNV-1a derived, double-hashing): 10 bits/item, 7 hash functions. $O(1)$ in-memory probe rejects non-existent keys before any disk I/O.
+- **In-memory index + Bloom filter**: At startup, each SSTable loads an entry index and Bloom filter into RAM. Lookups perform in-memory binary search on the index, then a single `Seek`+`Read` for the value payload — misses are rejected $O(1)$ by the Bloom filter with no disk I/O.
+- **Concurrent reads**: Uses `ReaderWriterLockSlim` — concurrent readers proceed in parallel, while `GetAll` and `Dispose` serialize exclusively.
+- **Bloom filters**: FNV-1a double-hashing, 10 bits/item, 7 hash functions.
 
 ### Background Multi-Level Compaction & Automatic Pruning
 - **Configurable level limits**: e.g., `[| 4; 10; 100; 1000 |]` means L0 over 4 files triggers compaction to L1, L1 over 10 triggers compaction to L2, etc.
-- **Snapshot-aware pruning**: Versions still visible to any active snapshot are preserved; stale versions are purged.
-- **Tombstone elimination**: In the final storage level, deletion markers (`None` values) are completely removed from the output.
-- **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels if each level's limit is exceeded.
-
-
+- **Snapshot-aware pruning**: Versions visible to active snapshots are preserved; stale versions are purged.
+- **Tombstone elimination**: Deletion markers are completely removed from the final storage level.
+- **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels.
 
 ### Direct Put/Delete (Fast Path)
 Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` (with `fsync` if `syncOnCommit` is set) and applied to the MemTable in one atomic step.

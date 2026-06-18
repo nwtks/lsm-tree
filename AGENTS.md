@@ -10,7 +10,7 @@ This file provides guidance for AI agents working in this repository.
 ### Documentation Location Rules
 
 | Topic | Destination |
-|---|---|
+|-------|-------------|
 | Architecture and design discussions | `docs/architecture.md` |
 | Design trade-offs | `docs/trade-off.md` |
 | Common mistakes / gotchas | `docs/gotchas.md` |
@@ -21,21 +21,13 @@ This file provides guidance for AI agents working in this repository.
 
 ---
 
-## Architecture
+## Documentation
 
-See [docs/architecture.md](docs/architecture.md).
-
----
-
-## Design Trade-offs
-
-See [docs/trade-off.md](docs/trade-off.md).
-
----
-
-## Recurring Gotchas
-
-See [docs/gotchas.md](docs/gotchas.md).
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/architecture.md) | Internal design |
+| [Design Trade-offs](docs/trade-off.md) | Rationale for key decisions |
+| [Recurring Gotchas](docs/gotchas.md) | Common pitfalls and non-obvious behaviors |
 
 ---
 
@@ -57,15 +49,15 @@ All code — including test code — must work on **both Windows and Linux**. Av
 - **Leverage discriminated unions** — Model domain concepts (messages, roles, configuration phases, timer actions, pending reads) with DUs for exhaustiveness checking.
 - **Use `[<TailCall>]` on recursive functions** that loop (e.g., `agentLoop`, `findFirstIdx`) to prevent stack overflows.
 - Do not introduce new external NuGet packages without checking existing dependencies in the `.fsproj` files first.
-- **Cyclomatic complexity** — Every function/method must keep its Coverlet complexity ≤ 15 (hard limit). Keep it ≤ 10 where practical. The `scripts/check-complexity.fsx` script checks this automatically from `coverage.cobertura.xml` after `dotnet test`. See `Directory.Build.props` for threshold configuration. If the check fails, split the function into smaller helpers or simplify branching.
+- **Cyclomatic complexity** — Every function/method must keep its keyword-calculated complexity ≤ 15 (hard limit). Keep it ≤ 10 where practical. After `dotnet test`, the `scripts/check-complexity.fsx` script reads `coverage.cobertura.xml` and reports both a keyword-based estimate (calculated) and the Coverlet reference value — the error/warning thresholds apply to the **calculated** column. Configure thresholds in `Directory.Build.props`. If the check fails, split the function into smaller helpers or simplify branching.
 
 ---
 
 ## Testing Conventions
 
 - After any code change, run `dotnet test` and confirm **all tests pass**.
-- The `dotnet test` output includes a **Cyclomatic Complexity Report** (from coverage data). Check that no function exceeds complexity 15 (error threshold). Warnings above 10 should be addressed where practical.
-- Maintain high unit test coverage (target: ≥ 90% line coverage).If line coverage falls below 90%, add test code to restore it above the threshold before merging.
+- The `dotnet test` output includes a **Cyclomatic Complexity Report** (from coverage data via `scripts/check-complexity.fsx`). Address any warnings (above 10) and fix any errors (above 15).
+- Maintain high unit test coverage (target: ≥ 90% line coverage). If line coverage falls below 90%, add test code to restore it above the threshold before merging.
 - **Test ordering rules**:
   1. Within each test file, `[<Fact>]` functions must appear in the same order as the corresponding functions/methods/constructors in the source file under test.
   2. When multiple test cases target the same source function, order them by **test priority**: normal (happy path) → error cases → fault/failure scenarios.
