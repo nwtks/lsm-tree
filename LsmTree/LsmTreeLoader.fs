@@ -14,7 +14,17 @@ module LsmTreeLoader =
         let name = System.IO.Path.GetFileName path
 
         if name.StartsWith "L" then
-            System.Int32.Parse(name.Substring(1, name.IndexOf '_' - 1))
+            let uScore = name.IndexOf '_'
+
+            if uScore > 1 then
+                match System.Int32.TryParse(name.Substring(1, uScore - 1)) with
+                | true, lvl -> lvl
+                | _ ->
+                    eprintfn "[WARN] LsmTreeLoader: malformed SSTable name '%s' treated as level 0" name
+                    0
+            else
+                eprintfn "[WARN] LsmTreeLoader: malformed SSTable name '%s' treated as level 0" name
+                0
         else
             0
 
@@ -42,18 +52,19 @@ module LsmTreeLoader =
         for i = 0 to ssTables.Length - 1 do
             ssTables.[i] <- ssTables.[i] |> List.sortWith compareSSTables
 
-    let loadSSTables dataDir (ssTables: SSTable list[]) (snapshotManager: LsmTreeSnapshot) =
+    let cleanupTempFiles dataDir =
         System.IO.Directory.GetFiles(dataDir, "*.sst.tmp")
         |> Array.iter System.IO.File.Delete
 
+    let loadSSTables dataDir (ssTables: SSTable list[]) (snapshotManager: LsmTreeSnapshot) =
+        cleanupTempFiles dataDir
         let maxSeq = loadSSTableFiles dataDir ssTables
         sortLevelTables ssTables
 
         if maxSeq > 0L then
             snapshotManager.AdvanceSequence maxSeq
 
-    let loadWal dataDir (memTable: MemTable) (snapshotManager: LsmTreeSnapshot) =
-        let currentSeq = snapshotManager.CurrentSequence()
+    let collectWalEntries dataDir currentSeq =
         let logs = System.IO.Directory.GetFiles(dataDir, "wal*.log")
         let olds = System.IO.Directory.GetFiles(dataDir, "wal*.old")
 
@@ -61,10 +72,16 @@ module LsmTreeLoader =
         |> Seq.collect WALRecovery.recover
         |> Seq.filter (fun (seq, _, _) -> seq > currentSeq)
         |> Seq.sortBy (fun (seq, _, _) -> seq)
-        |> Seq.iter (function
-            | seq, k, Some v ->
-                memTable.Put(k, seq, v)
-                snapshotManager.AdvanceSequence seq
-            | seq, k, None ->
-                memTable.Delete(k, seq)
-                snapshotManager.AdvanceSequence seq)
+
+    let applyEntry (memTable: MemTable) (snapshotManager: LsmTreeSnapshot) (seq, k, vOpt) =
+        match vOpt with
+        | Some v -> memTable.Put(k, seq, v)
+        | None -> memTable.Delete(k, seq)
+
+        snapshotManager.AdvanceSequence seq
+
+    let loadWal dataDir (memTable: MemTable) (snapshotManager: LsmTreeSnapshot) =
+        let currentSeq = snapshotManager.CurrentSequence()
+
+        collectWalEntries dataDir currentSeq
+        |> Seq.iter (applyEntry memTable snapshotManager)

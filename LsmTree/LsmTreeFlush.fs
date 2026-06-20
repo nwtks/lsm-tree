@@ -53,7 +53,13 @@ type FlushCoordinator() =
 
     member _.AcquireAndReset() =
         completedEvent.WaitOne() |> ignore
-        lock flushLock (fun () -> completedEvent.Reset() |> ignore)
+
+        lock flushLock (fun () ->
+            if not disposed then
+                completedEvent.Reset() |> ignore
+                true
+            else
+                false)
 
     member _.SignalCompleted() =
         lock flushLock (fun () ->
@@ -85,24 +91,15 @@ module LsmTreeFlush =
     let ssTablePath dataDir level =
         System.IO.Path.Combine(dataDir, $"L{level}_{timestamp ()}_{newGuid ()}.sst")
 
-    let swapMemTableAndWal
-        (mainLock: System.Threading.ReaderWriterLockSlim)
-        dataDir
-        (memTable: MemTable)
-        (wal: WAL)
-        walPath
-        (swapState: MemTable -> WAL -> MemTable -> unit)
-        =
-        LockExtensions.withWriteLock mainLock (fun () ->
-            if memTable.SizeBytes > 0 then
-                let oldMemTable = memTable
-                wal.Close()
-                let oldWalPath = System.IO.Path.Combine(dataDir, $"wal_{newGuid ()}.old")
-                System.IO.File.Move(walPath, oldWalPath)
-                swapState (MemTable()) (new WAL(walPath)) oldMemTable
-                Some(oldMemTable, oldWalPath)
-            else
-                None)
+    let swapMemTableAndWal dataDir (memTable: MemTable) (wal: WAL) walPath =
+        if memTable.SizeBytes > 0 then
+            let oldMemTable = memTable
+            let oldWalPath = System.IO.Path.Combine(dataDir, $"wal_{newGuid ()}.old")
+            System.IO.File.Move(walPath, oldWalPath)
+            wal.Close()
+            Some(MemTable(), new WAL(walPath), oldMemTable, oldWalPath)
+        else
+            None
 
     let flushToSSTable dataDir (oldMemTable: MemTable) =
         SSTableWriter.write (ssTablePath dataDir 0) oldMemTable.Entries
@@ -197,11 +194,9 @@ module LsmTreeFlush =
         mergeSortedEntries (List.rev tablesToCompact) isLastLevel minSnap
         |> SSTableWriter.writeStream (ssTablePath dataDir (level + 1)) ct estimatedEntries
 
-    let performMerge
+    let mergeAndCreateSSTable
         dataDir
         (snapshotManager: LsmTreeSnapshot)
-        ssTablesLock
-        (ssTables: SSTable list[])
         compactLevelLimits
         (ct: System.Threading.CancellationToken)
         tablesToCompact
@@ -209,10 +204,9 @@ module LsmTreeFlush =
         =
         ct.ThrowIfCancellationRequested()
         let minSnap = snapshotManager.GetMinActiveSnapshot()
+        mergeSSTables dataDir compactLevelLimits ct tablesToCompact level minSnap
 
-        let newSSTable =
-            mergeSSTables dataDir compactLevelLimits ct tablesToCompact level minSnap
-
+    let replaceLevelTables ssTablesLock (ssTables: SSTable list[]) level tablesToCompact newSSTable =
         lock ssTablesLock (fun () ->
             ssTables.[level + 1] <- newSSTable :: ssTables.[level + 1]
 
@@ -221,6 +215,7 @@ module LsmTreeFlush =
 
             ssTables.[level] <- remaining)
 
+    let cleanupSSTables (tablesToCompact: SSTable list) =
         let cleanupErrors =
             tablesToCompact
             |> List.collect (fun t ->
@@ -236,6 +231,21 @@ module LsmTreeFlush =
 
         if not (List.isEmpty cleanupErrors) then
             raise (System.AggregateException("Compaction cleanup failed", cleanupErrors))
+
+    let performMerge
+        dataDir
+        (snapshotManager: LsmTreeSnapshot)
+        ssTablesLock
+        (ssTables: SSTable list[])
+        compactLevelLimits
+        (ct: System.Threading.CancellationToken)
+        tablesToCompact
+        level
+        =
+        mergeAndCreateSSTable dataDir snapshotManager compactLevelLimits ct tablesToCompact level
+        |> replaceLevelTables ssTablesLock ssTables level tablesToCompact
+
+        cleanupSSTables tablesToCompact
 
     [<TailCall>]
     let rec compact
@@ -295,6 +305,13 @@ module LsmTreeFlush =
             }
             |> Async.Start
 
+    let flushAndRegisterSSTable dataDir mainLock ssTablesLock ssTables clearState oldMemTable oldWalPath =
+        flushToSSTable dataDir oldMemTable
+        |> addSSTable mainLock ssTablesLock ssTables clearState
+
+        if System.IO.File.Exists oldWalPath then
+            System.IO.File.Delete oldWalPath
+
     let asyncFlushToSSTable
         (mainLock: System.Threading.ReaderWriterLockSlim)
         dataDir
@@ -311,12 +328,7 @@ module LsmTreeFlush =
         async {
             try
                 try
-                    flushToSSTable dataDir oldMemTable
-                    |> addSSTable mainLock ssTablesLock ssTables clearState
-
-                    if System.IO.File.Exists oldWalPath then
-                        System.IO.File.Delete oldWalPath
-
+                    flushAndRegisterSSTable dataDir mainLock ssTablesLock ssTables clearState oldMemTable oldWalPath
                     triggerCompaction dataDir snapshotManager ssTablesLock ssTables compactLevelLimits compaction
                 with ex ->
                     lock ssTablesLock (fun () -> flushCoordinator.Error <- Some ex)

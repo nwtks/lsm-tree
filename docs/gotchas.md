@@ -37,6 +37,7 @@ When testing compaction cascading across multiple levels, set `memTableSizeLimit
 **Fix** (see `LsmTreeFlush.fs`):
 1. `triggerCompaction` checks `compaction.Token.IsCancellationRequested` — prevents starting new compactions after `Cancel()` during dispose.
 2. `CompactionCoordinator.SetCompleted()` and `FlushCoordinator.SignalCompleted()` have a `disposed` flag guard.
-3. `CompactionCoordinator.Token` is captured with `member val` (not `member _`) so the `CancellationToken` object survives CTS disposal.
+3. `FlushCoordinator.AcquireAndReset()` checks the `disposed` flag under `flushLock` and returns `false` if disposed, so a new flush cycle is skipped during shutdown.
+4. `CompactionCoordinator.Token` is captured with `member val` (not `member _`) so the `CancellationToken` object survives CTS disposal.
 
 If you ever change these coordinators or add a new background async operation that calls back into them, ensure the disposed-guard pattern is preserved.

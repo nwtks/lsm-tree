@@ -10,20 +10,20 @@ type BloomFilter(bits: byte[], numHashFunctions: int) =
         for i = 0 to bytes.Length - 1 do
             h <- (h ^^^ uint64 bytes.[i]) * 1099511628211uL
 
-        uint32 (h >>> 32), uint32 (h &&& 0xFFFFFFFFuL)
+        struct (uint32 (h >>> 32), uint32 (h &&& 0xFFFFFFFFuL))
 
     let keyIndex h1 h2 seed =
         let idx = (h1 + uint32 seed * h2) % uint32 bitSize
         let byteIdx = int (idx / 8u)
         let bitIdx = int (idx % 8u)
-        byteIdx, bitIdx
+        struct (byteIdx, bitIdx)
 
     [<TailCall>]
     let rec check h1 h2 seed =
         if seed >= numHashFunctions then
             true
         else
-            let byteIdx, bitIdx = keyIndex h1 h2 seed
+            let struct (byteIdx, bitIdx) = keyIndex h1 h2 seed
 
             if bits.[byteIdx] &&& (1uy <<< bitIdx) = 0uy then
                 false
@@ -32,15 +32,15 @@ type BloomFilter(bits: byte[], numHashFunctions: int) =
 
     member _.Add(key: string) =
         if bitSize > 0 then
-            let h1, h2 = hash key
+            let struct (h1, h2) = hash key
 
             for i = 0 to numHashFunctions - 1 do
-                let byteIdx, bitIdx = keyIndex h1 h2 i
+                let struct (byteIdx, bitIdx) = keyIndex h1 h2 i
                 bits.[byteIdx] <- bits.[byteIdx] ||| (1uy <<< bitIdx)
 
     member _.MightContain(key: string) =
         if bitSize > 0 then
-            let h1, h2 = hash key
+            let struct (h1, h2) = hash key
             check h1 h2 0
         else
             true

@@ -79,7 +79,7 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 5. Per‑SSTable `rwLock` is independent — do not acquire `mainLock` or `ssTablesLock` while holding a SSTable read/write lock (to avoid unexpected contention).
 6. `activeSnapshotsLock` is independent — hold only while reading/writing the active snapshot set. Never acquire `mainLock` or `ssTablesLock` while holding `activeSnapshotsLock`.
 7. `globalSeq` uses `Interlocked` operations exclusively — no lock is required to read or advance the sequence number.
-8. `flushLock` is independent — `AcquireAndReset` performs `WaitOne()` outside the lock then `Reset()` inside; `SignalCompleted` and `Dispose` take the lock. Never acquire `flushLock` while holding `mainLock` or `ssTablesLock`.
+8. `flushLock` is independent — `AcquireAndReset` performs `WaitOne()` outside the lock then `Reset()` inside with a `disposed` flag guard (returns `bool`: `false` if disposed); `SignalCompleted` and `Dispose` take the lock. `WaitForCompletion` catches `ObjectDisposedException` to tolerate the dispose race. Never acquire `flushLock` while holding `mainLock` or `ssTablesLock`.
 
 ---
 

@@ -32,53 +32,58 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let mutable wal = new WAL(walPath)
 
     let flushMemTable () =
-        flushCoordinator.AcquireAndReset()
+        if not (flushCoordinator.AcquireAndReset()) then
+            ()
+        else
+            let swapResult =
+                LockExtensions.withWriteLock mainLock (fun () ->
+                    match LsmTreeFlush.swapMemTableAndWal dataDir memTable wal walPath with
+                    | Some(newMt, newWal, oldMt, oldWalPath) ->
+                        memTable <- newMt
+                        wal <- newWal
+                        immutableMemTable <- Some oldMt
+                        Some(oldMt, oldWalPath)
+                    | None -> None)
 
-        match
-            LsmTreeFlush.swapMemTableAndWal mainLock dataDir memTable wal walPath (fun newMt newWal oldMt ->
-                memTable <- newMt
-                wal <- newWal
-                immutableMemTable <- Some oldMt)
-        with
-        | Some(oldMemTable, oldWalPath) ->
-            LsmTreeFlush.asyncFlushToSSTable
-                mainLock
-                dataDir
-                snapshotManager
-                ssTablesLock
-                ssTables
-                compactLevelLimits
-                compaction
-                flushCoordinator
-                oldMemTable
-                oldWalPath
-                (fun () ->
-                    match immutableMemTable with
-                    | Some mt when obj.ReferenceEquals(mt, oldMemTable) -> immutableMemTable <- None
-                    | _ -> ())
-        | None -> flushCoordinator.SignalCompleted()
+            match swapResult with
+            | Some(oldMemTable, oldWalPath) ->
+                LsmTreeFlush.asyncFlushToSSTable
+                    mainLock
+                    dataDir
+                    snapshotManager
+                    ssTablesLock
+                    ssTables
+                    compactLevelLimits
+                    compaction
+                    flushCoordinator
+                    oldMemTable
+                    oldWalPath
+                    (fun () ->
+                        match immutableMemTable with
+                        | Some mt when obj.ReferenceEquals(mt, oldMemTable) -> immutableMemTable <- None
+                        | _ -> ())
+            | None -> flushCoordinator.SignalCompleted()
+
+    let writeWithFlushCheck writeFn =
+        let shouldFlush =
+            LockExtensions.withReadLock mainLock (fun () ->
+                writeFn ()
+                memTable.SizeBytes >= memTableLimit)
+
+        if shouldFlush then
+            flushMemTable ()
 
     let putDirect key value =
-        let shouldFlush =
-            LockExtensions.withReadLock mainLock (fun () ->
-                let seq = snapshotManager.NextSequence()
-                wal.PutSingle(seq, key, value, syncOnCommit)
-                memTable.Put(key, seq, value)
-                memTable.SizeBytes >= memTableLimit)
-
-        if shouldFlush then
-            flushMemTable ()
+        writeWithFlushCheck (fun () ->
+            let seq = snapshotManager.NextSequence()
+            wal.PutSingle(seq, key, value, syncOnCommit)
+            memTable.Put(key, seq, value))
 
     let deleteDirect key =
-        let shouldFlush =
-            LockExtensions.withReadLock mainLock (fun () ->
-                let seq = snapshotManager.NextSequence()
-                wal.DeleteSingle(seq, key, syncOnCommit)
-                memTable.Delete(key, seq)
-                memTable.SizeBytes >= memTableLimit)
-
-        if shouldFlush then
-            flushMemTable ()
+        writeWithFlushCheck (fun () ->
+            let seq = snapshotManager.NextSequence()
+            wal.DeleteSingle(seq, key, syncOnCommit)
+            memTable.Delete(key, seq))
 
     let commitTransaction (ops: (string * string option) list) =
         let shouldFlush =

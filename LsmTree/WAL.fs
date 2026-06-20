@@ -70,22 +70,26 @@ module WALRecovery =
                 None
         | None -> None
 
+    let collectSequenceSets path =
+        ((Set.empty, Set.empty), System.IO.File.ReadLines path)
+        ||> Seq.fold (fun (committed, begun) line ->
+            match parseEntry line with
+            | Some(seq, Begin) -> committed, Set.add seq begun
+            | Some(seq, Commit) -> Set.add seq committed, begun
+            | _ -> committed, begun)
+
+    let recoverOps path committedSeqs begunSeqs =
+        System.IO.File.ReadLines path
+        |> Seq.choose (fun line ->
+            match parseEntry line with
+            | Some(seq, Op(k, v)) when Set.contains seq committedSeqs || not (Set.contains seq begunSeqs) ->
+                Some(seq, k, v)
+            | _ -> None)
+
     let recover path =
         if System.IO.File.Exists path then
-            let committedSeqs, begunSeqs =
-                ((Set.empty, Set.empty), System.IO.File.ReadLines path)
-                ||> Seq.fold (fun (committed, begun) line ->
-                    match parseEntry line with
-                    | Some(seq, Begin) -> committed, Set.add seq begun
-                    | Some(seq, Commit) -> Set.add seq committed, begun
-                    | _ -> committed, begun)
-
-            System.IO.File.ReadLines path
-            |> Seq.choose (fun line ->
-                match parseEntry line with
-                | Some(seq, Op(k, v)) when Set.contains seq committedSeqs || not (Set.contains seq begunSeqs) ->
-                    Some(seq, k, v)
-                | _ -> None)
+            let committedSeqs, begunSeqs = collectSequenceSets path
+            recoverOps path committedSeqs begunSeqs
         else
             Seq.empty
 

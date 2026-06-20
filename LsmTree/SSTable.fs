@@ -92,18 +92,25 @@ module SSTable =
             System.IO.InvalidDataException $"Invalid SSTable magic number: expected 0x{MAGIC:x}, got 0x{magic:x}"
             |> raise
 
+    let readFooter (br: System.IO.BinaryReader) =
+        let indexOffset = br.ReadInt64()
+        let bloomOffset = br.ReadInt64()
+        let maxSeq = br.ReadInt64()
+        let magic = br.ReadInt64()
+        struct (indexOffset, bloomOffset, maxSeq, magic)
+
+    let validateFooter fileLen indexOffset bloomOffset magic =
+        validateSSTableMagic magic
+        validateIndexOffset fileLen indexOffset FOOTER_SIZE
+        validateBloomOffset fileLen indexOffset bloomOffset FOOTER_SIZE
+
     let load (fs: System.IO.FileStream) (br: System.IO.BinaryReader) =
         let fileLen = fs.Length
 
         if fileLen >= FOOTER_SIZE then
             fs.Seek(-FOOTER_SIZE, System.IO.SeekOrigin.End) |> ignore
-            let indexOffset = br.ReadInt64()
-            let bloomOffset = br.ReadInt64()
-            let maxSeq = br.ReadInt64()
-            let magic = br.ReadInt64()
-            validateSSTableMagic magic
-            validateIndexOffset fileLen indexOffset FOOTER_SIZE
-            validateBloomOffset fileLen indexOffset bloomOffset FOOTER_SIZE
+            let struct (indexOffset, bloomOffset, maxSeq, magic) = readFooter br
+            validateFooter fileLen indexOffset bloomOffset magic
 
             loadOffsets fs br fileLen indexOffset FOOTER_SIZE,
             loadBloomFilter fs br fileLen indexOffset bloomOffset FOOTER_SIZE,
@@ -249,14 +256,44 @@ module SSTableWriter =
         bw.Write offsets.Length
         offsets |> List.iter bw.Write
 
-    let writeCore
-        outPath
+    let writeSSTableContent
+        (bw: System.IO.BinaryWriter)
+        (fs: System.IO.FileStream)
         (bf: BloomFilter)
         (ct: System.Threading.CancellationToken)
         (entries: seq<string * int64 * string option>)
         =
         let offsets = ResizeArray<int64>()
         let mutable maxSeq = 0L
+
+        for key, seq, value in entries do
+            ct.ThrowIfCancellationRequested()
+            bf.Add key
+            offsets.Add fs.Position
+            bw.Write seq
+
+            if seq > maxSeq then
+                maxSeq <- seq
+
+            writeValue bw key
+            writeItem bw value
+
+        let indexOffset = fs.Position
+        writeOffsets bw (offsets |> Seq.toList)
+        let bloomOffset = fs.Position
+        writeBytes bw bf.Bytes
+        bw.Write indexOffset
+        bw.Write bloomOffset
+        bw.Write maxSeq
+        bw.Write SSTable.MAGIC
+        fs.Flush true
+
+    let writeCore
+        outPath
+        (bf: BloomFilter)
+        (ct: System.Threading.CancellationToken)
+        (entries: seq<string * int64 * string option>)
+        =
         let tempPath = outPath + ".tmp"
 
         try
@@ -270,30 +307,7 @@ module SSTableWriter =
                     )
 
                 use bw = new System.IO.BinaryWriter(fs)
-
-                for key, seq, value in entries do
-                    ct.ThrowIfCancellationRequested()
-                    bf.Add key
-                    offsets.Add fs.Position
-                    bw.Write seq
-
-                    if seq > maxSeq then
-                        maxSeq <- seq
-
-                    writeValue bw key
-                    writeItem bw value
-
-                let indexOffset = fs.Position
-                writeOffsets bw (offsets |> Seq.toList)
-
-                let bloomOffset = fs.Position
-                writeBytes bw bf.Bytes
-
-                bw.Write indexOffset
-                bw.Write bloomOffset
-                bw.Write maxSeq
-                bw.Write SSTable.MAGIC
-                fs.Flush true
+                writeSSTableContent bw fs bf ct entries
 
             System.IO.File.Move(tempPath, outPath, overwrite = true)
         finally

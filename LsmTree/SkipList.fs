@@ -44,11 +44,11 @@ module SkipList =
             pred
 
     [<TailCall>]
-    let rec search key seq toLvl lvl pred =
-        if lvl < toLvl then
+    let rec search key seq stopAtLvl lvl pred =
+        if lvl < stopAtLvl then
             pred
         else
-            search key seq toLvl (lvl - 1) (findPredAtLevel key seq lvl pred)
+            search key seq stopAtLvl (lvl - 1) (findPredAtLevel key seq lvl pred)
 
     [<TailCall>]
     let rec searchPreds key seq (preds: SkipListNode[]) lvl pred =
