@@ -9,11 +9,11 @@ let writeSst dataDir name entries =
     path
 
 [<Fact>]
-let ``SSTable validateIndexOffset throws for out-of-range offset`` () =
+let ``SSTable validateIndexOffset throws when offset is out of range`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateIndexOffset 100L 100L SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable validateIndexCount throws for negative count`` () =
+let ``SSTable validateIndexCount throws when count is negative`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateIndexCount 100L 50L -1 SSTable.FOOTER_SIZE)
 
 [<Fact>]
@@ -22,30 +22,30 @@ let ``SSTable validateIndexCount throws when count exceeds remaining space`` () 
         SSTable.validateIndexCount 100L 50L 100000 SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable validateEntryOffsets throws for negative offset`` () =
+let ``SSTable validateEntryOffsets throws when offset is negative`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateEntryOffsets 100L [| -1L |])
 
 [<Fact>]
-let ``SSTable validateEntryOffsets throws for offset at index position`` () =
+let ``SSTable validateEntryOffsets throws when offset equals file limit`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateEntryOffsets 100L [| 100L |])
 
 [<Fact>]
-let ``SSTable validateBloomOffset throws for bloom before index`` () =
+let ``SSTable validateBloomOffset throws when bloom offset precedes index offset`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () ->
         SSTable.validateBloomOffset 100L 50L 30L SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable validateBloomOffset throws for offset beyond file size`` () =
+let ``SSTable validateBloomOffset throws when offset exceeds file size`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () ->
         SSTable.validateBloomOffset 100L 10L 90L SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable validateBloomOffset throws for negative offset`` () =
+let ``SSTable validateBloomOffset throws when offset is negative`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () ->
         SSTable.validateBloomOffset 100L 50L -1L SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable validateBloomCount throws for negative byte count`` () =
+let ``SSTable validateBloomCount throws when byte count is negative`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateBloomCount 100L 60L -1 SSTable.FOOTER_SIZE)
 
 [<Fact>]
@@ -213,7 +213,7 @@ let ``SSTable binSearchIndex returns None for missing key`` () =
     assertEqual None result "Missing key returns None"
 
 [<Fact>]
-let ``SSTable Get returns None for empty SSTable`` () =
+let ``SSTable Get returns NotFound for empty SSTable`` () =
     withTestDir "sst_get_empty" (fun testDataDir ->
         let path = writeSst testDataDir "L0_empty.sst" []
         let sst = new SSTable(path)
@@ -221,7 +221,7 @@ let ``SSTable Get returns None for empty SSTable`` () =
         (sst :> System.IDisposable).Dispose())
 
 [<Fact>]
-let ``SSTable Get returns None for missing key`` () =
+let ``SSTable Get returns NotFound for missing key`` () =
     withTestDir "sst_get_missing" (fun testDataDir ->
         let path = writeSst testDataDir "L0_data.sst" [ "k", 1L, Some "v" ]
         let sst = new SSTable(path)

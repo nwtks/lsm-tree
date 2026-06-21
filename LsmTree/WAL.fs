@@ -13,6 +13,9 @@ module WALRecovery =
     [<Literal>]
     let COMMIT = "COMMIT"
 
+    [<Literal>]
+    let ABORT = "ABORT"
+
     type RecoveryEntry =
         | Op of string * string option
         | Begin
@@ -56,6 +59,7 @@ module WALRecovery =
         | DEL -> parseDel seq parts
         | BEGIN -> parseBeginCommit seq parts Begin
         | COMMIT -> parseBeginCommit seq parts Commit
+        | ABORT -> None
         | _ -> None
 
     let parseEntry (item: string) =
@@ -138,6 +142,10 @@ type WAL(path: string) =
     member _.Commit(seq: int64, ?sync: bool) =
         let sync = defaultArg sync true
         $"{WALRecovery.COMMIT} {seq}" |> writeSync sync
+
+    member _.Abort(seq: int64, ?sync: bool) =
+        let sync = defaultArg sync true
+        $"{WALRecovery.ABORT} {seq}" |> writeSync sync
 
     member this.Close() = (this :> System.IDisposable).Dispose()
 

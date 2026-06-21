@@ -37,7 +37,7 @@ let ``LsmTreeLoader parseSstLevel handles path with directory prefix`` () =
     assertEqual 2 (LsmTreeLoader.parseSstLevel "/some/dir/L2_data.sst") "Full path with L2 -> 2"
 
 [<Fact>]
-let ``LsmTreeLoader compareSSTables orders by MaxSeq descending then by path`` () =
+let ``LsmTreeLoader compareSSTables orders by MaxSeq descending then by path name`` () =
     withTestDir "cmp_sst" (fun testDir ->
         let p1 = System.IO.Path.Combine(testDir, "L0_a.sst")
         let p2 = System.IO.Path.Combine(testDir, "L0_b.sst")
@@ -51,7 +51,7 @@ let ``LsmTreeLoader compareSSTables orders by MaxSeq descending then by path`` (
         Assert.True(cmp > 0, "sst1 (MaxSeq=10) should compare after sst2 (MaxSeq=20)"))
 
 [<Fact>]
-let ``LsmTreeLoader compareSSTables ties broken by path`` () =
+let ``LsmTreeLoader compareSSTables breaks ties by path lexicographic order`` () =
     withTestDir "cmp_sst_tie" (fun testDir ->
         let p1 = System.IO.Path.Combine(testDir, "L0_a.sst")
         let p2 = System.IO.Path.Combine(testDir, "L0_b.sst")

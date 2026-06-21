@@ -9,11 +9,13 @@ BEGIN <seq>
 PUT <seq> <key_b64> <val_b64>
 DEL <seq> <key_b64>
 COMMIT <seq>
+ABORT <seq>
 ```
 
 - **Committed transactions** are fully recovered.
 - **Uncommitted transactions** (`BEGIN` without matching `COMMIT`) are discarded.
 - **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — recovery includes entries whose seq is in a `COMMIT` line or was never seen in a `BEGIN` line. The latter case covers `PutSingle`/`DeleteSingle` (fast-path single-key writes) which intentionally omit `BEGIN`/`COMMIT` markers. This is safe under the engine's last-writer-wins semantics.
+- **Explicit rollbacks** (`ABORT <seq>`): Recognized in the parser but ignored during recovery — no entries are emitted for aborted sequences. This is consistent with the `BEGIN`-without-`COMMIT` discard logic. The `ABORT` record serves as an explicit audit trail.
 - `WALRecovery.recover` handles malformed lines gracefully by returning `None` for unrecognized entries.
 - **Streaming recovery**: Uses `File.ReadLines` (lazy enumeration, not `File.ReadAllLines`) in two passes — first to find committed/begun sequences, second to emit entries. Memory use is O(unique sequence count), not O(file size).
 

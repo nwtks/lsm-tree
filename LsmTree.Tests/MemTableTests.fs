@@ -10,7 +10,7 @@ let ``MemTable Put and Get returns inserted value`` () =
     assertEqual (Found "v1") (mt.Get("k", System.Int64.MaxValue)) "Put then Get returns value"
 
 [<Fact>]
-let ``MemTable overwrite returns latest value`` () =
+let ``MemTable Put overwrite returns latest value`` () =
     let mt = MemTable()
     mt.Put("k", 1L, "v1")
     mt.Put("k", 2L, "v2")
@@ -35,7 +35,7 @@ let ``MemTable Get respects snapshot isolation`` () =
     assertEqual (Found "v2") (mt.Get("k", System.Int64.MaxValue)) "Max snapshot sees latest"
 
 [<Fact>]
-let ``MemTable Get returns None for non-existent key`` () =
+let ``MemTable Get returns NotFound for non-existent key`` () =
     let mt = MemTable()
     assertEqual NotFound (mt.Get("nonexistent", System.Int64.MaxValue)) "Get missing key returns NotFound"
 
@@ -75,6 +75,6 @@ let ``MemTable Entries includes tombstone entries`` () =
     assertEqual [ "k", 2L, None; "k", 1L, Some "v1" ] entries "Entries returns highest seq first"
 
 [<Fact>]
-let ``MemTable Entries on empty returns empty list`` () =
+let ``MemTable Entries returns empty list for empty MemTable`` () =
     let mt = MemTable()
     assertEqual [] mt.Entries "Empty MemTable returns []"

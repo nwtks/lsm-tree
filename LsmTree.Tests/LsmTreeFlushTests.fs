@@ -4,12 +4,6 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``LsmTreeFlush findMinKey returns None for all-None array`` () =
-    let current: (string * int64 * string option) option[] = [| None; None |]
-    let result = LsmTreeFlush.findMinKey current
-    assertEqual None result "All-None array -> None"
-
-[<Fact>]
 let ``LsmTreeFlush findMinKey returns key for single entry`` () =
     let current: (string * int64 * string option) option[] =
         [| Some("b", 1L, Some "v") |]
@@ -32,6 +26,12 @@ let ``LsmTreeFlush findMinKey ignores None slots`` () =
 
     let result = LsmTreeFlush.findMinKey current
     assertEqual (Some "c") result "Only key among None slots"
+
+[<Fact>]
+let ``LsmTreeFlush findMinKey returns None for all-None array`` () =
+    let current: (string * int64 * string option) option[] = [| None; None |]
+    let result = LsmTreeFlush.findMinKey current
+    assertEqual None result "All-None array -> None"
 
 [<Fact>]
 let ``LsmTreeFlush findMinKey empty array returns None`` () =
@@ -82,7 +82,7 @@ let ``LsmTreeFlush pruneVersions keeps tombstone at non-last level`` () =
     assertEqual expected result "Tombstone kept at non-last level"
 
 [<Fact>]
-let ``LsmTreeFlush pruneVersions all newer returns all`` () =
+let ``LsmTreeFlush pruneVersions returns all versions when all are newer than minSnap`` () =
     let versions = ResizeArray<int64 * string option>()
     versions.Add(10L, Some "a")
     versions.Add(20L, Some "b")
@@ -102,7 +102,7 @@ let ``LsmTreeFlush pruneVersions keeps older live value at last level`` () =
     assertEqual expected result "Live older value kept even at last level"
 
 [<Fact>]
-let ``LsmTreeFlush pruneVersions empty list returns empty`` () =
+let ``LsmTreeFlush pruneVersions returns empty list for empty input`` () =
     let versions = ResizeArray<int64 * string option>()
     let result = LsmTreeFlush.pruneVersions false 0L versions
     assertEqual [] result "Empty versions -> empty"
@@ -139,17 +139,13 @@ let ``LsmTreeFlush mergeSortedEntries picks highest seq for duplicate keys`` () 
 [<Fact>]
 let ``LsmTreeFlush mergeSortedEntries with isLastLevel prunes tombstones`` () =
     let tableData = [| [| "k", 1L, Some "v1"; "k", 2L, None; "k", 3L, Some "v3" |] |]
-
     let result = LsmTreeFlush.mergeSortedEntriesData tableData true 0L |> Seq.toList
-
     let expected = [ "k", 3L, Some "v3"; "k", 2L, None; "k", 1L, Some "v1" ]
     assertEqual expected result "Tombstone at newer side kept; only older-side tombstones pruned at last level"
 
 [<Fact>]
 let ``LsmTreeFlush mergeSortedEntries snapshot pruning preserves older version`` () =
     let tableData = [| [| "k", 1L, Some "v1"; "k", 10L, Some "v10" |] |]
-
     let result = LsmTreeFlush.mergeSortedEntriesData tableData false 5L |> Seq.toList
-
     let expected = [ "k", 10L, Some "v10"; "k", 1L, Some "v1" ]
     assertEqual expected result "Older version kept as tombstone bridge"

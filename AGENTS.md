@@ -46,8 +46,8 @@ All code — including test code — must work on **both Windows and Linux**. Av
 
 - Prefer functional programming idioms over imperative ones throughout the codebase — including test code.
 - **Favor expressions over statements** — Use `match` expressions, `if`/`then`/`else`, and pattern matching instead of imperative control flow.
-- **Leverage discriminated unions** — Model domain concepts (messages, roles, configuration phases, timer actions, pending reads) with DUs for exhaustiveness checking.
-- **Use `[<TailCall>]` on recursive functions** that loop (e.g., `agentLoop`, `findFirstIdx`) to prevent stack overflows.
+- **Leverage discriminated unions** — Model domain concepts with DUs for exhaustiveness checking.
+- **Use `[<TailCall>]` on recursive functions** that loop to prevent stack overflows.
 - Do not introduce new external NuGet packages without checking existing dependencies in the `.fsproj` files first.
 - **Cyclomatic complexity** — Every function/method must keep its keyword-calculated complexity ≤ 15 (hard limit). Keep it ≤ 10 where practical. After `dotnet test`, the `scripts/check-complexity.fsx` script reads `coverage.cobertura.xml` and reports both a keyword-based estimate (calculated) and the Coverlet reference value — the error/warning thresholds apply to the **calculated** column. Configure thresholds in `Directory.Build.props`. If the check fails, split the function into smaller helpers or simplify branching.
 

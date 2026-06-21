@@ -16,11 +16,11 @@
 
 ## WAL durability: explicit flush, no AutoFlush
 
-**Choice**: `StreamWriter.AutoFlush` is disabled. On every durable write (`PutSingle`, `DeleteSingle`, `Commit` with `sync=true`), the code explicitly calls `writer.Flush()` (drains the `StreamWriter` buffer to the `FileStream`) followed by `stream.Flush(true)` (`fsync`).
+**Choice**: `StreamWriter.AutoFlush` is disabled. On every durable write, the code explicitly calls `writer.Flush()` (drains the `StreamWriter` buffer to the `FileStream`) followed by `stream.Flush(true)` (`fsync`) when needed. Transaction `Commit` operations always use `fsync` to ensure durability.
 
-**Why**: `AutoFlush` calls `StreamWriter.Flush()` on every `WriteLine`, which is `FileStream.Flush(false)` — data reaches the OS page cache but not disk. Only `Commit` actually calls `stream.Flush(true)`. So `AutoFlush` produced redundant page-cache flushes on every `WriteLine` without adding durability.
+**Why**: `AutoFlush` calls `StreamWriter.Flush()` on every `WriteLine`, which is `FileStream.Flush(false)` — data reaches the OS page cache but not disk. Disabling `AutoFlush` eliminates redundant page-cache flushes on every `WriteLine`.
 
-**Trade-off**: On process crash (SIGKILL), data in the `StreamWriter` buffer that hasn't been explicitly flushed is lost. This window is limited to writes between the last durable `Commit` and the crash — consistent with ACID durability guarantees. The `sync=false` mode skips `fsync` entirely, trading durability for throughput.
+**Trade-off**: On process crash (SIGKILL), data in the `StreamWriter` buffer that hasn't been explicitly flushed is lost. This window is limited to writes between the last durable `Commit` and the crash — consistent with ACID durability guarantees.
 
 **Alternatives considered**:
 - **`AutoFlush = true`**: no crash-process protection for the `StreamWriter` buffer, but redundant `Flush(false)` calls on every line.

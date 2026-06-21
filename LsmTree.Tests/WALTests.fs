@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``WALRecovery base64ToUtf8 decodes correctly`` () =
+let ``WALRecovery base64ToUtf8 decodes valid Base64 string`` () =
     let bytes = System.Text.Encoding.UTF8.GetBytes "Hello, WAL!"
     let b64 = System.Convert.ToBase64String bytes
     let decoded = WALRecovery.base64ToUtf8 b64
@@ -66,40 +66,14 @@ let ``WALRecovery parseBeginCommit returns None when parts length is not 2`` () 
         "COMMIT with 3 parts returns None"
 
 [<Fact>]
-let ``WALRecovery parseEntry catches FormatException from invalid base64`` () =
+let ``WALRecovery parseEntry returns None for invalid Base64`` () =
     assertEqual
         None
         (WALRecovery.parseEntry "PUT 1 !!invalid!! !!base64!!")
         "parseEntry returns None for invalid base64"
 
 [<Fact>]
-let ``WALRecovery recover on non-existent file returns empty list`` () =
-    withTestDir "wal_non_existent" (fun testDir ->
-        let path = System.IO.Path.Combine(testDir, "nonexistent.wal")
-
-        let recovered = WALRecovery.recover path
-        assertEqual Seq.empty recovered "Non-existent WAL file should return empty sequence")
-
-[<Fact>]
-let ``WALRecovery recover handles empty WAL file`` () =
-    withTestDir "wal_empty" (fun testDir ->
-        let path = System.IO.Path.Combine(testDir, "data.wal")
-        System.IO.File.WriteAllText(path, "")
-
-        let recovered = WALRecovery.recover path |> Seq.toList
-        assertEqual [] recovered "Empty WAL file should return empty list")
-
-[<Fact>]
-let ``WALRecovery malformed log lines are skipped`` () =
-    withTestDir "wal_malformed" (fun testDir ->
-        let path = System.IO.Path.Combine(testDir, "data.wal")
-        System.IO.File.WriteAllText(path, "garbage|line\n")
-
-        let recovered = WALRecovery.recover path |> Seq.toList
-        assertEqual [] recovered "Malformed lines should be skipped")
-
-[<Fact>]
-let ``WALRecovery orphaned PUT outside transaction is recovered`` () =
+let ``WALRecovery recover recovers orphaned PUT outside transaction`` () =
     withTestDir "wal_orphan_put" (fun testDir ->
         let path = System.IO.Path.Combine(testDir, "data.wal")
         System.IO.File.WriteAllText(path, "PUT 1 a2V5MQ== dmFsMQ==")
@@ -109,29 +83,7 @@ let ``WALRecovery orphaned PUT outside transaction is recovered`` () =
         assertEqual expected recovered "Orphaned PUT outside a transaction must be recovered")
 
 [<Fact>]
-let ``WALRecovery orphaned COMMIT is skipped on recovery`` () =
-    withTestDir "wal_orphan_commit" (fun testDir ->
-        let path = System.IO.Path.Combine(testDir, "data.wal")
-        let lines = [ "BEGIN 1"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1"; "COMMIT 2" ]
-        System.IO.File.WriteAllLines(path, lines)
-
-        let recovered = WALRecovery.recover path |> Seq.toList
-        let expected = [ 1L, "key1", Some "val1" ]
-        assertEqual expected recovered "Orphaned COMMIT should be ignored, valid txn recovered")
-
-[<Fact>]
-let ``WALRecovery unknown entry types are skipped`` () =
-    withTestDir "wal_unknown" (fun testDir ->
-        let path = System.IO.Path.Combine(testDir, "data.wal")
-        let lines = [ "BEGIN 1"; "UNKNOWN foo bar"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1" ]
-        System.IO.File.WriteAllLines(path, lines)
-
-        let recovered = WALRecovery.recover path |> Seq.toList
-        let expected = [ 1L, "key1", Some "val1" ]
-        assertEqual expected recovered "Unknown entry types should be gracefully skipped")
-
-[<Fact>]
-let ``WALRecovery DEL entries are recovered as tombstones`` () =
+let ``WALRecovery recover recovers DEL entries as tombstones`` () =
     withTestDir "wal_del_entries" (fun testDir ->
         let path = System.IO.Path.Combine(testDir, "data.wal")
 
@@ -152,7 +104,7 @@ let ``WALRecovery DEL entries are recovered as tombstones`` () =
         assertEqual expected recovered "DEL entries should be recovered as tombstones along with all committed ops")
 
 [<Fact>]
-let ``WALRecovery uncommitted transactions are excluded on recovery`` () =
+let ``WALRecovery recover excludes uncommitted transactions`` () =
     withTestDir "wal_atomic" (fun testDir ->
         let path = System.IO.Path.Combine(testDir, "data.wal")
 
@@ -170,7 +122,80 @@ let ``WALRecovery uncommitted transactions are excluded on recovery`` () =
         assertEqual expected recovered "Only committed transactions should survive recovery")
 
 [<Fact>]
-let ``WAL Put and recover restores data correctly`` () =
+let ``WALRecovery ignores ABORT records`` () =
+    withTestDir "wal_abort_recover" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        let orphanKey = WALRecovery.utf8ToBase64 "ok"
+        let orphanVal = WALRecovery.utf8ToBase64 "ov"
+        let committedKey = WALRecovery.utf8ToBase64 "ck"
+        let committedVal = WALRecovery.utf8ToBase64 "cv"
+
+        let lines =
+            [ sprintf "PUT 1 %s %s" orphanKey orphanVal
+              "ABORT 2"
+              "BEGIN 3"
+              sprintf "PUT 3 %s %s" committedKey committedVal
+              "COMMIT 3"
+              "BEGIN 5"
+              "ABORT 5" ]
+
+        System.IO.File.WriteAllLines(path, lines)
+
+        let recovered = WALRecovery.recover path |> Seq.toList
+        assertEqual 2 recovered.Length "Orphan PUT + committed PUT recovered"
+        assertEqual (1L, "ok", Some "ov") recovered.[0] "Orphan PUT recovered"
+        assertEqual (3L, "ck", Some "cv") recovered.[1] "Committed PUT recovered")
+
+[<Fact>]
+let ``WALRecovery recover returns empty sequence for non-existent file`` () =
+    withTestDir "wal_non_existent" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "nonexistent.wal")
+
+        let recovered = WALRecovery.recover path
+        assertEqual Seq.empty recovered "Non-existent WAL file should return empty sequence")
+
+[<Fact>]
+let ``WALRecovery recover returns empty list for empty WAL file`` () =
+    withTestDir "wal_empty" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        System.IO.File.WriteAllText(path, "")
+
+        let recovered = WALRecovery.recover path |> Seq.toList
+        assertEqual [] recovered "Empty WAL file should return empty list")
+
+[<Fact>]
+let ``WALRecovery recover skips orphaned COMMIT records`` () =
+    withTestDir "wal_orphan_commit" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        let lines = [ "BEGIN 1"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1"; "COMMIT 2" ]
+        System.IO.File.WriteAllLines(path, lines)
+
+        let recovered = WALRecovery.recover path |> Seq.toList
+        let expected = [ 1L, "key1", Some "val1" ]
+        assertEqual expected recovered "Orphaned COMMIT should be ignored, valid txn recovered")
+
+[<Fact>]
+let ``WALRecovery recover skips unknown entry types`` () =
+    withTestDir "wal_unknown" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        let lines = [ "BEGIN 1"; "UNKNOWN foo bar"; "PUT 1 a2V5MQ== dmFsMQ=="; "COMMIT 1" ]
+        System.IO.File.WriteAllLines(path, lines)
+
+        let recovered = WALRecovery.recover path |> Seq.toList
+        let expected = [ 1L, "key1", Some "val1" ]
+        assertEqual expected recovered "Unknown entry types should be gracefully skipped")
+
+[<Fact>]
+let ``WALRecovery recover skips malformed log lines`` () =
+    withTestDir "wal_malformed" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        System.IO.File.WriteAllText(path, "garbage|line\n")
+
+        let recovered = WALRecovery.recover path |> Seq.toList
+        assertEqual [] recovered "Malformed lines should be skipped")
+
+[<Fact>]
+let ``WAL Put writes recoverable data on Close`` () =
     withTestDir "wal_restore" (fun testDir ->
         let path = System.IO.Path.Combine(testDir, "data.wal")
 
@@ -185,7 +210,20 @@ let ``WAL Put and recover restores data correctly`` () =
         assertEqual expected recovered "WAL data should be recovered correctly after Close")
 
 [<Fact>]
-let ``WAL IO errors are propagated to the caller`` () =
+let ``WAL Abort writes ABORT record`` () =
+    withTestDir "wal_abort_format" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+
+        do
+            use wal = new WAL(path)
+            wal.Abort 42L
+
+        let lines = System.IO.File.ReadAllLines path
+        assertEqual 1 lines.Length "One line written"
+        Assert.StartsWith("ABORT 42", lines.[0]))
+
+[<Fact>]
+let ``WAL IO errors on underlying stream propagate to PutSingle caller`` () =
     withTestDir "wal_io_errors" (fun testDir ->
         let path = System.IO.Path.Combine(testDir, "data.wal")
         use wal = new WAL(path)
@@ -207,7 +245,7 @@ let ``WAL IO errors are propagated to the caller`` () =
         |> ignore)
 
 [<Fact>]
-let ``WAL double dispose does not throw`` () =
+let ``WAL Close and Dispose tolerate double invocation`` () =
     withTestDir "wal_double_dispose" (fun testDir ->
         let path = System.IO.Path.Combine(testDir, "data.wal")
 

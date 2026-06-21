@@ -4,11 +4,6 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``LsmTree constructor throws for empty path`` () =
-    Assert.Throws<System.ArgumentException>(fun () -> new LsmTree "" |> ignore)
-    |> ignore
-
-[<Fact>]
 let ``LsmTree startup creates directory if missing`` () =
     withTestDir "startup_create_dir" (fun testDir ->
         let treePath = System.IO.Path.Combine(testDir, "nested", "tree", "path")
@@ -39,114 +34,9 @@ let ``LsmTree restart after delete recovers DEL entry from WAL`` () =
         assertEqual None (tree2.Get "k") "DEL entry recovered on restart")
 
 [<Fact>]
-let ``LsmTree nosync restart recovers multiple keys`` () =
-    withTestDir "nosync_restart" (fun testDir ->
-        do
-            use tree = new LsmTree(testDir, syncOnCommit = false)
-            tree.Put("rk1", "rv1")
-            tree.Put("rk2", "rv2")
-
-        do
-            use tree = new LsmTree(testDir, syncOnCommit = false)
-            assertEqual (Some "rv1") (tree.Get "rk1") "K1 recovered after nosync restart"
-            assertEqual (Some "rv2") (tree.Get "rk2") "K2 recovered after nosync restart")
-
-[<Fact>]
-let ``LsmTree nosync transaction commits and restarts correctly`` () =
-    withTestDir "nosync_tx" (fun testDir ->
-        do
-            use tree = new LsmTree(testDir, syncOnCommit = false)
-            let tx = tree.BeginTransaction()
-            tx.Put("ntk", "ntv")
-            tx.Commit()
-            tx.Dispose()
-
-        do
-            use tree = new LsmTree(testDir, syncOnCommit = false)
-            assertEqual (Some "ntv") (tree.Get "ntk") "nosync transaction survives restart")
-
-[<Fact>]
-let ``LsmTree nosync compact and restart preserves data`` () =
-    withTestDir "nosync_compact" (fun testDir ->
-        do
-            use tree = new LsmTree(testDir, syncOnCommit = false, compactLevelLimits = [| 2 |])
-
-            for i = 1 to 5 do
-                tree.Put($"ck{i}", $"cv{i}")
-                tree.Flush()
-
-            tree.WaitForCompaction()
-
-        do
-            use tree = new LsmTree(testDir, syncOnCommit = false)
-
-            for i = 1 to 5 do
-                assertEqual (Some $"cv{i}") (tree.Get $"ck{i}") $"Key ck{i} preserved after compact+restart")
-
-[<Fact>]
-let ``LsmTree overwrite existing key`` () =
-    withTestDir "overwrite" (fun dir ->
-        use tree = new LsmTree(dir)
-        tree.Put("k", "v1")
-        tree.Put("k", "v2")
-        assertEqual (Some "v2") (tree.Get "k") "Overwrite returns latest value")
-
-[<Fact>]
-let ``LsmTree CRUD operations work without sync`` () =
-    withTestDir "nosync_crud" (fun dir ->
-        use tree = new LsmTree(dir, syncOnCommit = false)
-        tree.Put("nsk1", "nsv1")
-        tree.Put("nsk2", "nsv2")
-        assertEqual (Some "nsv1") (tree.Get "nsk1") "nosync Put works"
-        assertEqual (Some "nsv2") (tree.Get "nsk2") "nosync second Put works")
-
-[<Fact>]
-let ``LsmTree auto-flush on Put when memTable exceeds size limit`` () =
-    withTestDir "auto_flush_put" (fun testDir ->
-        use tree = new LsmTree(testDir, memTableSizeLimit = 1)
-        tree.Put("k", "v")
-        assertEqual (Some "v") (tree.Get "k") "Data preserved after auto-flush on Put")
-
-[<Fact>]
-let ``LsmTree resurrect deleted key`` () =
-    withTestDir "resurrect" (fun dir ->
-        use tree = new LsmTree(dir)
-        tree.Put("k", "v1")
-        let snapAfterPut = tree.Snapshot()
-        tree.Delete "k"
-        let snapAfterDelete = tree.Snapshot()
-        tree.Put("k", "v2")
-        assertEqual (Some "v2") (tree.Get "k") "Resurrected key returns new value"
-        assertEqual None (tree.Get("k", snapAfterDelete)) "Snapshot after delete sees None"
-        assertEqual (Some "v1") (tree.Get("k", snapAfterPut)) "Snapshot after Put sees original value")
-
-[<Fact>]
-let ``LsmTree nosync Delete exercises WAL sync=false path`` () =
-    withTestDir "nosync_del" (fun testDir ->
-        use tree = new LsmTree(testDir, syncOnCommit = false)
-        tree.Put("k", "v")
-        tree.Delete "k"
-        assertEqual None (tree.Get "k") "nosync Delete works"
-
-        use tree2 = new LsmTree(testDir, syncOnCommit = false)
-        assertEqual None (tree2.Get "k") "Delete survives restart after nosync")
-
-[<Fact>]
-let ``LsmTree auto-flush on Delete when memTable exceeds size limit`` () =
-    withTestDir "auto_flush_del" (fun testDir ->
-        use tree = new LsmTree(testDir, memTableSizeLimit = 1)
-        tree.Put("k", "v")
-        tree.Delete "k"
-        assertEqual None (tree.Get "k") "Deletion preserved after auto-flush on Delete")
-
-[<Fact>]
-let ``LsmTree auto-flush on transaction commit when memTable exceeds size limit`` () =
-    withTestDir "auto_flush_tx" (fun testDir ->
-        use tree = new LsmTree(testDir, memTableSizeLimit = 1)
-        use tx = tree.BeginTransaction()
-        tx.Put("k", "v")
-        tx.Commit()
-        assertEqual (Some "v") (tree.Get "k") "Data preserved after auto-flush on transaction commit")
+let ``LsmTree constructor throws for empty path`` () =
+    Assert.Throws<System.ArgumentException>(fun () -> new LsmTree "" |> ignore)
+    |> ignore
 
 [<Fact>]
 let ``LsmTree explicit snapshot sees consistent view`` () =
@@ -178,13 +68,92 @@ let ``LsmTree MVCC returns correct versions at each snapshot`` () =
         assertEqual (Some "v2") (tree.Get "k") "direct latest sees v2")
 
 [<Fact>]
-let ``LsmTree flush with no data does not throw`` () =
+let ``LsmTree transaction commits and restarts correctly`` () =
+    withTestDir "tx_restart" (fun testDir ->
+        do
+            use tree = new LsmTree(testDir)
+            let tx = tree.BeginTransaction()
+            tx.Put("ntk", "ntv")
+            tx.Commit()
+            tx.Dispose()
+
+        do
+            use tree = new LsmTree(testDir)
+            assertEqual (Some "ntv") (tree.Get "ntk") "transaction survives restart")
+
+[<Fact>]
+let ``LsmTree auto-flush on transaction commit when memTable exceeds size limit`` () =
+    withTestDir "auto_flush_tx" (fun testDir ->
+        use tree = new LsmTree(testDir, memTableSizeLimit = 1)
+        use tx = tree.BeginTransaction()
+        tx.Put("k", "v")
+        tx.Commit()
+        assertEqual (Some "v") (tree.Get "k") "Data preserved after auto-flush on transaction commit")
+
+[<Fact>]
+let ``LsmTree basic Put and Get operations`` () =
+    withTestDir "basic_put_get" (fun dir ->
+        use tree = new LsmTree(dir)
+        tree.Put("pk1", "pv1")
+        tree.Put("pk2", "pv2")
+        assertEqual (Some "pv1") (tree.Get "pk1") "first Put/Get works"
+        assertEqual (Some "pv2") (tree.Get "pk2") "second Put/Get works")
+
+[<Fact>]
+let ``LsmTree overwrite existing key`` () =
+    withTestDir "overwrite" (fun dir ->
+        use tree = new LsmTree(dir)
+        tree.Put("k", "v1")
+        tree.Put("k", "v2")
+        assertEqual (Some "v2") (tree.Get "k") "Overwrite returns latest value")
+
+[<Fact>]
+let ``LsmTree auto-flush on Put when memTable exceeds size limit`` () =
+    withTestDir "auto_flush_put" (fun testDir ->
+        use tree = new LsmTree(testDir, memTableSizeLimit = 1)
+        tree.Put("k", "v")
+        assertEqual (Some "v") (tree.Get "k") "Data preserved after auto-flush on Put")
+
+[<Fact>]
+let ``LsmTree resurrect deleted key`` () =
+    withTestDir "resurrect" (fun dir ->
+        use tree = new LsmTree(dir)
+        tree.Put("k", "v1")
+        let snapAfterPut = tree.Snapshot()
+        tree.Delete "k"
+        let snapAfterDelete = tree.Snapshot()
+        tree.Put("k", "v2")
+        assertEqual (Some "v2") (tree.Get "k") "Resurrected key returns new value"
+        assertEqual None (tree.Get("k", snapAfterDelete)) "Snapshot after delete sees None"
+        assertEqual (Some "v1") (tree.Get("k", snapAfterPut)) "Snapshot after Put sees original value")
+
+[<Fact>]
+let ``LsmTree Delete and restart recovers deletion`` () =
+    withTestDir "del_restart" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v")
+        tree.Delete "k"
+        assertEqual None (tree.Get "k") "Delete works"
+
+        use tree2 = new LsmTree(testDir)
+        assertEqual None (tree2.Get "k") "Delete survives restart")
+
+[<Fact>]
+let ``LsmTree auto-flush on Delete when memTable exceeds size limit`` () =
+    withTestDir "auto_flush_del" (fun testDir ->
+        use tree = new LsmTree(testDir, memTableSizeLimit = 1)
+        tree.Put("k", "v")
+        tree.Delete "k"
+        assertEqual None (tree.Get "k") "Deletion preserved after auto-flush on Delete")
+
+[<Fact>]
+let ``LsmTree Flush with no data does not throw`` () =
     withTestDir "empty_flush" (fun dir ->
         use tree = new LsmTree(dir)
         tree.Flush())
 
 [<Fact>]
-let ``LsmTree concurrent flush and read does not deadlock`` () =
+let ``LsmTree concurrent Flush and Get does not deadlock`` () =
     withTestDir "conc_flush" (fun dir ->
         use tree = new LsmTree(dir)
         let numOps = 10
@@ -231,6 +200,24 @@ let ``LsmTree FlushAsync completes successfully`` () =
         assertEqual (Some "v") (tree.Get "k") "Data accessible after FlushAsync")
 
 [<Fact>]
+let ``LsmTree compaction and restart preserves data`` () =
+    withTestDir "compact_restart" (fun testDir ->
+        do
+            use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+
+            for i = 1 to 5 do
+                tree.Put($"ck{i}", $"cv{i}")
+                tree.Flush()
+
+            tree.WaitForCompaction()
+
+        do
+            use tree = new LsmTree(testDir)
+
+            for i = 1 to 5 do
+                assertEqual (Some $"cv{i}") (tree.Get $"ck{i}") $"Key ck{i} preserved after compact+restart")
+
+[<Fact>]
 let ``LsmTree multi-level compaction merges correctly`` () =
     withTestDir "multi_level" (fun testDir ->
         use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
@@ -244,7 +231,7 @@ let ``LsmTree multi-level compaction merges correctly`` () =
         assertEqual (Some "v2") (tree.Get "k2") "k2 preserved")
 
 [<Fact>]
-let ``LsmTree flush during compaction does not block`` () =
+let ``LsmTree Flush during compaction completes without blocking`` () =
     withTestDir "flush_during_compact" (fun testDir ->
         use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
         tree.Put("k1", "v1")
@@ -259,7 +246,7 @@ let ``LsmTree flush during compaction does not block`` () =
         assertEqual (Some "v3") (tree.Get "k3") "k3 preserved after flush during compaction")
 
 [<Fact>]
-let ``LsmTree cascade compaction across multiple levels`` () =
+let ``LsmTree cascade compaction across multiple levels preserves all keys`` () =
     withTestDir "cascade_levels" (fun testDir ->
         use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
 
@@ -377,15 +364,3 @@ let ``LsmTree Dispose handles flush coordinator errors`` () =
         let fc = flField.GetValue tree :?> FlushCoordinator
         fc.Error <- Some(exn "injected flush error")
         (tree :> System.IDisposable).Dispose())
-
-[<Fact>]
-let ``LsmTree SyncOnCommit defaults to true`` () =
-    withTestDir "sync_default" (fun dir ->
-        use tree = new LsmTree(dir)
-        Assert.True tree.SyncOnCommit)
-
-[<Fact>]
-let ``LsmTree SyncOnCommit respects false`` () =
-    withTestDir "sync_false" (fun dir ->
-        use tree = new LsmTree(dir, syncOnCommit = false)
-        Assert.False tree.SyncOnCommit)

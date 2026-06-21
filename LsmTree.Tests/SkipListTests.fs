@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``SkipList randomLevel is within valid bounds`` () =
+let ``SkipList randomLevel returns value between 1 and MAX_LEVEL`` () =
     let levels = Array.init 10000 (fun _ -> SkipList.randomLevel ())
 
     let allInRange =
@@ -32,14 +32,14 @@ let ``SkipList Find returns tombstone for deleted key`` () =
     assertEqual Tombstone (sl.Find("k", System.Int64.MaxValue)) "Tombstone should return Tombstone"
 
 [<Fact>]
-let ``SkipList returns None for non-existent key`` () =
+let ``SkipList Find returns NotFound for non-existent key`` () =
     let sl = SkipList()
     sl.Put("k1", 1L, "v1")
     assertEqual NotFound (sl.Find("nonexistent", System.Int64.MaxValue)) "Should return NotFound for missing key"
     assertEqual NotFound (sl.Find("k1", 0L)) "Should return NotFound when snapshot precedes entry"
 
 [<Fact>]
-let ``SkipList handles concurrent access without crashing`` () =
+let ``SkipList concurrent Put and Find completes without deadlock`` () =
     let list = SkipList()
     let numThreads = 20
     let numOps = 2000
@@ -60,7 +60,7 @@ let ``SkipList handles concurrent access without crashing`` () =
     Assert.True(entries.Length > 0)
 
 [<Fact>]
-let ``SkipList handles extreme CAS contention on same key`` () =
+let ``SkipList extreme CAS contention on same key succeeds`` () =
     let list = SkipList()
     let numThreads = 8
     let numOps = 10000
@@ -101,6 +101,6 @@ let ``SkipList maintains sorted order by key`` () =
         "SkipList should maintain sorted order"
 
 [<Fact>]
-let ``SkipList Entries on empty list returns empty`` () =
+let ``SkipList Entries returns empty list for empty SkipList`` () =
     let sl = SkipList()
     assertEqual [] (sl.Entries()) "Empty SkipList should return []"

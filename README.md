@@ -9,7 +9,6 @@ This project demonstrates the core architectural concepts behind modern database
 
 ### Write-Ahead Log (WAL)
 Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted to a `.log` file before being applied to the in-memory MemTable, guaranteeing full recovery upon engine restart.
-- **Configurable durability**: `syncOnCommit` toggles `fsync` on every write — balance crash safety vs. throughput.
 - **Fast single-key path**: `PutSingle`/`DeleteSingle` bypass transaction markers, reducing WAL overhead for single-key operations.
 - **Atomic transaction recovery**: Uncommitted transactions (missing `COMMIT`) are automatically discarded on restart.
 - **Fault-tolerant parser**: Malformed lines are skipped; orphaned entries are safely recovered under last-writer-wins semantics.
@@ -33,7 +32,7 @@ Immutable on-disk files produced when the MemTable is flushed:
 - **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels.
 
 ### Direct Put/Delete (Fast Path)
-Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` (with `fsync` if `syncOnCommit` is set) and applied to the MemTable in one atomic step.
+Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` (without `fsync` for performance) and applied to the MemTable in one atomic step.
 
 ### Atomic Transactions with Snapshot Isolation
 Multi-key atomic updates via a dedicated `ITransaction` API:
@@ -55,7 +54,6 @@ See [docs/architecture.md](docs/architecture.md) for the WAL format, SSTable bin
 - **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL). Binary data must be base64-encoded by the caller.
 - **No range queries**: The public API supports point lookups only (`Get`). `SSTable.GetAll()` is internal for compaction.
 - **Single WAL file**: One active WAL per instance. Renamed to `wal_<guid>.old` on each flush (deleted after the SSTable is successfully written); stale `.old` files from crashes remain on disk and are replayed during recovery.
-- **`fsync` overhead**: `syncOnCommit = true` calls `fsync` on every commit. Set to `false` for higher throughput at the cost of losing the last ~second of data on crash.
 - **`LsmTransaction.Get` O(n) local scan**: The pending ops list is scanned linearly (`Seq.tryFind`). Avoid thousands of keys in a single transaction if you need fast local reads.
 - **No replication/clustering**: Single-node storage engine only.
 - **Empty SSTable flush race**: `MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList. A flush between increment and insert can produce an empty SSTable (no data loss — WAL guarantees recovery).
@@ -74,8 +72,10 @@ Benchmarks use [BenchmarkDotNet](https://benchmarkdotnet.org/) with `[<MemoryDia
 
 | Class | Benchmarks | Description |
 |---|---|---|
-| `PutBenchmark` | `SequentialPut`, `ConcurrentPut`, `TransactionPut` | Single/parallel writes with `syncOnCommit` toggled |
-| `GetBenchmark` | `RandomHitGet`, `RandomMissGet` | Point lookups (N = 10000 / 30000) |
+| `PutBenchmark` | `SequentialPut`, `ConcurrentPut`, `TransactionPut` | Single/parallel writes |
+| `GetBenchmark` | `RandomHitGet`, `RandomMissGet`, `SequentialGet` | Point lookups (N = 10000 / 30000) |
+| `DeleteBenchmark` | `SequentialDelete`, `ConcurrentDelete`, `TransactionDelete` | Single/parallel deletes |
+| `MixedWorkloadBenchmark` | `ReadHeavy`, `WriteHeavy` | Mixed read/write workloads |
 
 ---
 
@@ -161,14 +161,10 @@ The data directory is **auto-created** if it doesn't exist. All parameters are o
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `dataDir` | `string` | (required) | Path to the data directory |
-| `syncOnCommit` | `bool` | `true` | Call `fsync` on every commit |
 | `memTableSizeLimit` | `int` | 1,048,576 (≈1 MB) | MemTable size threshold for flush |
 | `compactLevelLimits` | `int[]` | `[\| 4; 10; 100; 1000 \|]` | Max files per level before compaction (validated: must be non-empty, no negatives) |
 
 ```fsharp
-// Maximum throughput — no fsync on commit
-let fastDb = new LsmTree("./fast_data", syncOnCommit = false)
-
 // Tune MemTable flush threshold
 let db = new LsmTree("./data", memTableSizeLimit = 512 * 1024)  // 512 KB
 

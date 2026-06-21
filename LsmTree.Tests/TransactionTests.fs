@@ -4,7 +4,7 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``Transaction read own writes within transaction`` () =
+let ``Transaction Put reads own writes within same transaction`` () =
     withTestDir "tx_read_own" (fun dir ->
         use tree = new LsmTree(dir)
         use tx = tree.BeginTransaction()
@@ -15,6 +15,58 @@ let ``Transaction read own writes within transaction`` () =
         tx.Delete "a"
         assertEqual None (tx.Get "a") "Read own Delete within same transaction"
         tx.Commit())
+
+[<Fact>]
+let ``Transaction delete after put shadows previous value`` () =
+    withTestDir "tx_del_after_put" (fun dir ->
+        use tree = new LsmTree(dir)
+        use tx = tree.BeginTransaction()
+        tx.Put("k", "v1")
+        tx.Put("k", "v2")
+        tx.Delete "k"
+        assertEqual None (tx.Get "k") "Delete after put within same txn returns None"
+        tx.Commit()
+
+        use tx2 = tree.BeginTransaction()
+        assertEqual None (tx2.Get "k") "Delete after put committed is visible to new txn"
+        tx2.Commit())
+
+[<Fact>]
+let ``Transaction put after delete resurrects key`` () =
+    withTestDir "tx_put_after_del" (fun dir ->
+        use tree = new LsmTree(dir)
+        use tx = tree.BeginTransaction()
+        tx.Delete "k"
+        tx.Put("k", "resurrected")
+        assertEqual (Some "resurrected") (tx.Get "k") "Put after delete resurrects key within same txn"
+        tx.Commit()
+
+        use tx2 = tree.BeginTransaction()
+        assertEqual (Some "resurrected") (tx2.Get "k") "Resurrected key visible to new txn"
+        tx2.Commit())
+
+[<Fact>]
+let ``Transaction Get provides snapshot-consistent view unaffected by external writes`` () =
+    withTestDir "tx_repeatable" (fun dir ->
+        use tree = new LsmTree(dir)
+
+        use tx = tree.BeginTransaction()
+        tree.Put("rk", "rv")
+        assertEqual None (tx.Get "rk") "Transaction sees snapshot-consistent view"
+        tx.Commit())
+
+[<Fact>]
+let ``Transaction Get repeatable read is consistent across multiple keys`` () =
+    withTestDir "tx_repeat_multi" (fun dir ->
+        use tree = new LsmTree(dir)
+        use tx = tree.BeginTransaction()
+
+        let snap = tree.Snapshot()
+        tx.Put("k1", "v1")
+        tx.Put("k2", "v2")
+        tx.Commit()
+        assertEqual None (tree.Get("k1", snap)) "Snapshot sees none for k1"
+        assertEqual None (tree.Get("k2", snap)) "Snapshot sees none for k2")
 
 [<Fact>]
 let ``Transaction Commit makes writes visible to new transactions`` () =
@@ -55,35 +107,6 @@ let ``Transaction empty commit does not advance sequence`` () =
         assertEqual snapBefore snapAfter "Sequence should not advance on empty commit")
 
 [<Fact>]
-let ``Transaction delete after put shadows previous value`` () =
-    withTestDir "tx_del_after_put" (fun dir ->
-        use tree = new LsmTree(dir)
-        use tx = tree.BeginTransaction()
-        tx.Put("k", "v1")
-        tx.Put("k", "v2")
-        tx.Delete "k"
-        assertEqual None (tx.Get "k") "Delete after put within same txn returns None"
-        tx.Commit()
-
-        use tx2 = tree.BeginTransaction()
-        assertEqual None (tx2.Get "k") "Delete after put committed is visible to new txn"
-        tx2.Commit())
-
-[<Fact>]
-let ``Transaction put after delete resurrects key`` () =
-    withTestDir "tx_put_after_del" (fun dir ->
-        use tree = new LsmTree(dir)
-        use tx = tree.BeginTransaction()
-        tx.Delete "k"
-        tx.Put("k", "resurrected")
-        assertEqual (Some "resurrected") (tx.Get "k") "Put after delete resurrects key within same txn"
-        tx.Commit()
-
-        use tx2 = tree.BeginTransaction()
-        assertEqual (Some "resurrected") (tx2.Get "k") "Resurrected key visible to new txn"
-        tx2.Commit())
-
-[<Fact>]
 let ``Transaction snapshot at start sees only committed data`` () =
     withTestDir "tx_snap_start" (fun dir ->
         use tree = new LsmTree(dir)
@@ -109,27 +132,22 @@ let ``Transaction isolation across flushes`` () =
         assertEqual (Some "fv") (tree.Get("fk", tree.Snapshot())) "New snapshot after flush sees data")
 
 [<Fact>]
-let ``Transaction repeatable read within same transaction`` () =
-    withTestDir "tx_repeatable" (fun dir ->
+let ``Transaction isolation across multiple layers with flush`` () =
+    withTestDir "tx_layer_iso" (fun dir ->
         use tree = new LsmTree(dir)
-
-        use tx = tree.BeginTransaction()
-        tree.Put("rk", "rv")
-        assertEqual None (tx.Get "rk") "Transaction sees snapshot-consistent view"
-        tx.Commit())
-
-[<Fact>]
-let ``Transaction repeatable read consistent across multiple keys`` () =
-    withTestDir "tx_repeat_multi" (fun dir ->
-        use tree = new LsmTree(dir)
-        use tx = tree.BeginTransaction()
-
         let snap = tree.Snapshot()
-        tx.Put("k1", "v1")
-        tx.Put("k2", "v2")
-        tx.Commit()
-        assertEqual None (tree.Get("k1", snap)) "Snapshot sees none for k1"
-        assertEqual None (tree.Get("k2", snap)) "Snapshot sees none for k2")
+
+        let tx1 = tree.BeginTransaction()
+        tx1.Put("lk", "lv1")
+        tx1.Commit()
+        tx1.Dispose()
+        tree.Flush()
+
+        let tx2 = tree.BeginTransaction()
+        tx2.Put("lk", "lv2")
+        tx2.Commit()
+        tx2.Dispose()
+        assertEqual None (tree.Get("lk", snap)) "Old snapshot sees none after multiple ops")
 
 [<Fact>]
 let ``Transaction isolation survives compaction`` () =
@@ -153,7 +171,7 @@ let ``Transaction isolation survives compaction`` () =
         assertEqual None (tree.Get("dk", snap)) "Old snapshot sees none after compaction")
 
 [<Fact>]
-let ``Transaction active snapshot prevents pruning of MVCC data`` () =
+let ``Transaction active snapshot prevents MVCC data pruning during compaction`` () =
     withTestDir "tx_active_snap" (fun dir ->
         use tree = new LsmTree(dir)
         let snap = tree.Snapshot()
@@ -168,22 +186,29 @@ let ``Transaction active snapshot prevents pruning of MVCC data`` () =
         assertEqual (Some "pv") (tree.Get("pk", tree.Snapshot())) "New snapshot sees data")
 
 [<Fact>]
-let ``Transaction isolation across multiple layers with flush`` () =
-    withTestDir "tx_layer_iso" (fun dir ->
+let ``Transaction Rollback discards uncommitted writes`` () =
+    withTestDir "tx_rollback" (fun dir ->
         use tree = new LsmTree(dir)
-        let snap = tree.Snapshot()
 
-        let tx1 = tree.BeginTransaction()
-        tx1.Put("lk", "lv1")
-        tx1.Commit()
-        tx1.Dispose()
-        tree.Flush()
+        use tx = tree.BeginTransaction()
+        tx.Put("rk", "rv")
+        tx.Delete "rk2"
+        tx.Rollback()
+        assertEqual None (tree.Get("rk", tree.Snapshot())) "Rollback discards Put"
+        assertEqual None (tree.Get("rk2", tree.Snapshot())) "Rollback discards Delete")
 
-        let tx2 = tree.BeginTransaction()
-        tx2.Put("lk", "lv2")
-        tx2.Commit()
-        tx2.Dispose()
-        assertEqual None (tree.Get("lk", snap)) "Old snapshot sees none after multiple ops")
+[<Fact>]
+let ``Transaction Rollback advances sequence number for ABORT record`` () =
+    withTestDir "tx_rollback_snap" (fun dir ->
+        use tree = new LsmTree(dir)
+        let snapBefore = tree.Snapshot()
+
+        use tx = tree.BeginTransaction()
+        tx.Put("rs", "rv")
+        tx.Rollback()
+
+        let snapAfter = tree.Snapshot()
+        Assert.True(snapAfter > snapBefore, "Rollback should advance sequence for ABORT WAL record"))
 
 [<Fact>]
 let ``Transaction concurrent transactions on different keys`` () =
@@ -204,7 +229,7 @@ let ``Transaction concurrent transactions on different keys`` () =
         tx3.Commit())
 
 [<Fact>]
-let ``Transaction concurrent transactions on same key`` () =
+let ``Transaction concurrent commits on same key produce valid result`` () =
     withTestDir "tx_conc_same" (fun dir ->
         use tree = new LsmTree(dir)
         let tx1 = tree.BeginTransaction()
@@ -246,31 +271,6 @@ let ``Transaction multiple overlapping transactions`` () =
         assertEqual (Some "mv2") (tx3.Get "mk") "Latest committed value visible"
         assertEqual None (tree.Get("mk", snap)) "Old snapshot sees nothing"
         tx3.Commit())
-
-[<Fact>]
-let ``Transaction Rollback discards uncommitted writes`` () =
-    withTestDir "tx_rollback" (fun dir ->
-        use tree = new LsmTree(dir)
-
-        use tx = tree.BeginTransaction()
-        tx.Put("rk", "rv")
-        tx.Delete "rk2"
-        tx.Rollback()
-        assertEqual None (tree.Get("rk", tree.Snapshot())) "Rollback discards Put"
-        assertEqual None (tree.Get("rk2", tree.Snapshot())) "Rollback discards Delete")
-
-[<Fact>]
-let ``Transaction Rollback releases snapshot sequence`` () =
-    withTestDir "tx_rollback_snap" (fun dir ->
-        use tree = new LsmTree(dir)
-        let snapBefore = tree.Snapshot()
-
-        use tx = tree.BeginTransaction()
-        tx.Put("rs", "rv")
-        tx.Rollback()
-
-        let snapAfter = tree.Snapshot()
-        assertEqual snapBefore snapAfter "Rollback should revert snapshot sequence")
 
 [<Fact>]
 let ``Transaction double dispose does not throw`` () =

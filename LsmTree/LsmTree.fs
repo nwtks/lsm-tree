@@ -1,8 +1,7 @@
 namespace LsmTree
 
-type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?compactLevelLimits: int[]) =
+type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[]) =
     let memTableLimit = defaultArg memTableSizeLimit (1024 * 1024)
-    let syncOnCommit = defaultArg syncOnCommit true
 
     let compactLevelLimits =
         defaultArg compactLevelLimits [| 4; 10; 100; 1000 |]
@@ -76,13 +75,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     let putDirect key value =
         writeWithFlushCheck (fun () ->
             let seq = snapshotManager.NextSequence()
-            wal.PutSingle(seq, key, value, syncOnCommit)
+            wal.PutSingle(seq, key, value, false)
             memTable.Put(key, seq, value))
 
     let deleteDirect key =
         writeWithFlushCheck (fun () ->
             let seq = snapshotManager.NextSequence()
-            wal.DeleteSingle(seq, key, syncOnCommit)
+            wal.DeleteSingle(seq, key, false)
             memTable.Delete(key, seq))
 
     let commitTransaction (ops: (string * string option) list) =
@@ -102,12 +101,16 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
                             wal.Delete(commitSeq, k)
                             memTable.Delete(k, commitSeq))
 
-                    wal.Commit(commitSeq, sync = syncOnCommit)
+                    wal.Commit(commitSeq, sync = true)
 
                 memTable.SizeBytes >= memTableLimit)
 
         if shouldFlush then
             flushMemTable ()
+
+    let rollbackTransaction () =
+        let seq = snapshotManager.NextSequence()
+        wal.Abort(seq, false)
 
     member _.Snapshot() = snapshotManager.CurrentSequence()
 
@@ -141,8 +144,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
 
     member _.WaitForCompactionAsync() =
         async { do! LsmTreeFlush.waitForCompactionAsync compaction }
-
-    member _.SyncOnCommit = syncOnCommit
 
     member _.ReleaseSnapshot(snapshot: int64) =
         snapshotManager.ReleaseSnapshot snapshot
@@ -179,5 +180,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?syncOnCommit: bool, ?com
     interface ILsmTree with
         member this.Get(key, snapshot) = this.Get(key, ?snapshot = snapshot)
         member _.CommitTransaction ops = commitTransaction ops
+        member _.RollbackTransaction() = rollbackTransaction ()
 
         member this.ReleaseSnapshot snapshot = this.ReleaseSnapshot snapshot
