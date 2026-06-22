@@ -4,6 +4,8 @@ type ICoordinatorError =
     abstract Error: exn option with get, set
 
 module LockExtensions =
+    let log msg = eprintfn msg
+
     let withReadLock (lock: System.Threading.ReaderWriterLockSlim) f =
         lock.EnterReadLock()
 
@@ -26,7 +28,7 @@ module LockExtensions =
         with _ ->
             ()
 
-    let checkCoordError (coord: ICoordinatorError) lockObj context =
+    let checkCoordinatorError (coord: ICoordinatorError) lockObj context =
         lock lockObj (fun () ->
             match coord.Error with
             | Some ex ->
@@ -34,10 +36,10 @@ module LockExtensions =
                 raise (System.AggregateException(context, ex))
             | None -> ())
 
-    let logCoordError (coord: ICoordinatorError) lockObj context =
+    let logCoordinatorError (coord: ICoordinatorError) lockObj context =
         lock lockObj (fun () ->
             match coord.Error with
             | Some ex ->
                 coord.Error <- None
-                eprintfn $"[WARN] LsmTree: {context} error during dispose: {ex.Message}"
+                log $"[WARN] LsmTree: {context} error during dispose: {ex.Message}"
             | None -> ())

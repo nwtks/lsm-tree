@@ -124,14 +124,6 @@ module SSTable =
     let readItem (br: System.IO.BinaryReader) =
         if br.ReadBoolean() then None else readValue br |> Some
 
-    let readAllEntries (br: System.IO.BinaryReader) (offsets: int64[]) =
-        offsets
-        |> Array.map (fun _ ->
-            let seq = br.ReadInt64()
-            let key = readValue br
-            let value = readItem br
-            key, seq, value)
-
     let loadIndex (fs: System.IO.FileStream) (br: System.IO.BinaryReader) (offsets: int64[]) =
         if offsets.Length > 0 then
             fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
@@ -174,6 +166,14 @@ module SSTable =
             else
                 binSearchIndex index key snap (mid + 1) right bestIdx
 
+    let readAllEntries (br: System.IO.BinaryReader) (offsets: int64[]) =
+        offsets
+        |> Array.map (fun _ ->
+            let seq = br.ReadInt64()
+            let key = readValue br
+            let value = readItem br
+            key, seq, value)
+
 type SSTable(path: string) =
     let fs =
         new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
@@ -189,14 +189,6 @@ type SSTable(path: string) =
     member _.Count = offsets.Length
 
     member _.MaxSeq = maxSeq
-
-    member _.GetAll() =
-        LockExtensions.withWriteLock rwLock (fun () ->
-            if offsets.Length > 0 then
-                fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
-                SSTable.readAllEntries br offsets
-            else
-                [||])
 
     member _.Get(key: string, snapshot: int64) =
         if index.Length > 0 && bloomFilter.MightContain key then
@@ -220,6 +212,14 @@ type SSTable(path: string) =
             | None -> NotFound
         else
             NotFound
+
+    member _.GetAll() =
+        LockExtensions.withWriteLock rwLock (fun () ->
+            if offsets.Length > 0 then
+                fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
+                SSTable.readAllEntries br offsets
+            else
+                [||])
 
     interface System.IDisposable with
         member _.Dispose() =

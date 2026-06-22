@@ -115,14 +115,16 @@ module LsmTreeFlush =
         LockExtensions.withWriteLock mainLock clearState
 
     let findMinKey (current: (string * int64 * string option) option[]) =
-        (None, current)
-        ||> Array.fold (fun acc entry ->
-            match entry with
-            | Some(k, _, _) ->
-                match acc with
-                | Some mk -> Some(if System.String.CompareOrdinal(k, mk) < 0 then k else mk)
-                | None -> Some k
-            | None -> acc)
+        current
+        |> Array.fold
+            (fun acc entry ->
+                match entry with
+                | Some(k, _, _) ->
+                    match acc with
+                    | Some mk -> Some(if System.String.CompareOrdinal(k, mk) < 0 then k else mk)
+                    | None -> Some k
+                | None -> acc)
+            None
 
     let collectVersions advance (current: (string * int64 * string option) option[]) key =
         let versions = ResizeArray()
@@ -291,19 +293,16 @@ module LsmTreeFlush =
                     false)
 
         if shouldStart then
-            async {
+            try
                 try
-                    try
-                        compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits compaction.Token 0
-                    with
-                    | :? System.OperationCanceledException -> ()
-                    | ex -> lock ssTablesLock (fun () -> compaction.Error <- Some ex)
-                finally
-                    lock ssTablesLock (fun () ->
-                        compaction.IsCompacting <- false
-                        compaction.SetCompleted())
-            }
-            |> Async.Start
+                    compact dataDir snapshotManager ssTablesLock ssTables compactLevelLimits compaction.Token 0
+                with
+                | :? System.OperationCanceledException -> ()
+                | ex -> lock ssTablesLock (fun () -> compaction.Error <- Some ex)
+            finally
+                lock ssTablesLock (fun () ->
+                    compaction.IsCompacting <- false
+                    compaction.SetCompleted())
 
     let flushAndRegisterSSTable dataDir mainLock ssTablesLock ssTables clearState oldMemTable oldWalPath =
         flushToSSTable dataDir oldMemTable
@@ -335,8 +334,3 @@ module LsmTreeFlush =
             finally
                 flushCoordinator.SignalCompleted()
         }
-        |> Async.Start
-
-    let waitForCompaction (compaction: CompactionCoordinator) = compaction.WaitForCompletion()
-
-    let waitForCompactionAsync (compaction: CompactionCoordinator) = compaction.AwaitCompletion()

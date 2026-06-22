@@ -1,6 +1,8 @@
 namespace LsmTree
 
 module LsmTreeLoader =
+    let log msg = eprintfn msg
+
     let validateCompactLevelLimits (limits: int[]) =
         if limits.Length = 0 then
             invalidArg "compactLevelLimits" "compactLevelLimits must not be empty"
@@ -20,17 +22,13 @@ module LsmTreeLoader =
                 match System.Int32.TryParse(name.Substring(1, uScore - 1)) with
                 | true, lvl -> lvl
                 | _ ->
-                    eprintfn "[WARN] LsmTreeLoader: malformed SSTable name '%s' treated as level 0" name
+                    log "[WARN] LsmTreeLoader: malformed SSTable name '%s' treated as level 0" name
                     0
             else
-                eprintfn "[WARN] LsmTreeLoader: malformed SSTable name '%s' treated as level 0" name
+                log "[WARN] LsmTreeLoader: malformed SSTable name '%s' treated as level 0" name
                 0
         else
             0
-
-    let compareSSTables (a: SSTable) (b: SSTable) =
-        let cmp = compare b.MaxSeq a.MaxSeq
-        if cmp <> 0 then cmp else compare a.Path b.Path
 
     let loadSSTableFiles dataDir (ssTables: SSTable list[]) =
         let mutable maxSeq = 0L
@@ -48,21 +46,26 @@ module LsmTreeLoader =
 
         maxSeq
 
+    let compareSSTables (a: SSTable) (b: SSTable) =
+        let cmp = compare b.MaxSeq a.MaxSeq
+        if cmp <> 0 then cmp else compare a.Path b.Path
+
     let sortLevelTables (ssTables: SSTable list[]) =
-        for i = 0 to ssTables.Length - 1 do
-            ssTables.[i] <- ssTables.[i] |> List.sortWith compareSSTables
+        ssTables |> Array.map (List.sortWith compareSSTables)
 
     let cleanupTempFiles dataDir =
         System.IO.Directory.GetFiles(dataDir, "*.sst.tmp")
         |> Array.iter System.IO.File.Delete
 
-    let loadSSTables dataDir (ssTables: SSTable list[]) (snapshotManager: LsmTreeSnapshot) =
+    let loadSSTables dataDir size (snapshotManager: LsmTreeSnapshot) =
         cleanupTempFiles dataDir
+        let ssTables = Array.init size (fun _ -> list<SSTable>.Empty)
         let maxSeq = loadSSTableFiles dataDir ssTables
-        sortLevelTables ssTables
 
         if maxSeq > 0L then
             snapshotManager.AdvanceSequence maxSeq
+
+        sortLevelTables ssTables
 
     let collectWalEntries dataDir currentSeq =
         let logs = System.IO.Directory.GetFiles(dataDir, "wal*.log")
@@ -80,8 +83,11 @@ module LsmTreeLoader =
 
         snapshotManager.AdvanceSequence seq
 
-    let loadWal dataDir (memTable: MemTable) (snapshotManager: LsmTreeSnapshot) =
+    let loadWal dataDir (snapshotManager: LsmTreeSnapshot) =
+        let memTable = MemTable()
         let currentSeq = snapshotManager.CurrentSequence()
 
         collectWalEntries dataDir currentSeq
         |> Seq.iter (applyEntry memTable snapshotManager)
+
+        memTable

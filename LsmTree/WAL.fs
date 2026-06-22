@@ -21,6 +21,8 @@ module WALRecovery =
         | Begin
         | Commit
 
+    let log msg = eprintfn msg
+
     let utf8ToBase64 (value: string) =
         value |> System.Text.Encoding.UTF8.GetBytes |> System.Convert.ToBase64String
 
@@ -70,17 +72,21 @@ module WALRecovery =
             try
                 parseCommand seq parts
             with :? System.FormatException ->
-                eprintfn $"[WARN] WAL recovery: skipping malformed line: {item}"
+                log $"[WARN] WAL recovery: skipping malformed line: {item}"
                 None
-        | None -> None
+        | None ->
+            log $"[WARN] WAL recovery: skipping malformed line: {item}"
+            None
 
     let collectSequenceSets path =
-        ((Set.empty, Set.empty), System.IO.File.ReadLines path)
-        ||> Seq.fold (fun (committed, begun) line ->
-            match parseEntry line with
-            | Some(seq, Begin) -> committed, Set.add seq begun
-            | Some(seq, Commit) -> Set.add seq committed, begun
-            | _ -> committed, begun)
+        System.IO.File.ReadLines path
+        |> Seq.fold
+            (fun (committed, begun) line ->
+                match parseEntry line with
+                | Some(seq, Begin) -> committed, Set.add seq begun
+                | Some(seq, Commit) -> Set.add seq committed, begun
+                | _ -> committed, begun)
+            (Set.empty, Set.empty)
 
     let recoverOps path committedSeqs begunSeqs =
         System.IO.File.ReadLines path
@@ -159,7 +165,7 @@ type WAL(path: string) =
                         writer.Flush()
                         stream.Flush true
                     with _ ->
-                        eprintfn "[WARN] WAL: I/O error during final flush"
+                        WALRecovery.log "[WARN] WAL: I/O error during final flush"
 
                     try
                         (writer :> System.IDisposable).Dispose()

@@ -29,6 +29,20 @@ module SkipList =
 
         lvl
 
+    let findCurrentLevel (currentLevel: int byref) lvl =
+        let mutable currLvl = System.Threading.Volatile.Read(&currentLevel)
+
+        while lvl > currLvl do
+            let actual =
+                System.Threading.Interlocked.CompareExchange(&currentLevel, lvl, currLvl)
+
+            if actual = currLvl then
+                currLvl <- lvl
+            else
+                currLvl <- actual
+
+        currLvl
+
     let next (next: SkipListNode) key seq =
         not (isNull next)
         && (System.String.CompareOrdinal(next.Key, key) < 0
@@ -58,20 +72,6 @@ module SkipList =
             let p = findPredAtLevel key seq lvl pred
             preds.[lvl] <- p
             searchPreds key seq preds (lvl - 1) p
-
-    let findCurrentLevel (currentLevel: int byref) lvl =
-        let mutable currLvl = System.Threading.Volatile.Read(&currentLevel)
-
-        while lvl > currLvl do
-            let actual =
-                System.Threading.Interlocked.CompareExchange(&currentLevel, lvl, currLvl)
-
-            if actual = currLvl then
-                currLvl <- lvl
-            else
-                currLvl <- actual
-
-        currLvl
 
     [<TailCall>]
     let rec insertAtLevel key seq (newNode: SkipListNode) (pred: SkipListNode) lvl =

@@ -17,7 +17,7 @@ Ensures crash safety and immediate durability. All `Put` and `Delete` operations
 In-memory mutations are buffered within a custom mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
 - **Lock-Free Concurrency**: CAS-based node insertion enables concurrent `Put` operations without blocking.
 - **Automatic flush**: When the MemTable exceeds `memTableSizeLimit`, it is atomically swapped to an immutable MemTable and **asynchronously** flushed to an SSTable. Flushes are sequentialized (at most one in-flight at a time).
-- **Async waiting**: `FlushAsync()` and `WaitForCompactionAsync()` return `Async<unit>`.
+- **Flush APIs**: `Flush()` (synchronous, waits for completion) and `FlushAsync()` (returns `Async<unit>`).
 
 ### SSTable (Sorted String Table)
 Immutable on-disk files produced when the MemTable is flushed:
@@ -30,9 +30,10 @@ Immutable on-disk files produced when the MemTable is flushed:
 - **Snapshot-aware pruning**: Versions visible to active snapshots are preserved; stale versions are purged.
 - **Tombstone elimination**: Deletion markers are completely removed from the final storage level.
 - **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels.
+- **Compaction APIs**: `WaitForCompaction()` (synchronous, waits for completion) and `WaitForCompactionAsync()` (returns `Async<unit>`).
 
 ### Direct Put/Delete (Fast Path)
-Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` (without `fsync` for performance) and applied to the MemTable in one atomic step.
+Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` with `sync=false` (no `fsync` for performance) and applied to the MemTable in one atomic step.
 
 ### Atomic Transactions with Snapshot Isolation
 Multi-key atomic updates via a dedicated `ITransaction` API:
@@ -70,12 +71,12 @@ dotnet run -c Release --project Benchmark
 
 Benchmarks use [BenchmarkDotNet](https://benchmarkdotnet.org/) with `[<MemoryDiagnoser>]`:
 
-| Class | Benchmarks | Description |
-|---|---|---|
-| `PutBenchmark` | `SequentialPut`, `ConcurrentPut`, `TransactionPut` | Single/parallel writes |
-| `GetBenchmark` | `RandomHitGet`, `RandomMissGet`, `SequentialGet` | Point lookups (N = 10000 / 30000) |
-| `DeleteBenchmark` | `SequentialDelete`, `ConcurrentDelete`, `TransactionDelete` | Single/parallel deletes |
-| `MixedWorkloadBenchmark` | `ReadHeavy`, `WriteHeavy` | Mixed read/write workloads |
+| Class | Benchmarks | N | Value Size |
+|---|---|---|---|
+| `PutBenchmark` | `SequentialPut`, `ConcurrentPut`, `TransactionPut` | 10,000 | 1 / 100 |
+| `GetBenchmark` | `RandomHitGet`, `RandomMissGet`, `SequentialGet` | 10,000 / 30,000 | — |
+| `DeleteBenchmark` | `SequentialDelete`, `ConcurrentDelete`, `TransactionDelete` | 10,000 | — |
+| `MixedWorkloadBenchmark` | `ReadHeavy`, `WriteHeavy` | 10,000 | — |
 
 ---
 
@@ -178,5 +179,14 @@ let db = new LsmTree("./data", compactLevelLimits = [| 2; 5; 50 |])
 // LsmTree implements IDisposable — use 'use' or call .Close()/.Dispose()
 use db = new LsmTree("./data")
 // ... work ...
+
+// Force flush MemTable to SSTable and wait for compaction
+db.Flush()
+db.WaitForCompaction()
+
+// Async alternatives
+// do! db.FlushAsync()
+// do! db.WaitForCompactionAsync()
+
 // db.Dispose() is called automatically at the end of the 'use' scope
 ```

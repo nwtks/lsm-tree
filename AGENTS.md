@@ -21,16 +21,6 @@ This file provides guidance for AI agents working in this repository.
 
 ---
 
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Architecture](docs/architecture.md) | Internal design |
-| [Design Trade-offs](docs/trade-off.md) | Rationale for key decisions |
-| [Recurring Gotchas](docs/gotchas.md) | Common pitfalls and non-obvious behaviors |
-
----
-
 ## Cross-Platform Compatibility
 
 All code — including test code — must work on **both Windows and Linux**. Avoid:

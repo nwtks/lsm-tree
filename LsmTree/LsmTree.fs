@@ -8,13 +8,9 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         |> LsmTreeLoader.validateCompactLevelLimits
 
     let walPath = System.IO.Path.Combine(dataDir, "wal.log")
-    let mutable memTable = MemTable()
     let mutable immutableMemTable: MemTable option = None
     let mainLock = new System.Threading.ReaderWriterLockSlim()
     let snapshotManager = LsmTreeSnapshot()
-
-    let ssTables =
-        Array.init (compactLevelLimits.Length + 1) (fun _ -> list<SSTable>.Empty)
 
     let ssTablesLock = obj ()
     let compaction = new CompactionCoordinator()
@@ -25,9 +21,10 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         if not (System.IO.Directory.Exists dataDir) then
             System.IO.Directory.CreateDirectory dataDir |> ignore
 
-        LsmTreeLoader.loadSSTables dataDir ssTables snapshotManager
-        LsmTreeLoader.loadWal dataDir memTable snapshotManager
+    let ssTables =
+        LsmTreeLoader.loadSSTables dataDir (compactLevelLimits.Length + 1) snapshotManager
 
+    let mutable memTable = LsmTreeLoader.loadWal dataDir snapshotManager
     let mutable wal = new WAL(walPath)
 
     let flushMemTable () =
@@ -61,6 +58,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
                         match immutableMemTable with
                         | Some mt when obj.ReferenceEquals(mt, oldMemTable) -> immutableMemTable <- None
                         | _ -> ())
+                |> Async.Start
             | None -> flushCoordinator.SignalCompleted()
 
     let writeWithFlushCheck writeFn =
@@ -130,7 +128,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
     member _.Flush() =
         flushMemTable ()
         flushCoordinator.WaitForCompletion()
-        LockExtensions.checkCoordError flushCoordinator ssTablesLock "Flush failed"
+        LockExtensions.checkCoordinatorError flushCoordinator ssTablesLock "Flush failed"
 
     member _.FlushAsync() =
         async {
@@ -139,11 +137,10 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         }
 
     member _.WaitForCompaction() =
-        LsmTreeFlush.waitForCompaction compaction
-        LockExtensions.checkCoordError compaction ssTablesLock "Compaction failed"
+        compaction.WaitForCompletion()
+        LockExtensions.checkCoordinatorError compaction ssTablesLock "Compaction failed"
 
-    member _.WaitForCompactionAsync() =
-        async { do! LsmTreeFlush.waitForCompactionAsync compaction }
+    member _.WaitForCompactionAsync() = compaction.AwaitCompletion()
 
     member _.ReleaseSnapshot(snapshot: int64) =
         snapshotManager.ReleaseSnapshot snapshot
@@ -157,14 +154,14 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
                 compaction.Cancel()
 
                 try
-                    LsmTreeFlush.waitForCompaction compaction
-                    LockExtensions.logCoordError compaction ssTablesLock "compaction"
+                    compaction.WaitForCompletion()
+                    LockExtensions.logCoordinatorError compaction ssTablesLock "compaction"
                 with _ ->
                     ()
 
                 try
                     flushCoordinator.WaitForCompletion()
-                    LockExtensions.logCoordError flushCoordinator ssTablesLock "flush"
+                    LockExtensions.logCoordinatorError flushCoordinator ssTablesLock "flush"
                 with _ ->
                     ()
 
