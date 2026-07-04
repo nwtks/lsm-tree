@@ -26,10 +26,10 @@ ABORT <seq>
 The on-disk layout of an `.sst` file is:
 
 ```
-[entry bytes...] [index: int32 count + int64[] offsets] [bloom filter: int32 byteCount + bytes] [index_offset: int64] [bloom_offset: int64] [max_seq: int64] [magic: int64]
+[entry bytes...] [index: int32 count + IndexEntry[count]] [bloom filter: int32 byteCount + bytes] [index_offset: int64] [bloom_offset: int64] [max_seq: int64] [magic: int64]
 ```
 
-Each **entry** is encoded as:
+Each **entry** in the data region is encoded as:
 
 ```
 seq: int64 | key: int32 length + UTF-8 bytes | value: bool isTombstone + (if false: int32 length + UTF-8 bytes)
@@ -38,11 +38,29 @@ seq: int64 | key: int32 length + UTF-8 bytes | value: bool isTombstone + (if fal
 - `isTombstone = true` → deletion marker: no further bytes follow.
 - `isTombstone = false` → live value: `int32` byte length + UTF-8 bytes follow.
 
+Each **IndexEntry** in the index region is encoded as:
+
+```
+seq: int64 | offset: int64 | keyByteLen: int32 | keyBytes: byte[keyByteLen]
+```
+
+The `offset` field points to the start of the corresponding entry in the data region (i.e., the `seq` field of that entry). The key bytes are stored inline in the index, so the data region does **not** need to be accessed during SSTable open.
+
 - **Footer**: always 32 bytes (four `int64` fields).
 - **Magic**: `0x4C534D54` (`"LSMT"` in ASCII). Wrong magic raises `InvalidDataException`.
-- **Index**: packed `int32` count + `int64[]` offsets pointing to each entry.
+- **Index**: packed `int32` count followed by `count` inline `IndexEntry` records (seq + offset + key). All fields needed to build the in-memory `IndexEntry[]` are present here — the data region is read lazily only for value payloads on `Get`/`GetRange`.
 - **Bloom filter**: packed `int32` byte count + raw bytes.
 - **`max_seq`**: highest sequence number among all entries — enables O(1) startup without scanning.
+
+### Open-time loading
+
+`SSTable.load` performs three sequential reads:
+
+1. **Footer** (32 B) — read from the end of the file to get `indexOffset`, `bloomOffset`, `maxSeq`, `magic`.
+2. **Bloom filter** — one `Seek` + `ReadInt32` + `ReadBytes(byteCount)`.
+3. **Index region** — one `Seek` + single `ReadExactly` of the entire region (`bloomOffset - indexOffset` bytes), parsed in memory with `BinaryPrimitives.ReadInt*LittleEndian`. No access to the data region is required.
+
+The data region is only touched on demand: `Get` does one `Seek`+`Read` per hit (after in-memory binary search on the index), `GetRange` reads entries sequentially, and `GetAll` (used by compaction) reads the entire data region sequentially from `index.[0].Offset`.
 
 **File naming convention:**
 

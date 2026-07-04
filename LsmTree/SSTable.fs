@@ -49,15 +49,6 @@ module SSTable =
             |> raise
         | None -> ()
 
-    let loadOffsets (fs: System.IO.FileStream) (br: System.IO.BinaryReader) fileLen offset footerSize =
-        validateIndexOffset fileLen offset footerSize
-        fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
-        let count = br.ReadInt32()
-        validateIndexCount fileLen offset count footerSize
-        let offsets = Array.init count (fun _ -> br.ReadInt64())
-        validateEntryOffsets offset offsets
-        offsets
-
     let validateBloomOffset fileLen indexOffset offset footerSize =
         if offset < indexOffset then
             System.IO.InvalidDataException
@@ -104,6 +95,56 @@ module SSTable =
         validateIndexOffset fileLen indexOffset FOOTER_SIZE
         validateBloomOffset fileLen indexOffset bloomOffset FOOTER_SIZE
 
+    let readValue (br: System.IO.BinaryReader) =
+        br.ReadInt32() |> br.ReadBytes |> System.Text.Encoding.UTF8.GetString
+
+    let readItem (br: System.IO.BinaryReader) =
+        if br.ReadBoolean() then None else readValue br |> Some
+
+    let loadIndex (fs: System.IO.FileStream) fileLen indexOffset bloomOffset footerSize =
+        validateIndexOffset fileLen indexOffset footerSize
+        let regionSize = int (bloomOffset - indexOffset)
+
+        if regionSize <= 4 then
+            [||]
+        else
+            let buf = Array.zeroCreate<byte> regionSize
+            fs.Seek(indexOffset, System.IO.SeekOrigin.Begin) |> ignore
+            fs.ReadExactly(buf, 0, regionSize)
+            let mutable pos = 0
+
+            let count =
+                System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(System.Span<byte>(buf, pos, 4))
+
+            pos <- pos + 4
+
+            if count < 0 then
+                System.IO.InvalidDataException $"SSTable index entry count is negative: {count}"
+                |> raise
+
+            Array.init count (fun _ ->
+                let seq =
+                    System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(System.Span<byte>(buf, pos, 8))
+
+                pos <- pos + 8
+
+                let offset =
+                    System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(System.Span<byte>(buf, pos, 8))
+
+                pos <- pos + 8
+
+                let keyByteLen =
+                    System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(System.Span<byte>(buf, pos, 4))
+
+                pos <- pos + 4
+                let key = System.Text.Encoding.UTF8.GetString(buf, pos, keyByteLen)
+                pos <- pos + keyByteLen
+
+                { Key = key
+                  Seq = seq
+                  Offset = offset
+                  KeyByteLen = keyByteLen })
+
     let load (fs: System.IO.FileStream) (br: System.IO.BinaryReader) =
         let fileLen = fs.Length
 
@@ -112,40 +153,11 @@ module SSTable =
             let struct (indexOffset, bloomOffset, maxSeq, magic) = readFooter br
             validateFooter fileLen indexOffset bloomOffset magic
 
-            loadOffsets fs br fileLen indexOffset FOOTER_SIZE,
-            loadBloomFilter fs br fileLen indexOffset bloomOffset FOOTER_SIZE,
-            maxSeq
+            let bloom = loadBloomFilter fs br fileLen indexOffset bloomOffset FOOTER_SIZE
+            let index = loadIndex fs fileLen indexOffset bloomOffset FOOTER_SIZE
+            bloom, maxSeq, index
         else
-            [||], BloomFilter([||], 0), 0L
-
-    let readValue (br: System.IO.BinaryReader) =
-        br.ReadInt32() |> br.ReadBytes |> System.Text.Encoding.UTF8.GetString
-
-    let readItem (br: System.IO.BinaryReader) =
-        if br.ReadBoolean() then None else readValue br |> Some
-
-    let loadIndex (fs: System.IO.FileStream) (br: System.IO.BinaryReader) (offsets: int64[]) =
-        if offsets.Length > 0 then
-            fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
-
-            offsets
-            |> Array.map (fun offset ->
-                let seq = br.ReadInt64()
-                let key = readValue br
-                let keyByteLen = System.Text.Encoding.UTF8.GetByteCount key
-
-                if br.ReadBoolean() then
-                    ()
-                else
-                    let valueLen = br.ReadInt32()
-                    fs.Seek(int64 valueLen, System.IO.SeekOrigin.Current) |> ignore
-
-                { Key = key
-                  Seq = seq
-                  Offset = offset
-                  KeyByteLen = keyByteLen })
-        else
-            [||]
+            BloomFilter([||], 0), 0L, [||]
 
     [<TailCall>]
     let rec binSearchIndex (index: IndexEntry[]) key snap left right bestIdx =
@@ -166,9 +178,8 @@ module SSTable =
             else
                 binSearchIndex index key snap (mid + 1) right bestIdx
 
-    let readAllEntries (br: System.IO.BinaryReader) offsets =
-        offsets
-        |> Array.map (fun _ ->
+    let readAllEntries (br: System.IO.BinaryReader) count =
+        Array.init count (fun _ ->
             let seq = br.ReadInt64()
             let key = readValue br
             let value = readItem br
@@ -210,14 +221,13 @@ type SSTable(path) =
         new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
 
     let br = new System.IO.BinaryReader(fs)
-    let offsets, bloomFilter, maxSeq = SSTable.load fs br
-    let index = SSTable.loadIndex fs br offsets
+    let bloomFilter, maxSeq, index = SSTable.load fs br
     let rwLock = new System.Threading.ReaderWriterLockSlim()
     let mutable disposed = false
 
     member _.Path = path
 
-    member _.Count = offsets.Length
+    member _.Count = index.Length
 
     member _.MaxSeq = maxSeq
 
@@ -246,9 +256,9 @@ type SSTable(path) =
 
     member _.GetAll() =
         LockExtensions.withWriteLock rwLock (fun () ->
-            if offsets.Length > 0 then
-                fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
-                SSTable.readAllEntries br offsets
+            if index.Length > 0 then
+                fs.Seek(index.[0].Offset, System.IO.SeekOrigin.Begin) |> ignore
+                SSTable.readAllEntries br index.Length
             else
                 [||])
 
@@ -296,10 +306,6 @@ module SSTableWriter =
             bw.Write false
             writeValue bw v
 
-    let writeOffsets (bw: System.IO.BinaryWriter) (offsets: int64 list) =
-        bw.Write offsets.Length
-        offsets |> List.iter bw.Write
-
     let writeSSTableContent
         (bw: System.IO.BinaryWriter)
         (fs: System.IO.FileStream)
@@ -307,23 +313,40 @@ module SSTableWriter =
         (ct: System.Threading.CancellationToken)
         (entries: seq<string * int64 * string option>)
         =
-        let offsets = ResizeArray<int64>()
+        let indexData = ResizeArray<int64 * int64 * int32 * byte[]>()
         let mutable maxSeq = 0L
 
         for key, seq, value in entries do
             ct.ThrowIfCancellationRequested()
             bf.Add key
-            offsets.Add fs.Position
+            let entryOffset = fs.Position
+            let keyBytes = System.Text.Encoding.UTF8.GetBytes key
             bw.Write seq
+            bw.Write keyBytes.Length
+            bw.Write keyBytes
+
+            match value with
+            | None -> bw.Write true
+            | Some v ->
+                bw.Write false
+                let valBytes = System.Text.Encoding.UTF8.GetBytes v
+                bw.Write valBytes.Length
+                bw.Write valBytes
 
             if seq > maxSeq then
                 maxSeq <- seq
 
-            writeValue bw key
-            writeItem bw value
+            indexData.Add(seq, entryOffset, keyBytes.Length, keyBytes)
 
         let indexOffset = fs.Position
-        writeOffsets bw (offsets |> Seq.toList)
+        bw.Write indexData.Count
+
+        for seq, offset, keyByteLen, keyBytes in indexData do
+            bw.Write seq
+            bw.Write offset
+            bw.Write keyByteLen
+            bw.Write keyBytes
+
         let bloomOffset = fs.Position
         writeBytes bw bf.Bytes
         bw.Write indexOffset

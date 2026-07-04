@@ -42,20 +42,22 @@
 
 ---
 
-## SSTable read path: in-memory index + bloom filter
+## SSTable read path: in-memory index + bloom filter, inline-index format
 
-**Choice**: At open time, each SSTable scans all entries and builds an in-memory `IndexEntry[]` (key, sequence number, disk offset, key byte length). A `Get` does a pure in-memory binary search on the index, then a single `Seek`+`Read` for the value payload. A Bloom filter (10 bits/item, 7 hash functions) rejects non-existent keys before the binary search.
+**Choice**: The on-disk index region stores inline `IndexEntry` records (`seq + offset + keyByteLen + keyBytes`), not just `int64[]` offsets. At open time, `SSTable.load` reads the entire index region in a single `ReadExactly` and parses it in memory with `BinaryPrimitives` — the data region is not touched during open. A `Get` does a pure in-memory binary search on the index, then a single `Seek`+`Read` for the value payload. A Bloom filter (10 bits/item, 7 hash functions) rejects non-existent keys before the binary search.
 
-**Why**: The original design did a `Seek`+`Read` on every binary search iteration (~log₂N disk seeks per lookup). The in-memory index reduces this to one seek per hit. The Bloom filter makes misses O(1) with no disk I/O.
+**Why**: The earlier `int64[] offsets` format forced `loadIndex` to walk the data region at open time (parsing each entry's seq + key header to reconstruct `IndexEntry`). That meant N small reads or seeks through the data region just to build the in-memory index. Inlining all index fields in a separate region consolidates open-time I/O into **one** sequential read of the index region. The data region is read only on demand for value payloads.
 
-**Trade-off**: Memory cost is ~32+ bytes per entry (two `int64` fields, one `int32`, plus the key string reference). For 1M entries, that's ~32 MB across all SSTables. At this project's scale, bounded by `memTableSizeLimit`, the trade-off is favorable.
+**Trade-off**:
+- **File size**: Keys are stored twice (once in the data region, once in the index region). The overhead is bounded by Σ key length and is small relative to value payloads in typical workloads.
+- **Format is not self-describing across versions**: Older `.sst` files written with the `int64[] offsets` format are not readable by the current loader. This engine does not ship a migration path — restart from an empty directory if upgrading across this format change.
 
-`IndexEntry` is a `[<Struct>]` record — the array stores entries inline, improving CPU cache locality during binary search and avoiding a separate heap allocation per entry.
+`IndexEntry` is a `[<Struct>]` record — the array stores entries inline, improving CPU cache locality during binary search and avoiding a separate heap allocation per entry. The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field), so per-entry memory cost is the struct layout (~28 bytes) plus the key string reference.
 
 **Alternatives considered**:
+- **`int64[]` offsets in index region, walk data region at open**: avoids storing keys twice, but open-time I/O scales with total entry count (each entry's seq+key header must be parsed).
 - **Disk-based binary search**: zero index memory, but log₂N seeks per lookup.
 - **Memory-mapped I/O**: lets the OS page lazily, but cross-platform behavior varies.
-- **Prefetch entire data region at open time**: eliminates all seeks, but memory is proportional to total data size.
 
 ---
 

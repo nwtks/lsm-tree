@@ -72,8 +72,8 @@ let ``SSTable load returns empty for short file`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let offsets, _, maxSeq = SSTable.load fs br
-        assertEqual [||] offsets "Short file should have no offsets"
+        let _, maxSeq, index = SSTable.load fs br
+        assertEqual [||] index "Short file should have empty index"
         assertEqual 0L maxSeq "Short file should have maxSeq 0")
 
 [<Fact>]
@@ -90,9 +90,7 @@ let ``SSTable load and loadIndex handle empty SSTable`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let offsets, _, maxSeq = SSTable.load fs br
-        let index = SSTable.loadIndex fs br offsets
-        assertEqual [||] offsets "Empty SSTable should have no offsets"
+        let _, maxSeq, index = SSTable.load fs br
         assertEqual [||] index "Empty SSTable should have empty index"
         assertEqual 0L maxSeq "Empty SSTable maxSeq = 0")
 
@@ -141,8 +139,7 @@ let ``SSTable loadIndex handles tombstone and value entries`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let offsets, _, _ = SSTable.load fs br
-        let index = SSTable.loadIndex fs br offsets
+        let _, _, index = SSTable.load fs br
         assertEqual 2 index.Length "Should have 2 index entries"
         assertEqual "gone" index.[0].Key "First entry key"
         assertEqual 2L index.[0].Seq "First entry seq"
@@ -204,9 +201,9 @@ let ``SSTable readAllEntries preserves tombstone entries`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let offsets, _, _ = SSTable.load fs br
-        fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
-        let entries = SSTable.readAllEntries br offsets
+        let _, _, index = SSTable.load fs br
+        fs.Seek(index.[0].Offset, System.IO.SeekOrigin.Begin) |> ignore
+        let entries = SSTable.readAllEntries br index.Length
         assertEqual 3 entries.Length "Should have 3 entries"
         assertEqual ("k1", 1L, Some "v1") entries.[0] "First entry is k1=v1"
         assertEqual ("k2", 2L, None) entries.[1] "Second entry is k2=tombstone"
@@ -339,31 +336,31 @@ let ``SSTableWriter writeItem writes None`` () =
     assertEqual true (br.ReadBoolean()) "None should write true (no value)"
 
 [<Fact>]
-let ``SSTableWriter writeOffsets writes count and offsets`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    SSTableWriter.writeOffsets bw [ 100L; 200L; 300L ]
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    let count = br.ReadInt32()
-    assertEqual 3 count "Should write 3 offsets"
-    assertEqual 100L (br.ReadInt64()) "First offset"
-    assertEqual 200L (br.ReadInt64()) "Second offset"
-    assertEqual 300L (br.ReadInt64()) "Third offset"
+let ``SSTableWriter writes inline index and roundtrips`` () =
+    withTestDir "sst_inline_idx" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "inline_idx.sst")
 
-[<Fact>]
-let ``SSTableWriter writeOffsets writes empty list`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    SSTableWriter.writeOffsets bw []
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    let count = br.ReadInt32()
-    assertEqual 0 count "Empty list should write count 0"
+        SSTableWriter.write path [ "k1", 1L, Some "v1"; "k2", 2L, None; "k3", 3L, Some "v3" ]
+        |> ignore
 
-[<Fact>]
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
+
+        use br = new System.IO.BinaryReader(fs)
+        let _, _, index = SSTable.load fs br
+        assertEqual 3 index.Length "Should have 3 index entries"
+        assertEqual "k1" index.[0].Key "First entry key"
+        assertEqual 1L index.[0].Seq "First entry seq"
+        assertEqual "k2" index.[1].Key "Second entry key"
+        assertEqual 2L index.[1].Seq "Second entry seq"
+        assertEqual "k3" index.[2].Key "Third entry key"
+        assertEqual 3L index.[2].Seq "Third entry seq")
+
 let ``SSTableWriter writeStream throws on cancellation`` () =
     withTestDir "sst_cancel" (fun testDataDir ->
         let path = System.IO.Path.Combine(testDataDir, "cancel.sst")
