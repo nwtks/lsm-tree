@@ -22,8 +22,15 @@ In-memory mutations are buffered within a custom mutable **SkipList** with $O(\l
 ### SSTable (Sorted String Table)
 Immutable on-disk files produced when the MemTable is flushed:
 - **In-memory index + Bloom filter**: At startup, each SSTable loads an entry index and Bloom filter into RAM. Lookups perform in-memory binary search on the index, then a single `Seek`+`Read` for the value payload — misses are rejected $O(1)$ by the Bloom filter with no disk I/O.
+- **Range scan via index**: `SSTable.GetRange` uses the index's sorted order to find range boundaries via binary search (`lowerBound`/`upperBound`), then reads entries sequentially within the range.
 - **Concurrent reads**: Uses `ReaderWriterLockSlim` — concurrent readers proceed in parallel, while `GetAll` and `Dispose` serialize exclusively.
 - **Bloom filters**: FNV-1a double-hashing, 10 bits/item, 7 hash functions.
+
+### Range Scans
+In-memory k-way merge across all storage layers (MemTable, immutable MemTable, and each SSTable):
+- **Sorted results**: Keys are returned in `String.CompareOrdinal` order, deduplicated (latest visible version wins).
+- **Snapshot-isolated**: `RangeScan`/`NewIterator` accept an optional snapshot parameter for consistent time-travel scans.
+- **Two APIs**: `RangeScan` returns `seq<string * string>` (auto-disposing); `NewIterator` returns `IIterator` (manual lifetime).
 
 ### Background Multi-Level Compaction & Automatic Pruning
 - **Configurable level limits**: e.g., `[| 4; 10; 100; 1000 |]` means L0 over 4 files triggers compaction to L1, L1 over 10 triggers compaction to L2, etc.
@@ -53,7 +60,6 @@ See [docs/architecture.md](docs/architecture.md) for the WAL format, SSTable bin
 ## ⚠️ Known Limitations
 
 - **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL). Binary data must be base64-encoded by the caller.
-- **No range queries**: The public API supports point lookups only (`Get`). `SSTable.GetAll()` is internal for compaction.
 - **Single WAL file**: One active WAL per instance. Renamed to `wal_<guid>.old` on each flush (deleted after the SSTable is successfully written); stale `.old` files from crashes remain on disk and are replayed during recovery.
 - **`LsmTransaction.Get` O(n) local scan**: The pending ops list is scanned linearly (`Seq.tryFind`). Avoid thousands of keys in a single transaction if you need fast local reads.
 - **No replication/clustering**: Single-node storage engine only.
@@ -141,6 +147,24 @@ tx.Delete("acc:temp")
 let pending = tx.Get("acc:1")   // Some "100" — reads own uncommitted write
 tx.Commit()                      // atomically commits all three ops
 // or: tx.Rollback()             // discard all changes
+```
+
+### Range Scans
+
+```fsharp
+// Sequential scan (seq<string * string> – auto-disposes)
+for key, value in db.RangeScan("user:1", "user:9") do
+    printfn "%s = %s" key value
+
+// Manual iterator with explicit lifetime
+use it = db.NewIterator("a", "z")
+while it.MoveNext() do
+    printfn "%s = %s" (fst it.Current) (snd it.Current)
+
+// With snapshot isolation
+let snap = db.Snapshot()
+// ... concurrent writes ...
+let pastView = db.RangeScan("a", "z", snapshot = snap) |> Seq.toList
 ```
 
 ### MVCC Time-Travel

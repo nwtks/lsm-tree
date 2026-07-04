@@ -5,7 +5,7 @@ type SkipListNode(key: string, seq: int64, value: string option, level: int) =
     let next = Array.zeroCreate<SkipListNode> level
     member val Key = key
     member val Seq = seq
-    member val Value = value with get, set
+    member val Value = value
     member val Next = next
 
 [<Struct>]
@@ -99,6 +99,25 @@ module SkipList =
             let next = System.Threading.Volatile.Read(&current.Next.[0])
             collectEntries next ((current.Key, current.Seq, current.Value) :: acc)
 
+    [<TailCall>]
+    let rec collectEntriesRange (current: SkipListNode) fromKey toKey acc =
+        if isNull current then
+            acc |> List.rev
+        else
+            let comp = System.String.CompareOrdinal(current.Key, fromKey)
+
+            if comp < 0 then
+                let next = System.Threading.Volatile.Read(&current.Next.[0])
+                collectEntriesRange next fromKey toKey acc
+            else
+                let compTo = System.String.CompareOrdinal(current.Key, toKey)
+
+                if compTo > 0 then
+                    acc |> List.rev
+                else
+                    let next = System.Threading.Volatile.Read(&current.Next.[0])
+                    collectEntriesRange next fromKey toKey ((current.Key, current.Seq, current.Value) :: acc)
+
 type SkipList() =
     let head = SkipListNode("", System.Int64.MaxValue, None, SkipList.MAX_LEVEL)
     let mutable currentLevel = 1
@@ -127,3 +146,9 @@ type SkipList() =
 
     member _.Entries() =
         SkipList.collectEntries head.Next.[0] []
+
+    member _.EntriesRange(fromKey: string, toKey: string) =
+        if System.String.CompareOrdinal(fromKey, toKey) > 0 then
+            []
+        else
+            SkipList.collectEntriesRange head.Next.[0] fromKey toKey []

@@ -210,19 +210,6 @@ let ``WAL Put writes recoverable data on Close`` () =
         assertEqual expected recovered "WAL data should be recovered correctly after Close")
 
 [<Fact>]
-let ``WAL Abort writes ABORT record`` () =
-    withTestDir "wal_abort_format" (fun testDir ->
-        let path = System.IO.Path.Combine(testDir, "data.wal")
-
-        do
-            use wal = new WAL(path)
-            wal.Abort 42L
-
-        let lines = System.IO.File.ReadAllLines path
-        assertEqual 1 lines.Length "One line written"
-        Assert.StartsWith("ABORT 42", lines.[0]))
-
-[<Fact>]
 let ``WAL IO errors on underlying stream propagate to PutSingle caller`` () =
     withTestDir "wal_io_errors" (fun testDir ->
         let path = System.IO.Path.Combine(testDir, "data.wal")
@@ -243,6 +230,19 @@ let ``WAL IO errors on underlying stream propagate to PutSingle caller`` () =
 
         Assert.Throws<System.ObjectDisposedException>(fun () -> wal.PutSingle(2L, "k3", "v3", true))
         |> ignore)
+
+[<Fact>]
+let ``WAL Abort writes ABORT record`` () =
+    withTestDir "wal_abort_format" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+
+        do
+            use wal = new WAL(path)
+            wal.Abort 42L
+
+        let lines = System.IO.File.ReadAllLines path
+        assertEqual 1 lines.Length "One line written"
+        Assert.StartsWith("ABORT 42", lines.[0]))
 
 [<Fact>]
 let ``WAL Close and Dispose tolerate double invocation`` () =

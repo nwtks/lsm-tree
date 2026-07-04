@@ -166,7 +166,7 @@ module SSTable =
             else
                 binSearchIndex index key snap (mid + 1) right bestIdx
 
-    let readAllEntries (br: System.IO.BinaryReader) (offsets: int64[]) =
+    let readAllEntries (br: System.IO.BinaryReader) offsets =
         offsets
         |> Array.map (fun _ ->
             let seq = br.ReadInt64()
@@ -174,7 +174,38 @@ module SSTable =
             let value = readItem br
             key, seq, value)
 
-type SSTable(path: string) =
+    [<TailCall>]
+    let rec lowerBound (index: IndexEntry[]) key left right =
+        if left > right then
+            left
+        else
+            let mid = left + (right - left) / 2
+
+            if System.String.CompareOrdinal(key, index.[mid].Key) <= 0 then
+                lowerBound index key left (mid - 1)
+            else
+                lowerBound index key (mid + 1) right
+
+    [<TailCall>]
+    let rec upperBound (index: IndexEntry[]) key left right =
+        if left > right then
+            left
+        else
+            let mid = left + (right - left) / 2
+
+            if System.String.CompareOrdinal(key, index.[mid].Key) < 0 then
+                upperBound index key left (mid - 1)
+            else
+                upperBound index key (mid + 1) right
+
+    let readIndexedEntryAt (fs: System.IO.FileStream) (br: System.IO.BinaryReader) entry =
+        fs.Seek(entry.Offset + SEQ_BYTE_SIZE + KEY_LEN_BYTE_SIZE + int64 entry.KeyByteLen, System.IO.SeekOrigin.Begin)
+        |> ignore
+
+        let value = readItem br
+        entry.Key, entry.Seq, value
+
+type SSTable(path) =
     let fs =
         new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
 
@@ -190,7 +221,7 @@ type SSTable(path: string) =
 
     member _.MaxSeq = maxSeq
 
-    member _.Get(key: string, snapshot: int64) =
+    member _.Get(key, snapshot) =
         if index.Length > 0 && bloomFilter.MightContain key then
             match SSTable.binSearchIndex index key snapshot 0 (index.Length - 1) None with
             | Some idx ->
@@ -220,6 +251,19 @@ type SSTable(path: string) =
                 SSTable.readAllEntries br offsets
             else
                 [||])
+
+    member _.GetRange(fromKey, toKey) =
+        if index.Length = 0 then
+            [||]
+        else
+            let lo = SSTable.lowerBound index fromKey 0 (index.Length - 1)
+            let hi = SSTable.upperBound index toKey 0 (index.Length - 1)
+
+            if lo >= hi then
+                [||]
+            else
+                LockExtensions.withReadLock rwLock (fun () ->
+                    Array.init (hi - lo) (fun i -> SSTable.readIndexedEntryAt fs br index.[lo + i]))
 
     interface System.IDisposable with
         member _.Dispose() =

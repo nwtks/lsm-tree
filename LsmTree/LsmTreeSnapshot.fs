@@ -11,7 +11,7 @@ type LsmTreeSnapshot() =
     member _.NextSequence() =
         System.Threading.Interlocked.Increment(&globalSeq)
 
-    member _.AdvanceSequence(seq: int64) =
+    member _.AdvanceSequence seq =
         let mutable current = System.Threading.Interlocked.Read(&globalSeq)
 
         while current < seq do
@@ -23,10 +23,10 @@ type LsmTreeSnapshot() =
             else
                 current <- original
 
-    member _.RegisterSnapshot(snapshot: int64) =
+    member _.RegisterSnapshot snapshot =
         lock activeSnapshotsLock (fun () -> activeSnapshots <- Set.add snapshot activeSnapshots)
 
-    member _.ReleaseSnapshot(snapshot: int64) =
+    member _.ReleaseSnapshot snapshot =
         lock activeSnapshotsLock (fun () -> activeSnapshots <- Set.remove snapshot activeSnapshots)
 
     member _.GetMinActiveSnapshot() =

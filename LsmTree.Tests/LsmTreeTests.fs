@@ -364,3 +364,174 @@ let ``LsmTree Dispose handles flush coordinator errors`` () =
         let fc = flField.GetValue tree :?> FlushCoordinator
         fc.Error <- Some(exn "injected flush error")
         (tree :> System.IDisposable).Dispose())
+
+[<Fact>]
+let ``RangeScan with NewIterator and explicit Dispose`` () =
+    withTestDir "rscan_iter_dispose" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        let it = tree.NewIterator("a", "a")
+        let results = ResizeArray()
+
+        while it.MoveNext() do
+            results.Add(it.Current)
+
+        it.Dispose()
+        assertEqual [ "a", "va" ] (results |> Seq.toList) "Iterator works")
+
+[<Fact>]
+let ``RangeScan Current before MoveNext throws`` () =
+    withTestDir "rscan_current_before_move" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v")
+
+        use it = tree.NewIterator("k", "k")
+
+        Assert.Throws<System.InvalidOperationException>(fun () -> it.Current |> ignore)
+        |> ignore)
+
+[<Fact>]
+let ``RangeScan with null fromKey throws`` () =
+    withTestDir "rscan_null_from" (fun testDir ->
+        use tree = new LsmTree(testDir)
+
+        Assert.Throws<System.ArgumentNullException>(fun () -> tree.NewIterator(null, "z") |> ignore)
+        |> ignore)
+
+[<Fact>]
+let ``RangeScan with null toKey throws`` () =
+    withTestDir "rscan_null_to" (fun testDir ->
+        use tree = new LsmTree(testDir)
+
+        Assert.Throws<System.ArgumentNullException>(fun () -> tree.NewIterator("a", null) |> ignore)
+        |> ignore)
+
+[<Fact>]
+let ``RangeScan empty range when fromKey > toKey`` () =
+    withTestDir "rscan_from_gt_to" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        let result = tree.RangeScan("z", "a") |> Seq.toList
+        assertEqual [] result "fromKey>toKey returns empty")
+
+[<Fact>]
+let ``RangeScan single key exact match`` () =
+    withTestDir "rscan_single_exact" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v")
+        let result = tree.RangeScan("k", "k") |> Seq.toList
+        assertEqual [ "k", "v" ] result "Single key exact match")
+
+[<Fact>]
+let ``RangeScan multiple keys in sorted order`` () =
+    withTestDir "rscan_multi_sorted" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("c", "vc")
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        let result = tree.RangeScan("a", "c") |> Seq.toList
+        assertEqual [ "a", "va"; "b", "vb"; "c", "vc" ] result "Keys sorted")
+
+[<Fact>]
+let ``RangeScan excludes keys outside range`` () =
+    withTestDir "rscan_excludes_outside" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        tree.Put("c", "vc")
+        tree.Put("d", "vd")
+        let result = tree.RangeScan("b", "c") |> Seq.toList
+        assertEqual [ "b", "vb"; "c", "vc" ] result "Only b and c")
+
+[<Fact>]
+let ``RangeScan excludes tombstoned keys`` () =
+    withTestDir "rscan_tomb_excluded" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        tree.Delete("b")
+        tree.Put("c", "vc")
+        let result = tree.RangeScan("a", "c") |> Seq.toList
+        assertEqual [ "a", "va"; "c", "vc" ] result "Tombstoned b excluded")
+
+[<Fact>]
+let ``RangeScan after flush reads from SSTable`` () =
+    withTestDir "rscan_after_flush" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        tree.Flush()
+        let result = tree.RangeScan("a", "b") |> Seq.toList
+        assertEqual [ "a", "va"; "b", "vb" ] result "After flush")
+
+[<Fact>]
+let ``RangeScan across MemTable and SSTable`` () =
+    withTestDir "rscan_mixed_layers" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        tree.Flush()
+        tree.Put("c", "vc")
+        tree.Put("d", "vd")
+        let result = tree.RangeScan("a", "d") |> Seq.toList
+        assertEqual [ "a", "va"; "b", "vb"; "c", "vc"; "d", "vd" ] result "Mixed layers")
+
+[<Fact>]
+let ``RangeScan with snapshot sees old versions`` () =
+    withTestDir "rscan_snapshot_old" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v1")
+        let snap = tree.Snapshot()
+        tree.Put("k", "v2")
+        let result = tree.RangeScan("k", "k", snapshot = snap) |> Seq.toList
+        assertEqual [ "k", "v1" ] result "Snapshot sees old version")
+
+[<Fact>]
+let ``RangeScan latest sees newest version`` () =
+    withTestDir "rscan_latest" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v1")
+        tree.Put("k", "v2")
+        let result = tree.RangeScan("k", "k") |> Seq.toList
+        assertEqual [ "k", "v2" ] result "Latest sees newest version")
+
+[<Fact>]
+let ``RangeScan after restart`` () =
+    withTestDir "rscan_restart" (fun testDir ->
+        do
+            use tree = new LsmTree(testDir)
+            tree.Put("a", "va")
+            tree.Put("b", "vb")
+
+        do
+            use tree = new LsmTree(testDir)
+            let result = tree.RangeScan("a", "b") |> Seq.toList
+            assertEqual [ "a", "va"; "b", "vb" ] result "After restart")
+
+[<Fact>]
+let ``RangeScan empty database`` () =
+    withTestDir "rscan_empty_db" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        let result = tree.RangeScan("a", "z") |> Seq.toList
+        assertEqual [] result "Empty database")
+
+[<Fact>]
+let ``RangeScan respects snapshot isolation during concurrent writes`` () =
+    withTestDir "rscan_concurrent_write" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        let snap = tree.Snapshot()
+        tree.Put("c", "vc")
+        let result = tree.RangeScan("a", "c", snapshot = snap) |> Seq.toList
+        assertEqual [ "a", "va"; "b", "vb" ] result "Immutable snapshot sees no c")
+
+[<Fact>]
+let ``RangeScan with tombstone resurrected key shows latest value`` () =
+    withTestDir "rscan_resurrect" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v1")
+        tree.Delete("k")
+        tree.Put("k", "v2")
+        let result = tree.RangeScan("k", "k") |> Seq.toList
+        assertEqual [ "k", "v2" ] result "Resurrected key shows latest")

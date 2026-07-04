@@ -59,6 +59,29 @@
 
 ---
 
+## Range Scan: per-source materialize + in-memory merge
+
+**Choice**: `RangeIterator` materializes each source (MemTable / immutable / per-SSTable) into an array of `(key, seq, value)` tuples under appropriate locks, then performs an in-memory k-way merge in `MoveNext` (no locks held during merge).
+
+**Why**:
+- The in-memory index (`IndexEntry[]`) on each SSTable supports O(log N) lowerBound/upperBound — adding range support to `SSTable.Get` was ~30 lines of new code.
+- Materializing under lock then merging outside locks avoids complex lock-ordering issues and keeps concurrency safe.
+- By materializing only the range `[fromKey, toKey]` instead of the entire file, memory overhead is proportional to the result set, not the data size.
+
+**Trade-off**:
+- **Memory**: Range entries are materialized into arrays. For a full `["", "\uFFFF"]` scan over 1 million entries, ~32 MB across all sources (at the project's < 1 MB per SSTable scale, this is bounded).
+- **O(K) `pickMinKey` per step**: All SSTables at all levels are included as sources (L0 overlap design requires scanning all files). With `compactLevelLimits [|4;10;100;1000|]`, K ≤ ~1114. Most cursors are exhausted early, so the average case is lower, but worst-case remains O(K).
+- **O(R) seek/read per entry in range**: For each entry within range, `SSTable.GetRange` issues one `Seek`+`Read`. Under sequential access within a single SSTable, the OS readahead mitigates this.
+- **ReadLock duration on SSTables**: Per-SSTable read lock is held during `GetRange` (binary search + sequential reads). Compaction's `GetAll` (WriteLock) and `Dispose` (WriteLock) wait. For small ranges this is negligible.
+
+**Alternatives considered**:
+- **Cursor + heap k-way merge (streaming)**: Lower memory, but per-step locking complexity and cursor lifecycle management is severe.
+- **`GetAll` + in-memory sort**: O(N) memory per scan — prohibitive at scale.
+- **mmap + direct read from disk**: Reduces locking, but adds cross-platform concerns and is premature at this project's scale.
+
+
+---
+
 ## SSTable concurrent reads: `ReaderWriterLockSlim`
 
 **Choice**: `SSTable.Get` takes a read lock (`withReadLock`). `GetAll` (used by compaction) and `Dispose` take a write lock (`withWriteLock`). Multiple readers proceed concurrently; a writer blocks all readers.

@@ -41,3 +41,15 @@ When testing compaction cascading across multiple levels, set `memTableSizeLimit
 4. `CompactionCoordinator.Token` is captured with `member val` (not `member _`) so the `CancellationToken` object survives CTS disposal.
 
 If you ever change these coordinators or add a new background async operation that calls back into them, ensure the disposed-guard pattern is preserved.
+
+### RangeIterator dispose releases snapshot
+
+`RangeIterator` registers a snapshot at construction time and releases it at `Dispose()`. If you forget to call `Dispose()` (or don't use `use` in F#), the snapshot remains active in `SnapshotManager`, preventing compaction from pruning stale versions. This can cause unbounded disk growth. Always `use` iterators or call `Dispose()` explicitly.
+
+### `RangeIterator.Current` before `MoveNext` throws
+
+Accessing `IIterator.Current` before the first `MoveNext()` call (or after `MoveNext()` returns `false`) throws `InvalidOperationException`. This matches standard .NET iterator conventions. Use the `RangeScan` API (returns `seq`) to avoid manual `MoveNext` management.
+
+### Materialized array memory for large ranges
+
+`RangeIterator` materializes all entries within `[fromKey, toKey]` into in-memory arrays during construction (`NewIterator`). For very large ranges (e.g., full database scan on a dataset with millions of keys), this consumes memory proportional to the number of entries in range. Prefer bounded range scans. If full-database iteration is needed, consider batching via multiple smaller range scans.

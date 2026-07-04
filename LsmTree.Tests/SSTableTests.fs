@@ -127,31 +127,6 @@ let ``SSTable readItem roundtrips None`` () =
     assertEqual None (SSTable.readItem br) "readItem should roundtrip None"
 
 [<Fact>]
-let ``SSTable readAllEntries preserves tombstone entries`` () =
-    withTestDir "sst_getall_tomb" (fun testDataDir ->
-        let path = System.IO.Path.Combine(testDataDir, "getall_tomb.sst")
-
-        SSTableWriter.write path [ "k1", 1L, Some "v1"; "k2", 2L, None; "k3", 3L, Some "v3" ]
-        |> ignore
-
-        use fs =
-            new System.IO.FileStream(
-                path,
-                System.IO.FileMode.Open,
-                System.IO.FileAccess.Read,
-                System.IO.FileShare.Read
-            )
-
-        use br = new System.IO.BinaryReader(fs)
-        let offsets, _, _ = SSTable.load fs br
-        fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
-        let entries = SSTable.readAllEntries br offsets
-        assertEqual 3 entries.Length "Should have 3 entries"
-        assertEqual ("k1", 1L, Some "v1") entries.[0] "First entry is k1=v1"
-        assertEqual ("k2", 2L, None) entries.[1] "Second entry is k2=tombstone"
-        assertEqual ("k3", 3L, Some "v3") entries.[2] "Third entry is k3=v3")
-
-[<Fact>]
 let ``SSTable loadIndex handles tombstone and value entries`` () =
     withTestDir "sst_idx_tomb" (fun testDataDir ->
         let path = System.IO.Path.Combine(testDataDir, "idx_tomb.sst")
@@ -213,6 +188,31 @@ let ``SSTable binSearchIndex returns None for missing key`` () =
     assertEqual None result "Missing key returns None"
 
 [<Fact>]
+let ``SSTable readAllEntries preserves tombstone entries`` () =
+    withTestDir "sst_getall_tomb" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "getall_tomb.sst")
+
+        SSTableWriter.write path [ "k1", 1L, Some "v1"; "k2", 2L, None; "k3", 3L, Some "v3" ]
+        |> ignore
+
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
+
+        use br = new System.IO.BinaryReader(fs)
+        let offsets, _, _ = SSTable.load fs br
+        fs.Seek(offsets.[0], System.IO.SeekOrigin.Begin) |> ignore
+        let entries = SSTable.readAllEntries br offsets
+        assertEqual 3 entries.Length "Should have 3 entries"
+        assertEqual ("k1", 1L, Some "v1") entries.[0] "First entry is k1=v1"
+        assertEqual ("k2", 2L, None) entries.[1] "Second entry is k2=tombstone"
+        assertEqual ("k3", 3L, Some "v3") entries.[2] "Third entry is k3=v3")
+
+[<Fact>]
 let ``SSTable Get returns NotFound for empty SSTable`` () =
     withTestDir "sst_get_empty" (fun testDataDir ->
         let path = writeSst testDataDir "L0_empty.sst" []
@@ -228,6 +228,54 @@ let ``SSTable Get returns NotFound for missing key`` () =
         let result = sst.Get("missing", System.Int64.MaxValue)
         assertEqual NotFound result "Get for missing key returns NotFound"
         (sst :> System.IDisposable).Dispose())
+
+[<Fact>]
+let ``SSTable GetRange returns entries within range`` () =
+    withTestDir "sst_range_basic" (fun testDataDir ->
+        let path =
+            writeSst
+                testDataDir
+                "L0_range.sst"
+                [ "a", 1L, Some "va"
+                  "b", 2L, Some "vb"
+                  "c", 3L, Some "vc"
+                  "d", 4L, Some "vd" ]
+
+        use sst = new SSTable(path)
+        let result = sst.GetRange("b", "c")
+        assertEqual 2 result.Length "Two entries in [b,c]"
+        assertEqual ("b", 2L, Some "vb") result.[0] "First entry is b"
+        assertEqual ("c", 3L, Some "vc") result.[1] "Second entry is c")
+
+[<Fact>]
+let ``SSTable GetRange includes tombstones`` () =
+    withTestDir "sst_range_tomb" (fun testDataDir ->
+        let path =
+            writeSst testDataDir "L0_range_tomb.sst" [ "a", 1L, Some "va"; "b", 2L, None; "c", 3L, Some "vc" ]
+
+        use sst = new SSTable(path)
+        let result = sst.GetRange("b", "c")
+        assertEqual 2 result.Length "Two entries in [b,c]"
+        assertEqual ("b", 2L, None) result.[0] "Tombstone entry"
+        assertEqual ("c", 3L, Some "vc") result.[1] "Live value entry")
+
+[<Fact>]
+let ``SSTable GetRange returns empty when range outside data`` () =
+    withTestDir "sst_range_outside" (fun testDataDir ->
+        let path =
+            writeSst testDataDir "L0_outside.sst" [ "c", 1L, Some "vc"; "d", 2L, Some "vd" ]
+
+        use sst = new SSTable(path)
+        assertEqual [||] (sst.GetRange("a", "b")) "Range before data returns empty"
+        assertEqual [||] (sst.GetRange("e", "z")) "Range after data returns empty")
+
+[<Fact>]
+let ``SSTable GetRange returns empty for SSTable with no entries`` () =
+    withTestDir "sst_range_empty" (fun testDataDir ->
+        let path = writeSst testDataDir "L0_empty_range.sst" []
+        use sst = new SSTable(path)
+        let result = sst.GetRange("a", "z")
+        assertEqual [||] result "Empty SSTable GetRange returns [||]")
 
 [<Fact>]
 let ``SSTable double dispose does not throw`` () =

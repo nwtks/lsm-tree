@@ -15,6 +15,7 @@
     <Compile Include="LsmTreeLoader.fs" />
     <Compile Include="LsmTreeSearch.fs" />
     <Compile Include="LsmTreeFlush.fs" />
+    <Compile Include="LsmTreeIterator.fs" />
     <Compile Include="LsmTree.fs" />
   </ItemGroup>
 

@@ -14,7 +14,7 @@ type ILsmTree =
     abstract member RollbackTransaction: unit -> unit
     abstract member ReleaseSnapshot: snapshot: int64 -> unit
 
-type LsmTransaction(lsm: ILsmTree, snapshot: int64) =
+type LsmTransaction(lsm: ILsmTree, snapshot) =
     let mutable ops = []
     let mutable finished = false
 

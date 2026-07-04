@@ -104,3 +104,43 @@ let ``SkipList maintains sorted order by key`` () =
 let ``SkipList Entries returns empty list for empty SkipList`` () =
     let sl = SkipList()
     assertEqual [] (sl.Entries()) "Empty SkipList should return []"
+
+[<Fact>]
+let ``SkipList EntriesRange returns entries within range`` () =
+    let sl = SkipList()
+    sl.Put("a", 1L, "va")
+    sl.Put("b", 2L, "vb")
+    sl.Put("c", 3L, "vc")
+    sl.Put("d", 4L, "vd")
+    let range = sl.EntriesRange("b", "c")
+    assertEqual 2 range.Length "Two entries in [b,c]"
+    assertEqual ("b", 2L, Some "vb") range.[0] "First entry is b"
+    assertEqual ("c", 3L, Some "vc") range.[1] "Second entry is c"
+
+[<Fact>]
+let ``SkipList EntriesRange includes same-key entries with descending seq`` () =
+    let sl = SkipList()
+    sl.Put("k", 10L, "v1")
+    sl.Put("k", 20L, "v2")
+    sl.Put("k", 30L, "v3")
+    let range = sl.EntriesRange("k", "k")
+    assertEqual 3 range.Length "Three entries for key k"
+    assertEqual ("k", 30L, Some "v3") range.[0] "Highest seq first"
+    assertEqual ("k", 20L, Some "v2") range.[1] "Middle seq"
+    assertEqual ("k", 10L, Some "v1") range.[2] "Lowest seq last"
+
+[<Fact>]
+let ``SkipList EntriesRange includes tombstones in range`` () =
+    let sl = SkipList()
+    sl.Put("k", 1L, "v")
+    sl.Put("k", 2L)
+    let range = sl.EntriesRange("k", "k")
+    assertEqual 2 range.Length "Tombstone and value in range"
+    assertEqual ("k", 2L, None) range.[0] "Tombstone (seq=2, higher) first"
+    assertEqual ("k", 1L, Some "v") range.[1] "Value (seq=1) second"
+
+[<Fact>]
+let ``SkipList EntriesRange returns empty when fromKey > toKey`` () =
+    let sl = SkipList()
+    sl.Put("a", 1L, "va")
+    assertEqual [] (sl.EntriesRange("z", "a")) "fromKey>toKey should return []"

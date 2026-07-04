@@ -82,6 +82,40 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             wal.DeleteSingle(seq, key, false)
             memTable.Delete(key, seq))
 
+    let collectRangeSources fromKey toKey =
+        let memSources =
+            LockExtensions.withReadLock mainLock (fun () ->
+                let mutable acc = []
+                let m = memTable.EntriesRange(fromKey, toKey)
+
+                if m.Length > 0 then
+                    acc <- m :: acc
+
+                match immutableMemTable with
+                | Some imm ->
+                    let i = imm.EntriesRange(fromKey, toKey)
+
+                    if i.Length > 0 then
+                        acc <- i :: acc
+                | None -> ()
+
+                acc)
+
+        let sstSources =
+            lock ssTablesLock (fun () ->
+                let mutable acc = []
+
+                for level in ssTables do
+                    for sst in level do
+                        let entries = sst.GetRange(fromKey, toKey)
+
+                        if entries.Length > 0 then
+                            acc <- entries :: acc
+
+                acc)
+
+        memSources @ sstSources |> List.rev |> List.toArray
+
     let commitTransaction (ops: (string * string option) list) =
         let shouldFlush =
             LockExtensions.withReadLock mainLock (fun () ->
@@ -117,11 +151,11 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         snapshotManager.RegisterSnapshot snap
         new LsmTransaction(this :> ILsmTree, snap) :> ITransaction
 
-    member _.Put(key: string, value: string) = putDirect key value
+    member _.Put(key, value) = putDirect key value
 
-    member _.Delete(key: string) = deleteDirect key
+    member _.Delete key = deleteDirect key
 
-    member this.Get(key: string, ?snapshot: int64) =
+    member this.Get(key, ?snapshot) =
         defaultArg snapshot (this.Snapshot())
         |> LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key
 
@@ -142,8 +176,28 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
 
     member _.WaitForCompactionAsync() = compaction.AwaitCompletion()
 
-    member _.ReleaseSnapshot(snapshot: int64) =
+    member _.ReleaseSnapshot snapshot =
         snapshotManager.ReleaseSnapshot snapshot
+
+    member this.NewIterator(fromKey, toKey, ?snapshot) =
+        if isNull fromKey then
+            nullArg "fromKey"
+
+        if isNull toKey then
+            nullArg "toKey"
+
+        let snap = defaultArg snapshot (this.Snapshot())
+        let sources = collectRangeSources fromKey toKey
+        snapshotManager.RegisterSnapshot snap
+        new RangeIterator(snapshotManager, sources, snap) :> IIterator
+
+    member this.RangeScan(fromKey, toKey, ?snapshot) =
+        seq {
+            use it = this.NewIterator(fromKey, toKey, ?snapshot = snapshot)
+
+            while it.MoveNext() do
+                yield it.Current
+        }
 
     member this.Close() = (this :> System.IDisposable).Dispose()
 

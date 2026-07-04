@@ -106,6 +106,55 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 
 ---
 
+## Range Scan
+
+The engine supports range scans via `LsmTree.RangeScan(fromKey, toKey, ?snapshot)` which returns `seq<string * string>`, and `LsmTree.NewIterator(fromKey, toKey, ?snapshot)` which returns `IIterator` (manual `MoveNext`/`Current`/`Dispose`).
+
+### Algorithm: per-source materialize + in-memory merge
+
+Each range scan proceeds in three phases:
+
+1. **Source materialization**: Under appropriate locks, each storage layer (MemTable, immutable MemTable, per-SSTable) produces a `(string * int64 * string option)[]` of entries whose keys fall within `[fromKey, toKey]` (inclusive, `CompareOrdinal` ordering).
+   - **MemTable**: `SkipList.EntriesRange` traverses the `Next.[0]` chain from `head`, skipping nodes with key < `fromKey`, collecting until key > `toKey`. No lock required — the SkipList is lock-free.
+   - **SSTable**: `SSTable.GetRange` performs two binary searches on the in-memory index (`lowerBound`/`upperBound`) to find the offset range, then reads entries sequentially under a per-SSTable read lock. Each key appears at most once per SSTable.
+
+2. **Merge**: `RangeIterator` holds a `SourceCursor` array (one per source). `MoveNext` repeatedly:
+   - Picks the minimum key across all cursors via `pickMinKey` (O(K) where K = source count).
+   - Drains all entries with that key from all cursors.
+   - Among collected entries, selects the one with the highest `seq <= snapshot`.
+   - If that entry is a live value (`Some v`), emits `(key, v)`; if tombstone or all seqs exceed snapshot, skips the key.
+
+3. **Dispose**: Releases the registered snapshot so compaction can resume pruning.
+
+### Lock strategy
+
+| Phase | Lock held | Duration |
+|---|---|---|
+| Materialize MemTable sources | `mainLock` (ReadLock) | Reference capture + SkipList traversal |
+| Materialize SSTable sources | `ssTablesLock` + per-SSTable `rwLock` (ReadLock) | Binary search + sequential iteration |
+| Merge (`MoveNext`) | **None** | All data is in materialized arrays |
+| Iterator construction | `snapshotManager.RegisterSnapshot` | Instant |
+| Iterator dispose | `snapshotManager.ReleaseSnapshot` | Instant |
+
+### Complexity
+
+| Operation | Cost |
+|---|---|
+| `NewIterator` construction | O(K) + O(snapshot register) |
+| `SSTable.GetRange` | O(log N + R_sst) per file |
+| `SkipList.EntriesRange` | O(log N + R_mem) |
+| `MoveNext` (amortized) | O(K + M log M) |
+| Full range scan | O(Σ log N_i + R_total × (K + M log M)) |
+
+K = total source count (MemTable + immutable + all SSTables), N = entries per source,
+R = entries within range per source, M = versions per key (usually 1-2).
+
+### Known trade-offs
+
+See [trade-off.md](trade-off.md) for the design rationale.
+
+---
+
 ## MVCC & Snapshot Isolation
 
 - Each write operation is assigned a globally incrementing sequence number (`globalSeq`).
