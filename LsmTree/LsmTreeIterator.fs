@@ -36,7 +36,7 @@ module RangeIteratorModule =
 
             pickMinKey cursors (idx + 1) nextIdx
 
-    let drainKey (cursors: SourceCursor seq) key snapshot =
+    let collectVersions key (cursors: SourceCursor seq) =
         let mutable versions = []
 
         for c in cursors do
@@ -45,6 +45,9 @@ module RangeIteratorModule =
                 versions <- (seq, value) :: versions
                 c.Pos <- c.Pos + 1
 
+        versions
+
+    let findLatestVersion snapshot versions =
         let mutable bestSeq = -1L
         let mutable bestValue: string option = None
 
@@ -54,6 +57,9 @@ module RangeIteratorModule =
                 bestValue <- value
 
         bestValue
+
+    let drainKey (cursors: SourceCursor seq) key snapshot =
+        cursors |> collectVersions key |> findLatestVersion snapshot
 
     [<TailCall>]
     let rec moveNext cursors snapshot =

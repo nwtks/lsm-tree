@@ -101,6 +101,29 @@ module SSTable =
     let readItem (br: System.IO.BinaryReader) =
         if br.ReadBoolean() then None else readValue br |> Some
 
+    let readIndexEntry buf (pos: byref<int>) =
+        let seq =
+            System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(System.Span<byte>(buf, pos, 8))
+
+        pos <- pos + 8
+
+        let offset =
+            System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(System.Span<byte>(buf, pos, 8))
+
+        pos <- pos + 8
+
+        let keyByteLen =
+            System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(System.Span<byte>(buf, pos, 4))
+
+        pos <- pos + 4
+        let key = System.Text.Encoding.UTF8.GetString(buf, pos, keyByteLen)
+        pos <- pos + keyByteLen
+
+        { Key = key
+          Seq = seq
+          Offset = offset
+          KeyByteLen = keyByteLen }
+
     let loadIndex (fs: System.IO.FileStream) fileLen indexOffset bloomOffset footerSize =
         validateIndexOffset fileLen indexOffset footerSize
         let regionSize = int (bloomOffset - indexOffset)
@@ -122,28 +145,7 @@ module SSTable =
                 System.IO.InvalidDataException $"SSTable index entry count is negative: {count}"
                 |> raise
 
-            Array.init count (fun _ ->
-                let seq =
-                    System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(System.Span<byte>(buf, pos, 8))
-
-                pos <- pos + 8
-
-                let offset =
-                    System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(System.Span<byte>(buf, pos, 8))
-
-                pos <- pos + 8
-
-                let keyByteLen =
-                    System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(System.Span<byte>(buf, pos, 4))
-
-                pos <- pos + 4
-                let key = System.Text.Encoding.UTF8.GetString(buf, pos, keyByteLen)
-                pos <- pos + keyByteLen
-
-                { Key = key
-                  Seq = seq
-                  Offset = offset
-                  KeyByteLen = keyByteLen })
+            Array.init count (fun _ -> readIndexEntry buf &pos)
 
     let load (fs: System.IO.FileStream) (br: System.IO.BinaryReader) =
         let fileLen = fs.Length
@@ -306,6 +308,43 @@ module SSTableWriter =
             bw.Write false
             writeValue bw v
 
+    let writeEntry
+        (bw: System.IO.BinaryWriter)
+        (fs: System.IO.FileStream)
+        (bf: BloomFilter)
+        (indexData: ResizeArray<int64 * int64 * int32 * byte[]>)
+        maxSeq
+        key
+        (seq: int64)
+        (value: string option)
+        =
+        bf.Add key
+        let entryOffset = fs.Position
+        let keyBytes = System.Text.Encoding.UTF8.GetBytes key
+        bw.Write seq
+        bw.Write keyBytes.Length
+        bw.Write keyBytes
+
+        match value with
+        | None -> bw.Write true
+        | Some v ->
+            bw.Write false
+            let valBytes = System.Text.Encoding.UTF8.GetBytes v
+            bw.Write valBytes.Length
+            bw.Write valBytes
+
+        indexData.Add(seq, entryOffset, keyBytes.Length, keyBytes)
+        if seq > maxSeq then seq else maxSeq
+
+    let writeIndexData (bw: System.IO.BinaryWriter) (indexData: ResizeArray<int64 * int64 * int32 * byte[]>) =
+        bw.Write indexData.Count
+
+        for seq, offset, keyByteLen, keyBytes in indexData do
+            bw.Write seq
+            bw.Write offset
+            bw.Write keyByteLen
+            bw.Write keyBytes
+
     let writeSSTableContent
         (bw: System.IO.BinaryWriter)
         (fs: System.IO.FileStream)
@@ -318,35 +357,10 @@ module SSTableWriter =
 
         for key, seq, value in entries do
             ct.ThrowIfCancellationRequested()
-            bf.Add key
-            let entryOffset = fs.Position
-            let keyBytes = System.Text.Encoding.UTF8.GetBytes key
-            bw.Write seq
-            bw.Write keyBytes.Length
-            bw.Write keyBytes
-
-            match value with
-            | None -> bw.Write true
-            | Some v ->
-                bw.Write false
-                let valBytes = System.Text.Encoding.UTF8.GetBytes v
-                bw.Write valBytes.Length
-                bw.Write valBytes
-
-            if seq > maxSeq then
-                maxSeq <- seq
-
-            indexData.Add(seq, entryOffset, keyBytes.Length, keyBytes)
+            maxSeq <- writeEntry bw fs bf indexData maxSeq key seq value
 
         let indexOffset = fs.Position
-        bw.Write indexData.Count
-
-        for seq, offset, keyByteLen, keyBytes in indexData do
-            bw.Write seq
-            bw.Write offset
-            bw.Write keyByteLen
-            bw.Write keyBytes
-
+        writeIndexData bw indexData
         let bloomOffset = fs.Position
         writeBytes bw bf.Bytes
         bw.Write indexOffset
