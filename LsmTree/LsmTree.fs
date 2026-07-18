@@ -82,39 +82,52 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             wal.DeleteSingle(seq, key, false)
             memTable.Delete(key, seq))
 
+    let collectMemSources fromKey toKey =
+        let mutable acc = []
+        let m = memTable.EntriesRange(fromKey, toKey)
+
+        if m.Length > 0 then
+            acc <- m :: acc
+
+        match immutableMemTable with
+        | Some imm ->
+            let i = imm.EntriesRange(fromKey, toKey)
+
+            if i.Length > 0 then
+                acc <- i :: acc
+        | None -> ()
+
+        acc
+
+    let collectSstSources fromKey toKey =
+        let mutable acc = []
+
+        for level in ssTables do
+            for sst in level do
+                let entries = sst.GetRange(fromKey, toKey)
+
+                if entries.Length > 0 then
+                    acc <- entries :: acc
+
+        acc
+
     let collectRangeSources fromKey toKey =
         let memSources =
-            LockExtensions.withReadLock mainLock (fun () ->
-                let mutable acc = []
-                let m = memTable.EntriesRange(fromKey, toKey)
+            LockExtensions.withReadLock mainLock (fun () -> collectMemSources fromKey toKey)
 
-                if m.Length > 0 then
-                    acc <- m :: acc
-
-                match immutableMemTable with
-                | Some imm ->
-                    let i = imm.EntriesRange(fromKey, toKey)
-
-                    if i.Length > 0 then
-                        acc <- i :: acc
-                | None -> ()
-
-                acc)
-
-        let sstSources =
-            lock ssTablesLock (fun () ->
-                let mutable acc = []
-
-                for level in ssTables do
-                    for sst in level do
-                        let entries = sst.GetRange(fromKey, toKey)
-
-                        if entries.Length > 0 then
-                            acc <- entries :: acc
-
-                acc)
-
+        let sstSources = lock ssTablesLock (fun () -> collectSstSources fromKey toKey)
         memSources @ sstSources |> List.rev |> List.toArray
+
+    let applyTransactionOps commitSeq ops =
+        ops
+        |> List.iter (fun (k, vOpt) ->
+            match vOpt with
+            | Some v ->
+                wal.Put(commitSeq, k, v)
+                memTable.Put(k, commitSeq, v)
+            | None ->
+                wal.Delete(commitSeq, k)
+                memTable.Delete(k, commitSeq))
 
     let commitTransaction (ops: (string * string option) list) =
         let shouldFlush =
@@ -122,17 +135,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
                 if not ops.IsEmpty then
                     let commitSeq = snapshotManager.NextSequence()
                     wal.Begin commitSeq
-
-                    ops
-                    |> List.iter (fun (k, vOpt) ->
-                        match vOpt with
-                        | Some v ->
-                            wal.Put(commitSeq, k, v)
-                            memTable.Put(k, commitSeq, v)
-                        | None ->
-                            wal.Delete(commitSeq, k)
-                            memTable.Delete(k, commitSeq))
-
+                    applyTransactionOps commitSeq ops
                     wal.Commit(commitSeq, sync = true)
 
                 memTable.SizeBytes >= memTableLimit)
