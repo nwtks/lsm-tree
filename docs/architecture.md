@@ -161,8 +161,8 @@ Each range scan proceeds in three phases:
 | `NewIterator` construction | O(K) + O(snapshot register) |
 | `SSTable.GetRange` | O(log N + R_sst) per file |
 | `SkipList.EntriesRange` | O(log N + R_mem) |
-| `MoveNext` (amortized) | O(K + M log M) |
-| Full range scan | O(Σ log N_i + R_total × (K + M log M)) |
+| `MoveNext` (amortized) | O(K + M) |
+| Full range scan | O(Σ log N_i + R_total × (K + M)) |
 
 K = total source count (MemTable + immutable + all SSTables), N = entries per source,
 R = entries within range per source, M = versions per key (usually 1-2).
@@ -192,7 +192,7 @@ The internal lookup chain uses `SearchResult` — a `[<Struct>]` discriminated u
 | `Tombstone` | Key was deleted (stops further search) |
 | `NotFound` | Key not found at this storage level |
 
-- `SkipList.Find` returns `SearchResult`. It inspects `current.Value` (`string option`): `Some v → Found v`, `None → Tombstone`, `null → NotFound`.
+- `SkipList.Find` returns `SearchResult`. If the target node is not found (`isNull`), it returns `NotFound`. Otherwise it inspects `current.Value` (`string option`): `Some v → Found v`, `None → Tombstone`.
 - `MemTable.Get` passes through the `SearchResult` from `data.Find`.
 - `SSTable.Get` returns `SearchResult`: `SSTable.readItem br` returns `string option`; `None → Tombstone`, `Some v → Found v`. If the bloom filter rejects or binary search misses, it returns `NotFound`.
 - `LsmTreeSearch.searchInTable` (internal helper) recurses on `NotFound` and short-circuits on `Found`/`Tombstone` within a single level's SSTable list.
