@@ -265,6 +265,27 @@ let ``LsmTree FlushAsync completes successfully`` () =
         assertEqual (Some "v") (tree.Get "k") "Data accessible after FlushAsync")
 
 [<Fact>]
+let ``LsmTree FlushAsync propagates flush coordinator errors`` () =
+    withTestDir "flush_async_err" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v")
+        tree.Flush()
+
+        let flField =
+            typeof<LsmTree>
+                .GetField(
+                    "flushCoordinator",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let fc = flField.GetValue tree :?> FlushCoordinator
+        fc.Error <- Some(exn "injected flush async error")
+
+        Assert.Throws<System.AggregateException>(fun () -> tree.FlushAsync() |> Async.RunSynchronously)
+        |> ignore)
+
+[<Fact>]
 let ``LsmTree compaction and restart preserves data`` () =
     withTestDir "compact_restart" (fun testDir ->
         do
@@ -376,6 +397,31 @@ let ``LsmTree WaitForCompactionAsync completes successfully`` () =
 
         for i = 1 to 5 do
             assertEqual (Some $"v{i}") (tree.Get $"k{i}") $"Key k{i} preserved after WaitForCompactionAsync")
+
+[<Fact>]
+let ``LsmTree WaitForCompactionAsync propagates compaction coordinator errors`` () =
+    withTestDir "wait_compact_async_err" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+
+        for i = 1 to 3 do
+            tree.Put($"k{i}", $"v{i}")
+            tree.Flush()
+
+        tree.WaitForCompactionAsync() |> Async.RunSynchronously
+
+        let compField =
+            typeof<LsmTree>
+                .GetField(
+                    "compaction",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let cc = compField.GetValue tree :?> CompactionCoordinator
+        cc.Error <- Some(exn "injected compaction async error")
+
+        Assert.Throws<System.AggregateException>(fun () -> tree.WaitForCompactionAsync() |> Async.RunSynchronously)
+        |> ignore)
 
 [<Fact>]
 let ``LsmTree compaction cancellation during Dispose`` () =

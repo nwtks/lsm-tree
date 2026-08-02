@@ -62,6 +62,10 @@ Reducing the **length** of `compactLevelLimits` (e.g., `[|4;10;100;1000;2000|]` 
 
 Accessing `IIterator.Current` before the first `MoveNext()` call (or after `MoveNext()` returns `false`) throws `InvalidOperationException`. This matches standard .NET iterator conventions. Use the `RangeScan` API (returns `seq`) to avoid manual `MoveNext` management.
 
+### Async APIs now propagate coordinator errors
+
+`FlushAsync()` and `WaitForCompactionAsync()` call `LockExtensions.checkCoordinatorError` inside the `async { }` workflow after awaiting completion, so a background flush/compaction failure raises `AggregateException` instead of being silently swallowed. Callers must `try...with` around `do! db.FlushAsync()`. The error is cleared on read (one-shot): only the first waiter sees it, so a failing background operation can be observed by at most one async caller (plus the sync APIs share the same one-shot error slot). This matches the synchronous `Flush()`/`WaitForCompaction()` behavior — see [trade-off.md](trade-off.md).
+
 ### Materialized array memory for large ranges
 
 `RangeIterator` materializes all entries within `[fromKey, toKey]` into in-memory arrays during construction (`NewIterator`). For very large ranges (e.g., full database scan on a dataset with millions of keys), this consumes memory proportional to the number of entries in range. Prefer bounded range scans. If full-database iteration is needed, consider batching via multiple smaller range scans.

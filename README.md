@@ -17,7 +17,7 @@ Ensures crash safety and immediate durability. All `Put` and `Delete` operations
 In-memory mutations are buffered within a custom mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
 - **Lock-Free Concurrency**: CAS-based node insertion enables concurrent `Put` operations without blocking.
 - **Automatic flush**: When the MemTable exceeds `memTableSizeLimit`, it is atomically swapped to an immutable MemTable and **asynchronously** flushed to an SSTable. Flushes are sequentialized (at most one in-flight at a time).
-- **Flush APIs**: `Flush()` (synchronous, waits for completion) and `FlushAsync()` (returns `Async<unit>`).
+- **Flush APIs**: `Flush()` (synchronous, waits for completion) and `FlushAsync()` (returns `Async<unit>`). Both propagate flush failures as `AggregateException`.
 
 ### SSTable (Sorted String Table)
 Immutable on-disk files produced when the MemTable is flushed:
@@ -37,7 +37,7 @@ In-memory k-way merge across all storage layers (MemTable, immutable MemTable, a
 - **Snapshot-aware pruning**: Versions visible to **registered** snapshots (`SnapshotHandle`, transactions, iterators) are preserved; stale versions are purged.
 - **Tombstone elimination**: Deletion markers are completely removed from the final storage level.
 - **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels.
-- **Compaction APIs**: `WaitForCompaction()` (synchronous, waits for completion) and `WaitForCompactionAsync()` (returns `Async<unit>`).
+- **Compaction APIs**: `WaitForCompaction()` (synchronous, waits for completion) and `WaitForCompactionAsync()` (returns `Async<unit>`). Both propagate compaction failures as `AggregateException`.
 
 ### Direct Put/Delete (Fast Path)
 Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` with `sync=false` (no `fsync` for performance) and applied to the MemTable in one atomic step.

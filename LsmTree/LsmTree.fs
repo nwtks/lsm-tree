@@ -174,13 +174,18 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         async {
             flushMemTable ()
             do! flushCoordinator.AwaitCompletion()
+            LockExtensions.checkCoordinatorError flushCoordinator ssTablesLock "Flush failed"
         }
 
     member _.WaitForCompaction() =
         compaction.WaitForCompletion()
         LockExtensions.checkCoordinatorError compaction ssTablesLock "Compaction failed"
 
-    member _.WaitForCompactionAsync() = compaction.AwaitCompletion()
+    member _.WaitForCompactionAsync() =
+        async {
+            do! compaction.AwaitCompletion()
+            LockExtensions.checkCoordinatorError compaction ssTablesLock "Compaction failed"
+        }
 
     member _.ReleaseSnapshot snapshot =
         snapshotManager.ReleaseSnapshot snapshot

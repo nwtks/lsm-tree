@@ -192,6 +192,25 @@
 
 ---
 
+## Async APIs propagate coordinator errors (Option 1)
+
+**Choice**: `FlushAsync()` and `WaitForCompactionAsync()` now call `LockExtensions.checkCoordinatorError` **inside** the `async { }` workflow after awaiting completion — matching the synchronous `Flush()`/`WaitForCompaction()` semantics (`AggregateException` thrown once, error then cleared).
+
+**Why**: Previously the async variants only awaited the coordinator's `ManualResetEvent` and never inspected `coord.Error` — a flush/compaction failure was silently swallowed (only surfacing later via an unrelated synchronous call or as a `[WARN]` log during `Dispose`). Since `asyncFlushToSSTable`/`triggerCompaction` always set `coord.Error` **before** signaling completion, awaiting-then-checking is race-free.
+
+**Trade-off**:
+- **Caller must handle exceptions**: `do! db.FlushAsync()` inside `try...with` to observe failures — inherent to the exception style (same as the sync APIs).
+- **Single-consumer error**: `checkCoordinatorError` clears the error, so only the first waiter observes it. Flushes are sequentialized and compaction runs at most one at a time, so multiple simultaneous waiters are rare.
+- **Sync critical section inside async**: `checkCoordinatorError` takes a short lock on the async thread — negligible, but it is a blocking section in an otherwise async flow.
+
+**Alternatives considered**:
+- **Option 2: `Async<Result<unit, exn>>`**: explicit errors, but a breaking change and inconsistent with the sync APIs' exception style.
+- **Option 3: error event/callback**: non-breaking, but easy to forget to subscribe (silent again) and adds threading bookkeeping.
+- **Option 4: `AwaitCompletion()` returns `Async<exn option>`**: explicit, but requires manual matching and a new design for who clears the error.
+- **Option 5: documentation only**: no protection for async-only callers.
+
+---
+
 ## Snapshot handle API (Option 1): registered `SnapshotHandle` for compaction-safe reads
 
 **Choice**: `LsmTree.Snapshot()` now returns a **registered** `SnapshotHandle` (`IDisposable`) instead of a raw `int64`. `AcquireSnapshot()` on `LsmTreeSnapshot` registers the current sequence in a refcounted `Map<int64, int>` (reassigned under a lock — an immutable structure keeps the register/release logic side-effect free); `SnapshotHandle.Dispose()` decrements/removes it. `Get(key, snapshot: SnapshotHandle)` (plus `NewIterator`/`RangeScan` with `snapshot = handle`) reads through the registered sequence. A best-effort `Get(key, ?snapshot: int64)` overload is retained for backward compatibility. `NewIterator` now registers its snapshot **before** collecting range sources (previously after — an ordering hole).
