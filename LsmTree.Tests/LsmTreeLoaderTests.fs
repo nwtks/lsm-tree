@@ -37,6 +37,42 @@ let ``LsmTreeLoader parseSstLevel handles path with directory prefix`` () =
     assertEqual 2 (LsmTreeLoader.parseSstLevel "/some/dir/L2_data.sst") "Full path with L2 -> 2"
 
 [<Fact>]
+let ``LsmTreeLoader loadSSTableFiles loads tables at configured levels`` () =
+    withTestDir "load_sst_in_range" (fun testDir ->
+        let p0 = System.IO.Path.Combine(testDir, "L0_a.sst")
+        let p1 = System.IO.Path.Combine(testDir, "L1_a.sst")
+        SSTableWriter.write p0 [ "k0", 5L, Some "v0" ] |> ignore
+        SSTableWriter.write p1 [ "k1", 10L, Some "v1" ] |> ignore
+
+        let ssTables = Array.init 2 (fun _ -> list<SSTable>.Empty)
+        let maxSeq = LsmTreeLoader.loadSSTableFiles testDir ssTables
+
+        assertEqual 10L maxSeq "maxSeq is the highest across loaded tables"
+        assertEqual 1 ssTables.[0].Length "one table loaded at L0"
+        assertEqual 1 ssTables.[1].Length "one table loaded at L1")
+
+[<Theory>]
+[<InlineData("L2_orphan.sst", 2, 2)>]
+[<InlineData("L100_orphan.sst", 3, 100)>]
+let ``LsmTreeLoader loadSSTableFiles throws when a table exceeds the configured level count``
+    (fileName: string)
+    (levelCount: int)
+    (fileLevel: int)
+    =
+    withTestDir "load_sst_out_of_range" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, fileName)
+        SSTableWriter.write path [ "k", 1L, Some "v" ] |> ignore
+
+        let ssTables = Array.init levelCount (fun _ -> list<SSTable>.Empty)
+
+        let ex =
+            Assert.Throws<System.IO.InvalidDataException>(fun () ->
+                LsmTreeLoader.loadSSTableFiles testDir ssTables |> ignore)
+
+        Assert.True(ex.Message.Contains fileName, "message names the offending file")
+        Assert.True(ex.Message.Contains(string fileLevel), "message states the required compactLevelLimits length"))
+
+[<Fact>]
 let ``LsmTreeLoader compareSSTables orders by MaxSeq descending then by path name`` () =
     withTestDir "cmp_sst" (fun testDir ->
         let p1 = System.IO.Path.Combine(testDir, "L0_a.sst")

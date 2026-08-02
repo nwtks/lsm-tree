@@ -37,12 +37,20 @@ module LsmTreeLoader =
         |> Array.iter (fun path ->
             let level = parseSstLevel path
 
-            if level < ssTables.Length then
-                let sst = new SSTable(path)
-                ssTables.[level] <- sst :: ssTables.[level]
+            if level >= ssTables.Length then
+                raise (
+                    System.IO.InvalidDataException(
+                        $"SSTable '{path}' is at level {level}, but the database is configured with only {ssTables.Length} levels "
+                        + $"(compactLevelLimits has length {ssTables.Length - 1}). Refusing to start: loading it would silently drop its data. "
+                        + $"Set compactLevelLimits to a length of at least {level}, or remove the file."
+                    )
+                )
 
-                if sst.MaxSeq > maxSeq then
-                    maxSeq <- sst.MaxSeq)
+            let sst = new SSTable(path)
+            ssTables.[level] <- sst :: ssTables.[level]
+
+            if sst.MaxSeq > maxSeq then
+                maxSeq <- sst.MaxSeq)
 
         maxSeq
 

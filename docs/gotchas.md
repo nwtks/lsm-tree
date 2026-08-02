@@ -54,6 +54,10 @@ If you ever change these coordinators or add a new background async operation th
 
 `Get(key, ?snapshot: int64)` (and `handle.Seq` passed directly) do **not** register the sequence. Compaction can prune the version between the snapshot read and the lookup, returning `None` for a version that existed moments earlier. This is the exact race Option 1 (snapshot handle API) was designed to fix — prefer `SnapshotHandle` in new code. The `int64` overload exists only for backward compatibility.
 
+### Shrinking `compactLevelLimits` refuses to start (fail-fast)
+
+Reducing the **length** of `compactLevelLimits` (e.g., `[|4;10;100;1000;2000|]` → `[|4;10;100|]`) leaves existing SSTables at levels beyond the new configuration. The loader previously **silently skipped** them: data was lost (the file's WAL was already deleted after flush), `currentSeq` regressed (a later restart with the original config could resurrect pruned old data over newer writes), and orphaned files leaked on disk. Now `LsmTreeLoader.loadSSTableFiles` throws `InvalidDataException` naming the file and the minimum required `compactLevelLimits` length. To intentionally shrink levels, remove (or move out) the orphaned files first, then restart with the new config.
+
 ### `RangeIterator.Current` before `MoveNext` throws
 
 Accessing `IIterator.Current` before the first `MoveNext()` call (or after `MoveNext()` returns `false`) throws `InvalidOperationException`. This matches standard .NET iterator conventions. Use the `RangeScan` API (returns `seq`) to avoid manual `MoveNext` management.

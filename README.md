@@ -33,7 +33,7 @@ In-memory k-way merge across all storage layers (MemTable, immutable MemTable, a
 - **Two APIs**: `RangeScan` returns `seq<string * string>` (auto-disposing); `NewIterator` returns `IIterator` (manual lifetime).
 
 ### Background Multi-Level Compaction & Automatic Pruning
-- **Configurable level limits**: e.g., `[| 4; 10; 100; 1000 |]` means L0 over 4 files triggers compaction to L1, L1 over 10 triggers compaction to L2, etc.
+- **Configurable level limits**: e.g., `[| 4; 10; 100; 1000 |]` means L0 over 4 files triggers compaction to L1, L1 over 10 triggers compaction to L2, etc. Reducing the **length** of this array for an existing database makes startup **fail fast** (`InvalidDataException`) if on-disk SSTables exceed the new level count — remove the orphaned files first if you intend to shrink.
 - **Snapshot-aware pruning**: Versions visible to **registered** snapshots (`SnapshotHandle`, transactions, iterators) are preserved; stale versions are purged.
 - **Tombstone elimination**: Deletion markers are completely removed from the final storage level.
 - **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels.

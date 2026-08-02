@@ -209,3 +209,22 @@
 - **Option 3: version retention markers (write `RETAIN <seq>` markers)**: compaction leaves a marker table instead of pruning; GC runs later. Keeps `int64` API but adds a second pass and more disk churn.
 - **Option 4: epoch-based reclamation**: reads join an epoch; compaction defers pruning until the epoch drains. No API change, but adds per-read epoch bookkeeping and can stall pruning under long-lived readers.
 - **Option 5: copy-on-write / refcounted SSTables**: table-level refcounts instead of sequence-level. More memory per table and more complex lifecycle management.
+
+---
+
+## Shrinking `compactLevelLimits`: fail-fast on startup (Option 1)
+
+**Choice**: `LsmTreeLoader.loadSSTableFiles` throws `System.IO.InvalidDataException` if any `*.sst` file's level is `>=` the configured level count (`compactLevelLimits.Length + 1`). The message names the offending file and the minimum required `compactLevelLimits` length.
+
+**Why**: The previous behavior silently skipped out-of-range files. Consequences: (1) **data loss** — the file's WAL was already deleted after flush, so contents are unrecoverable; (2) **`currentSeq` regression** — skipped files' `MaxSeq` is not absorbed, so a later restart with the original config can resurrect pruned old data over newer writes (last-writer-wins breaks); (3) **orphaned files accumulate** and can unexpectedly reappear if the config is later expanded. Refusing to start surfaces the misconfiguration immediately instead of corrupting data.
+
+**Trade-off**:
+- **Breaking change**: existing databases opened with a smaller config now fail to start instead of silently degrading. Recovery requires restoring the original (or longer) `compactLevelLimits` or manually removing the orphaned files.
+- **No auto-recovery**: the engine stops and leaves the decision to the operator; there is no in-place migration.
+- **Level-count-only validation**: files below the count but written under different limit *values* (e.g., different deepest-level pruning semantics) are not detected — validation is based on file names only.
+
+**Alternatives considered**:
+- **Option 2: auto-migration (rename orphaned files into the new deepest level)**: transparent startup, but silently absorbs config mistakes and changes tombstone-pruning semantics (old middle-level files become deepest level).
+- **Option 3: persisted manifest**: records `compactLevelLimits` at open time and validates on restart. Detects intent changes, but adds a new on-disk artifact, a fallback path for old databases, and new corruption modes.
+- **Option 4: warn + absorb `MaxSeq` only**: keeps startup working but still drops data — only fixes the sequence regression, not the loss.
+- **Option 5: documentation only**: no protection.
