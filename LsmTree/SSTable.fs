@@ -139,9 +139,9 @@ module SSTable =
 
             let bloom = loadBloomFilter fs br fileLen indexOffset bloomOffset FOOTER_SIZE
             let index = loadIndex fs fileLen indexOffset bloomOffset FOOTER_SIZE
-            bloom, maxSeq, index
+            bloom, maxSeq, indexOffset, index
         else
-            BloomFilter([||], 0), 0L, [||]
+            BloomFilter([||], 0), 0L, 0L, [||]
 
     [<TailCall>]
     let rec binSearchIndex (index: IndexEntry[]) key snap left right bestIdx =
@@ -169,6 +169,12 @@ module SSTable =
             let value = readItem br
             key, seq, value)
 
+    let readDataRegion (fs: System.IO.FileStream) fromOffset length =
+        let buf = Array.zeroCreate<byte> length
+        fs.Seek(fromOffset, System.IO.SeekOrigin.Begin) |> ignore
+        fs.ReadExactly(buf, 0, length)
+        buf
+
     [<TailCall>]
     let rec lowerBound (index: IndexEntry[]) key left right =
         if left > right then
@@ -193,12 +199,19 @@ module SSTable =
             else
                 upperBound index key (mid + 1) right
 
-    let readIndexedEntryAt (fs: System.IO.FileStream) (br: System.IO.BinaryReader) entry =
-        fs.Seek(entry.Offset + SEQ_BYTE_SIZE + KEY_LEN_BYTE_SIZE + int64 entry.KeyByteLen, System.IO.SeekOrigin.Begin)
+    let readRangeEntries (fs: System.IO.FileStream) (br: System.IO.BinaryReader) (index: IndexEntry[]) lo hi =
+        let first = index.[lo]
+
+        fs.Seek(first.Offset + SEQ_BYTE_SIZE + KEY_LEN_BYTE_SIZE + int64 first.KeyByteLen, System.IO.SeekOrigin.Begin)
         |> ignore
 
-        let value = readItem br
-        entry.Key, entry.Seq, value
+        Array.init (hi - lo) (fun i ->
+            if i > 0 then
+                br.ReadBytes(int SEQ_BYTE_SIZE + int KEY_LEN_BYTE_SIZE + index.[lo + i].KeyByteLen)
+                |> ignore
+
+            let entry = index.[lo + i]
+            entry.Key, entry.Seq, readItem br)
 
 type RangeReadResult =
     | RangeOk of entries: (string * int64 * string option)[]
@@ -209,7 +222,7 @@ type SSTable(path) =
         new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
 
     let br = new System.IO.BinaryReader(fs)
-    let bloomFilter, maxSeq, index = SSTable.load fs br
+    let bloomFilter, maxSeq, indexOffset, index = SSTable.load fs br
     let rwLock = new System.Threading.ReaderWriterLockSlim()
     let mutable disposed = false
 
@@ -248,8 +261,11 @@ type SSTable(path) =
     member _.GetAll() =
         LockExtensions.withWriteLock rwLock (fun () ->
             if index.Length > 0 then
-                fs.Seek(index.[0].Offset, System.IO.SeekOrigin.Begin) |> ignore
-                SSTable.readAllEntries br index.Length
+                let dataLen = int (indexOffset - index.[0].Offset)
+                let buf = SSTable.readDataRegion fs index.[0].Offset dataLen
+                use ms = new System.IO.MemoryStream(buf)
+                use br2 = new System.IO.BinaryReader(ms)
+                SSTable.readAllEntries br2 index.Length
             else
                 [||])
 
@@ -264,8 +280,7 @@ type SSTable(path) =
                 RangeOk [||]
             else
                 try
-                    LockExtensions.withReadLock rwLock (fun () ->
-                        Array.init (hi - lo) (fun i -> SSTable.readIndexedEntryAt fs br index.[lo + i]))
+                    LockExtensions.withReadLock rwLock (fun () -> SSTable.readRangeEntries fs br index lo hi)
                     |> RangeOk
                 with :? System.ObjectDisposedException ->
                     RangeDisposed

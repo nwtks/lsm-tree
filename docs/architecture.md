@@ -60,7 +60,7 @@ The `offset` field points to the start of the corresponding entry in the data re
 2. **Bloom filter** — one `Seek` + `ReadInt32` + `ReadBytes(byteCount)`.
 3. **Index region** — one `Seek` + single `ReadExactly` of the entire region (`bloomOffset - indexOffset` bytes), parsed in memory with `BinaryPrimitives.ReadInt*LittleEndian`. No access to the data region is required.
 
-The data region is only touched on demand: `Get` does one `Seek`+`Read` per hit (after in-memory binary search on the index), `GetRange` reads entries sequentially, and `GetAll` (used by compaction) reads the entire data region sequentially from `index.[0].Offset`.
+The data region is only touched on demand: `Get` does one `Seek`+`Read` per hit (after in-memory binary search on the index), `GetRange` does one `Seek` to the first value offset then reads values sequentially (each entry's `seq`+`keyLen`+`key` header skipped with buffered reads — no per-entry `Seek`), and `GetAll` (used by compaction) reads the entire data region in a single `ReadExactly` and parses it in memory (the same region-batch pattern as `loadIndex`).
 
 **File naming convention:**
 

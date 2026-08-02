@@ -55,7 +55,7 @@ let ``SSTable load returns empty for short file`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let _, maxSeq, index = SSTable.load fs br
+        let _, maxSeq, _, index = SSTable.load fs br
         assertEqual [||] index "Short file should have empty index"
         assertEqual 0L maxSeq "Short file should have maxSeq 0")
 
@@ -73,7 +73,7 @@ let ``SSTable load and loadIndex handle empty SSTable`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let _, maxSeq, index = SSTable.load fs br
+        let _, maxSeq, _, index = SSTable.load fs br
         assertEqual [||] index "Empty SSTable should have empty index"
         assertEqual 0L maxSeq "Empty SSTable maxSeq = 0")
 
@@ -122,7 +122,7 @@ let ``SSTable loadIndex handles tombstone and value entries`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let _, _, index = SSTable.load fs br
+        let _, _, _, index = SSTable.load fs br
         assertEqual 2 index.Length "Should have 2 index entries"
         assertEqual "gone" index.[0].Key "First entry key"
         assertEqual 2L index.[0].Seq "First entry seq"
@@ -184,7 +184,7 @@ let ``SSTable readAllEntries preserves tombstone entries`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let _, _, index = SSTable.load fs br
+        let _, _, _, index = SSTable.load fs br
         fs.Seek(index.[0].Offset, System.IO.SeekOrigin.Begin) |> ignore
         let entries = SSTable.readAllEntries br index.Length
         assertEqual 3 entries.Length "Should have 3 entries"
@@ -223,6 +223,22 @@ let ``SSTable Get returns NotFound for disposed SSTable`` () =
             "Get after dispose returns NotFound without throwing")
 
 [<Fact>]
+let ``SSTable GetAll reads data region in one batch and repeats identically`` () =
+    withTestDir "sst_getall_all" (fun testDataDir ->
+        let path =
+            writeSst testDataDir "L0_getall.sst" [ "a", 1L, Some "va"; "b", 2L, None; "c", 3L, Some "vc" ]
+
+        use sst = new SSTable(path)
+        let first = sst.GetAll()
+        let second = sst.GetAll()
+
+        assertEqual 3 first.Length "GetAll returns 3 entries"
+        assertEqual ("a", 1L, Some "va") first.[0] "First entry is a"
+        assertEqual ("b", 2L, None) first.[1] "Second entry is tombstone"
+        assertEqual ("c", 3L, Some "vc") first.[2] "Third entry is c"
+        assertEqual first second "Repeated GetAll returns identical results")
+
+[<Fact>]
 let ``SSTable GetRange returns entries within range`` () =
     withTestDir "sst_range_basic" (fun testDataDir ->
         let path =
@@ -241,6 +257,31 @@ let ``SSTable GetRange returns entries within range`` () =
             assertEqual 2 result.Length "Two entries in [b,c]"
             assertEqual ("b", 2L, Some "vb") result.[0] "First entry is b"
             assertEqual ("c", 3L, Some "vc") result.[1] "Second entry is c"
+        | RangeDisposed -> failwith "unexpected RangeDisposed")
+
+[<Fact>]
+let ``SSTable GetRange reads many entries sequentially`` () =
+    withTestDir "sst_range_many" (fun testDataDir ->
+        let path =
+            writeSst
+                testDataDir
+                "L0_range_many.sst"
+                [ "a", 1L, Some "va"
+                  "b", 2L, None
+                  "c", 3L, Some "vc"
+                  "d", 4L, Some "vd"
+                  "e", 5L, Some "ve" ]
+
+        use sst = new SSTable(path)
+
+        match sst.GetRange("a", "e") with
+        | RangeOk result ->
+            assertEqual 5 result.Length "Five entries in [a,e]"
+            assertEqual ("a", 1L, Some "va") result.[0] "First entry is a"
+            assertEqual ("b", 2L, None) result.[1] "Tombstone entry is b"
+            assertEqual ("c", 3L, Some "vc") result.[2] "Third entry is c"
+            assertEqual ("d", 4L, Some "vd") result.[3] "Fourth entry is d"
+            assertEqual ("e", 5L, Some "ve") result.[4] "Fifth entry is e"
         | RangeDisposed -> failwith "unexpected RangeDisposed")
 
 [<Fact>]
@@ -368,7 +409,7 @@ let ``SSTableWriter writes inline index and roundtrips`` () =
             )
 
         use br = new System.IO.BinaryReader(fs)
-        let _, _, index = SSTable.load fs br
+        let _, _, _, index = SSTable.load fs br
         assertEqual 3 index.Length "Should have 3 index entries"
         assertEqual "k1" index.[0].Key "First entry key"
         assertEqual 1L index.[0].Seq "First entry seq"

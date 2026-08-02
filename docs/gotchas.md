@@ -54,6 +54,10 @@ If you ever change these coordinators or add a new background async operation th
 
 `Get(key, ?snapshot: int64)` (and `handle.Seq` passed directly) do **not** register the sequence. Compaction can prune the version between the snapshot read and the lookup, returning `None` for a version that existed moments earlier. This is the exact race Option 1 (snapshot handle API) was designed to fix — prefer `SnapshotHandle` in new code. The `int64` overload exists only for backward compatibility.
 
+### SSTable read methods reposition the FileStream internally
+
+`Get`, `GetRange`, and `GetAll` each re-`Seek` the shared `FileStream` at the start of their read (single `Seek` per call for `GetRange`/`GetAll` — `GetAll` then reads the whole data region with one `ReadExactly` into a temporary `byte[]` and parses it in memory), then read sequentially. No method relies on — or preserves — a stream position between calls, so calling `GetRange` twice returns identical results. When changing these methods, never assume the caller left the stream positioned anywhere, and never skip the initial `Seek` to "optimize" a follow-up call — that is exactly the class of bug the sequential-read regression test (`sst_range_many`) guards against.
+
 ### Shrinking `compactLevelLimits` refuses to start (fail-fast)
 
 Reducing the **length** of `compactLevelLimits` (e.g., `[|4;10;100;1000;2000|]` → `[|4;10;100|]`) leaves existing SSTables at levels beyond the new configuration. The loader previously **silently skipped** them: data was lost (the file's WAL was already deleted after flush), `currentSeq` regressed (a later restart with the original config could resurrect pruned old data over newer writes), and orphaned files leaked on disk. Now `LsmTreeLoader.loadSSTableFiles` throws `InvalidDataException` naming the file and the minimum required `compactLevelLimits` length. To intentionally shrink levels, remove (or move out) the orphaned files first, then restart with the new config.
