@@ -140,6 +140,21 @@
 
 ---
 
+## Bloom filter probe spread: h2 forced odd
+
+**Choice**: `BloomFilter.keyIndex` computes probe positions as `(h1 + seed * h2) % bitSize` with `h2` forced odd (`h2 ||| 1u`) before the multiply.
+
+**Why**: An `h2 = 0` key (FNV-1a low 32 bits happen to be 0, probability 2⁻³²) collapsed all 7 probes onto a single bit — a 1-bit fingerprint with a ~50% false-positive rate for that key. An even `h2` (half of all keys) kept every probe at the same parity, silently halving the effective bit space and roughly doubling the false-positive rate. Forcing `h2` odd fixes both at zero memory cost.
+
+**Trade-off**: **Bit placement changed vs. earlier builds.** The on-disk layout (byte count + bytes) is unchanged and old files still load, but probes land at different positions, so bloom data written by older code can produce false negatives when read by new code — and `SSTable.Get` treats a bloom miss as `NotFound`, silently missing keys that exist in old files. SSTables must be regenerated (delete the data directory) when upgrading across this change. This is a pre-release project, so no on-disk version guard was added.
+
+**Alternatives considered**:
+- **Power-of-two `bitSize` + mask**: eliminates all modulo bias but up to doubles bloom memory (10n → 16n bits) and changes layout too.
+- **Fixed odd constant when `h2 = 0`**: fixes only the 2⁻³² collapse, not the parity waste.
+- **Documentation only**: leaves the degradation in place.
+
+---
+
 ## Dispose: errors swallowed silently
 
 **Choice**: `WAL.Dispose()` catches all I/O errors from `writer.Flush()`, `stream.Flush(true)`, and the `Dispose()` calls — printing only to stderr. `LsmTree.Dispose()` similarly swallows SSTable disposal errors. Neither propagates exceptions.

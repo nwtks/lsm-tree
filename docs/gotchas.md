@@ -69,3 +69,7 @@ Accessing `IIterator.Current` before the first `MoveNext()` call (or after `Move
 ### Materialized array memory for large ranges
 
 `RangeIterator` materializes all entries within `[fromKey, toKey]` into in-memory arrays during construction (`NewIterator`). For very large ranges (e.g., full database scan on a dataset with millions of keys), this consumes memory proportional to the number of entries in range. Prefer bounded range scans. If full-database iteration is needed, consider batching via multiple smaller range scans.
+
+### Bloom filter probe spread: h2 forced odd
+
+`BloomFilter.keyIndex` computes probe positions as `(h1 + seed * h2) % bitSize` with `h2` forced odd (`h2 ||| 1u`). Without this, a key whose FNV-1a low 32 bits are 0 would set/check the same bit for all 7 probes (a 1-bit fingerprint), and an even `h2` keeps every probe at a fixed parity — half the bit space is never used. **Compatibility caveat**: this changes bit placement relative to earlier builds. Bloom data written by older code is probed at different positions by new code, and since `SSTable.Get` treats a bloom miss as `NotFound`, keys that exist in old SSTables can be silently missed (false negative). Regenerate SSTables (delete the data directory) after upgrading across this change; the on-disk layout is unchanged, so old files still load — they just can't be trusted.

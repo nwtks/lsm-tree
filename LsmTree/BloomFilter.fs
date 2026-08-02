@@ -11,7 +11,7 @@ type BloomFilter(bits: byte[], numHashFunctions: int) =
         struct (uint32 (h >>> 32), uint32 (h &&& 0xFFFFFFFFuL))
 
     let keyIndex h1 h2 seed =
-        let idx = (h1 + uint32 seed * h2) % uint32 bitSize
+        let idx = (h1 + uint32 seed * (h2 ||| 1u)) % uint32 bitSize
         let byteIdx = int (idx / 8u)
         let bitIdx = int (idx % 8u)
         struct (byteIdx, bitIdx)

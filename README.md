@@ -24,7 +24,7 @@ Immutable on-disk files produced when the MemTable is flushed:
 - **In-memory index + Bloom filter**: At startup, each SSTable loads an entry index and Bloom filter into RAM. Lookups perform in-memory binary search on the index, then a single `Seek`+`Read` for the value payload — misses are rejected $O(1)$ by the Bloom filter with no disk I/O.
 - **Range scan via index**: `SSTable.GetRange` uses the index's sorted order to find range boundaries via binary search (`lowerBound`/`upperBound`), then reads entries sequentially within the range.
 - **Concurrent reads**: Uses `ReaderWriterLockSlim` — concurrent readers proceed in parallel, while `GetAll` and `Dispose` serialize exclusively.
-- **Bloom filters**: FNV-1a double-hashing, 10 bits/item, 7 hash functions.
+- **Bloom filters**: FNV-1a double-hashing, 10 bits/item, 7 hash functions. The second hash is forced odd (`h2 ||| 1u`) so probes never collapse onto a single bit or a fixed parity.
 
 ### Range Scans
 In-memory k-way merge across all storage layers (MemTable, immutable MemTable, and each SSTable):

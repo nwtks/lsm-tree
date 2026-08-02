@@ -12,6 +12,25 @@ let ``BloomFilter empty filter always returns true for MightContain`` () =
     assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
 
 [<Fact>]
+let ``BloomFilter keyIndex forces odd h2 so probes spread`` () =
+    let bf = BloomFilter.create 100
+
+    let keyIndexMethod =
+        typeof<BloomFilter>
+            .GetMethod(
+                "keyIndex",
+                System.Reflection.BindingFlags.NonPublic
+                ||| System.Reflection.BindingFlags.Instance
+            )
+
+    Assert.NotNull keyIndexMethod
+
+    let positions =
+        [| for seed in 0..6 -> keyIndexMethod.Invoke(bf, [| box 0u; box 0u; box seed |]) :?> struct (int * int) |]
+
+    assertEqual 7 (positions |> Array.distinct |> Array.length) "h2 = 0 must not collapse all probes"
+
+[<Fact>]
 let ``BloomFilter Add and MightContain for specific keys`` () =
     let bf = BloomFilter.create 10
     bf.Add "apple"
