@@ -418,6 +418,7 @@ let ``SSTableWriter writes inline index and roundtrips`` () =
         assertEqual "k3" index.[2].Key "Third entry key"
         assertEqual 3L index.[2].Seq "Third entry seq")
 
+[<Fact>]
 let ``SSTableWriter writeStream throws on cancellation`` () =
     withTestDir "sst_cancel" (fun testDataDir ->
         let path = System.IO.Path.Combine(testDataDir, "cancel.sst")

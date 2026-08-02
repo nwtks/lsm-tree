@@ -14,10 +14,15 @@ ABORT <seq>
 
 - **Committed transactions** are fully recovered.
 - **Uncommitted transactions** (`BEGIN` without matching `COMMIT`) are discarded.
-- **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — recovery includes entries whose seq is in a `COMMIT` line or was never seen in a `BEGIN` line. The latter case covers `PutSingle`/`DeleteSingle` (fast-path single-key writes) which intentionally omit `BEGIN`/`COMMIT` markers. This is safe under the engine's last-writer-wins semantics.
-- **Explicit rollbacks** (`ABORT <seq>`): Recognized in the parser but ignored during recovery — no entries are emitted for aborted sequences. This is consistent with the `BEGIN`-without-`COMMIT` discard logic. The `ABORT` record serves as an explicit audit trail.
+- **Orphaned `PUT`/`DEL`** (without a preceding `BEGIN`) are recovered as committed — recovery includes entries whose seq is in a `COMMIT` line or was never seen in a `BEGIN` line.
+  The latter case covers `PutSingle`/`DeleteSingle` (fast-path single-key writes) which intentionally omit `BEGIN`/`COMMIT` markers.
+  This is safe under the engine's last-writer-wins semantics.
+- **Explicit rollbacks** (`ABORT <seq>`): Recognized in the parser but ignored during recovery — no entries are emitted for aborted sequences.
+  This is consistent with the `BEGIN`-without-`COMMIT` discard logic.
+  The `ABORT` record serves as an explicit audit trail.
 - `WALRecovery.recover` handles malformed lines gracefully by returning `None` for unrecognized entries.
-- **Streaming recovery**: Uses `File.ReadLines` (lazy enumeration, not `File.ReadAllLines`) in two passes — first to find committed/begun sequences, second to emit entries. Memory use is O(unique sequence count), not O(file size).
+- **Streaming recovery**: Uses `File.ReadLines` (lazy enumeration, not `File.ReadAllLines`) in two passes — first to find committed/begun sequences, second to emit entries.
+  Memory use is O(unique sequence count), not O(file size).
 
 ---
 
@@ -44,11 +49,13 @@ Each **IndexEntry** in the index region is encoded as:
 seq: int64 | offset: int64 | keyByteLen: int32 | keyBytes: byte[keyByteLen]
 ```
 
-The `offset` field points to the start of the corresponding entry in the data region (i.e., the `seq` field of that entry). The key bytes are stored inline in the index, so the data region does **not** need to be accessed during SSTable open.
+The `offset` field points to the start of the corresponding entry in the data region (i.e., the `seq` field of that entry).
+The key bytes are stored inline in the index, so the data region does **not** need to be accessed during SSTable open.
 
 - **Footer**: always 32 bytes (four `int64` fields).
 - **Magic**: `0x4C534D54` (`"LSMT"` in ASCII). Wrong magic raises `InvalidDataException`.
-- **Index**: packed `int32` count followed by `count` inline `IndexEntry` records (seq + offset + key). All fields needed to build the in-memory `IndexEntry[]` are present here — the data region is read lazily only for value payloads on `Get`/`GetRange`.
+- **Index**: packed `int32` count followed by `count` inline `IndexEntry` records (seq + offset + key).
+  All fields needed to build the in-memory `IndexEntry[]` are present here — the data region is read lazily only for value payloads on `Get`/`GetRange`.
 - **Bloom filter**: packed `int32` byte count + raw bytes.
 - **`max_seq`**: highest sequence number among all entries — enables O(1) startup without scanning.
 
@@ -58,9 +65,14 @@ The `offset` field points to the start of the corresponding entry in the data re
 
 1. **Footer** (32 B) — read from the end of the file to get `indexOffset`, `bloomOffset`, `maxSeq`, `magic`.
 2. **Bloom filter** — one `Seek` + `ReadInt32` + `ReadBytes(byteCount)`.
-3. **Index region** — one `Seek` + single `ReadExactly` of the entire region (`bloomOffset - indexOffset` bytes), parsed in memory with `BinaryPrimitives.ReadInt*LittleEndian`. No access to the data region is required.
+3. **Index region** — one `Seek` + single `ReadExactly` of the entire region (`bloomOffset - indexOffset` bytes), parsed in memory with `BinaryPrimitives.ReadInt*LittleEndian`.
+   No access to the data region is required.
 
-The data region is only touched on demand: `Get` does one `Seek`+`Read` per hit (after in-memory binary search on the index), `GetRange` does one `Seek` to the first value offset then reads values sequentially (each entry's `seq`+`keyLen`+`key` header skipped with buffered reads — no per-entry `Seek`), and `GetAll` (used by compaction) reads the entire data region in a single `ReadExactly` and parses it in memory (the same region-batch pattern as `loadIndex`).
+The data region is only touched on demand:
+
+- `Get` does one `Seek`+`Read` per hit (after in-memory binary search on the index).
+- `GetRange` does one `Seek` to the first value offset then reads values sequentially (each entry's `seq`+`keyLen`+`key` header skipped with buffered reads — no per-entry `Seek`).
+- `GetAll` (used by compaction) reads the entire data region in a single `ReadExactly` and parses it in memory (the same region-batch pattern as `loadIndex`).
 
 **File naming convention:**
 
@@ -74,7 +86,8 @@ L{level}_{timestamp_ms}_{guid}.sst
 | Compaction of Ln → L(n+1) | L(n+1) |
 | Legacy files (no `L` prefix) | L0 |
 
-During SSTable writing, data is first written to a `.tmp` file and then atomically renamed to `.sst` (see `SSTableWriter.writeCore`). Stale `.tmp` files from a crash are automatically deleted on startup (`loadSSTables`).
+During SSTable writing, data is first written to a `.tmp` file and then atomically renamed to `.sst` (see `SSTableWriter.writeCore`).
+Stale `.tmp` files from a crash are automatically deleted on startup (`loadSSTables`).
 
 ---
 
@@ -85,21 +98,26 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 | `memTable` / `immutableMemTable` | `ReaderWriterLockSlim` (`mainLock`) |
 | `ssTables` array | `lock ssTablesLock` |
 | Per‑SSTable seek+read / GetAll / Dispose | `ReaderWriterLockSlim` (`rwLock` per SSTable) |
-| `activeSnapshots` (`Set<int64>`) | `lock activeSnapshotsLock` |
+| `activeSnapshots` (`Map<int64, int>` refcount) | `lock activeSnapshotsLock` |
 | `globalSeq` | `Interlocked.Increment` / `Interlocked.Read` / `Interlocked.CompareExchange` |
 | SkipList nodes | Lock-free CAS (`Interlocked.CompareExchange`) |
 | WAL writes (`StreamWriter`/`FileStream`) | `lock walLock` |
 | `FlushCoordinator.completedEvent` | `lock flushLock` + disposed flag (`IDisposable`) |
 
 **Lock ordering rules:**
-1. You may hold `ssTablesLock` while acquiring `mainLock` (write), but **never the reverse** — this prevents deadlocks.
+
+1. You may acquire `mainLock` (write) while already holding `ssTablesLock`, but **never acquire `ssTablesLock` while already holding `mainLock`** — this prevents deadlocks.
 2. `CompactionCoordinator` auto-properties (`IsCompacting`, `Error`) are always read/written under `ssTablesLock`.
-3. At most one compaction runs at a time. Both `CompactionCoordinator` and `FlushCoordinator` use a `ManualResetEvent` for completion signaling and implement `IDisposable` with a disposed-flag guard; they are disposed in `LsmTree.Dispose()` after waiting for in-flight operations.
+3. At most one compaction runs at a time.
+   Both `CompactionCoordinator` and `FlushCoordinator` use a `ManualResetEvent` for completion signaling and implement `IDisposable` with a disposed-flag guard; they are disposed in `LsmTree.Dispose()` after waiting for in-flight operations.
 4. The WAL instance is protected by its own `walLock` object; WAL operations are serialized.
 5. Per‑SSTable `rwLock` is independent — do not acquire `mainLock` or `ssTablesLock` while holding a SSTable read/write lock (to avoid unexpected contention).
-6. `activeSnapshotsLock` is independent — hold only while reading/writing the active snapshot set. Never acquire `mainLock` or `ssTablesLock` while holding `activeSnapshotsLock`.
+6. `activeSnapshotsLock` is independent — hold only while reading/writing the active snapshot set.
+   Never acquire `mainLock` or `ssTablesLock` while holding `activeSnapshotsLock`.
 7. `globalSeq` uses `Interlocked` operations exclusively — no lock is required to read or advance the sequence number.
-8. `flushLock` is independent — `AcquireAndReset` performs `WaitOne()` outside the lock then `Reset()` inside with a `disposed` flag guard (returns `bool`: `false` if disposed); `SignalCompleted` and `Dispose` take the lock. `WaitForCompletion` catches `ObjectDisposedException` to tolerate the dispose race. Never acquire `flushLock` while holding `mainLock` or `ssTablesLock`.
+8. `flushLock` is independent — `AcquireAndReset` performs `WaitOne()` outside the lock then `Reset()` inside with a `disposed` flag guard (returns `bool`: `false` if disposed); `SignalCompleted` and `Dispose` take the lock.
+   `WaitForCompletion` catches `ObjectDisposedException` to tolerate the dispose race.
+   Never acquire `flushLock` while holding `mainLock` or `ssTablesLock`.
 
 ---
 
@@ -109,12 +127,13 @@ During SSTable writing, data is first written to a `.tmp` file and then atomical
 
 1. **Trigger**: A MemTable flush calls `triggerCompaction`, which starts a background `async { } |> Async.Start` computation if no compaction is currently running.
 2. **Level selection**: Starting from L0, if `ssTables[level].Length > compactLevelLimits[level]`, **all** files at that level are selected for compaction.
-3. **Merge**: A k-way streaming merge (`mergeSortedEntries`) reads all entries from selected SSTables, deduplicates by key (highest sequence number wins), and applies snapshot pruning.
+3. **Merge**: A k-way streaming merge (`mergeSortedEntries`) reads all entries from selected SSTables via `GetAll`, deduplicates by key, and applies snapshot pruning (`pruneVersions`): keeps entries with `seq >= minSnap` plus the single oldest entry with `seq < minSnap` (for non-last levels, all older entries; for the last level, that older entry only if it is a live value).
 4. **Output**: A single new SSTable is written to the next level via `SSTableWriter.writeStream`.
 5. **Cascade**: Compaction recursively proceeds to the next level if it now exceeds its limit (see `compact` in `LsmTreeFlush.fs`).
 6. **Cleanup**: Old SSTable objects are disposed, files are deleted from disk, and references are removed from the in-memory list.
 
-> **Why all files?** In this implementation, all levels (including Ln for n>0) may contain overlapping key ranges. Partial compaction would leave old versions shadowing newer ones in higher levels.
+> **Why all files?** In this implementation, all levels (including Ln for n>0) may contain overlapping key ranges.
+> Partial compaction would leave old versions shadowing newer ones in higher levels.
 
 ### Key Rules
 
@@ -134,7 +153,10 @@ Each range scan proceeds in three phases:
 
 1. **Source materialization**: Under appropriate locks, each storage layer (MemTable, immutable MemTable, per-SSTable) produces a `(string * int64 * string option)[]` of entries whose keys fall within `[fromKey, toKey]` (inclusive, `CompareOrdinal` ordering).
    - **MemTable**: `SkipList.EntriesRange` traverses the `Next.[0]` chain from `head`, skipping nodes with key < `fromKey`, collecting until key > `toKey`. No lock required — the SkipList is lock-free.
-   - **SSTable**: `collectRangeSources` copies the level-list array under `ssTablesLock`, then calls `SSTable.GetRange` **outside** the lock. `GetRange` performs two binary searches on the in-memory index (`lowerBound`/`upperBound`) to find the offset range, then reads entries sequentially under a per-SSTable read lock. If a table was disposed mid-read (`GetRange` returns `RangeDisposed`) or the snapshot's list references drifted, the whole collection is retried (max 8 attempts), falling back to collecting under `ssTablesLock`. Each key appears at most once per SSTable.
+   - **SSTable**: `tryCollectRangeSources` copies the level-list array under `ssTablesLock`, then calls `SSTable.GetRange` **outside** the lock.
+     `GetRange` performs two binary searches on the in-memory index (`lowerBound`/`upperBound`) to find the offset range, then reads entries sequentially under a per-SSTable read lock; it returns a `RangeReadResult` DU (`RangeOk entries` / `RangeDisposed`).
+     If a table was disposed mid-read (`RangeDisposed`) or the snapshot's list references no longer match (`snapshotStable` — reference equality, since F# lists are immutable), the whole collection is retried (max 8 attempts), falling back to collecting under `ssTablesLock`.
+     Each key appears at most once per SSTable.
 
 2. **Merge**: `RangeIterator` holds a `SourceCursor` array (one per source). `MoveNext` repeatedly:
    - Picks the minimum key across all cursors via `pickMinKey` (O(K) where K = source count).
@@ -192,14 +214,19 @@ The internal lookup chain uses `SearchResult` — a `[<Struct>]` discriminated u
 | `Tombstone` | Key was deleted (stops further search) |
 | `NotFound` | Key not found at this storage level |
 
-- `SkipList.Find` returns `SearchResult`. If the target node is not found (`isNull`), it returns `NotFound`. Otherwise it inspects `current.Value` (`string option`): `Some v → Found v`, `None → Tombstone`.
+- `SkipList.Find` returns `SearchResult`.
+  If the target node is not found (`isNull`), it returns `NotFound`.
+  Otherwise it inspects `current.Value` (`string option`): `Some v → Found v`, `None → Tombstone`.
 - `MemTable.Get` passes through the `SearchResult` from `data.Find`.
-- `SSTable.Get` returns `SearchResult`: `SSTable.readItem br` returns `string option`; `None → Tombstone`, `Some v → Found v`. If the bloom filter rejects or binary search misses, it returns `NotFound`.
+- `SSTable.Get` returns `SearchResult`: `SSTable.readItem br` returns `string option`; `None → Tombstone`, `Some v → Found v`.
+  If the bloom filter rejects or binary search misses, it returns `NotFound`.
 - `LsmTreeSearch.searchInTable` (internal helper) recurses on `NotFound` and short-circuits on `Found`/`Tombstone` within a single level's SSTable list.
 - `LsmTreeSearch.searchLevel` iterates across levels: on `NotFound` at level N it proceeds to level N+1; on `Found`/`Tombstone` it short-circuits immediately.
 - `LsmTreeSearch.findValue` matches on the three cases and converts to `string option` (`Found v → Some v`, `Tombstone → None`, `NotFound → None`) — this is the only public boundary.
 
 ### Benefits over nested `string option option`
 
-- **Zero heap allocation**: `SearchResult` is a `[<Struct>]` — `Found "v"`/`Tombstone`/`NotFound` are all value types. The previous `Some(Some "v")` incurred 2 heap objects per `Get`.
-- **Static safety**: The three cases are exhaustive; the compiler warns on missing patterns. `string option option` relied on runtime convention.
+- **Zero heap allocation**: `SearchResult` is a `[<Struct>]` — `Found "v"`/`Tombstone`/`NotFound` are all value types.
+  The previous `Some(Some "v")` incurred 2 heap objects per `Get`.
+- **Static safety**: The three cases are exhaustive; the compiler warns on missing patterns.
+  `string option option` relied on runtime convention.

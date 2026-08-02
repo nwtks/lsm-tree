@@ -116,23 +116,6 @@ let ``Snapshot handle double dispose is safe`` () =
         assertEqual (Some "v") (tree.Get "k") "Data readable after double dispose")
 
 [<Fact>]
-let ``RangeScan with snapshot handle survives compaction`` () =
-    withTestDir "snap_handle_rscan" (fun testDir ->
-        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
-        tree.Put("k", "v1")
-        tree.Flush()
-
-        use snap = tree.Snapshot()
-        tree.Put("k", "v2")
-        tree.Flush()
-        tree.Put("k", "v3")
-        tree.Flush()
-        tree.WaitForCompaction()
-
-        let result = tree.RangeScan("k", "k", snapshot = snap) |> Seq.toList
-        assertEqual [ "k", "v1" ] result "RangeScan with handle sees old version after compaction")
-
-[<Fact>]
 let ``LsmTree transaction commits and restarts correctly`` () =
     withTestDir "tx_restart" (fun testDir ->
         do
@@ -424,59 +407,6 @@ let ``LsmTree WaitForCompactionAsync propagates compaction coordinator errors`` 
         |> ignore)
 
 [<Fact>]
-let ``LsmTree compaction cancellation during Dispose`` () =
-    withTestDir "compact_cancel" (fun testDir ->
-        let tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
-
-        for i = 1 to 5 do
-            tree.Put($"k{i}", $"v{i}")
-            tree.Flush()
-
-        (tree :> System.IDisposable).Dispose())
-
-[<Fact>]
-let ``LsmTree Dispose handles compaction coordinator errors`` () =
-    withTestDir "dispose_compact_err" (fun testDir ->
-        let tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
-
-        for i = 1 to 3 do
-            tree.Put($"k{i}", $"v{i}")
-            tree.Flush()
-
-        tree.WaitForCompaction()
-
-        let compField =
-            typeof<LsmTree>
-                .GetField(
-                    "compaction",
-                    System.Reflection.BindingFlags.NonPublic
-                    ||| System.Reflection.BindingFlags.Instance
-                )
-
-        let cc = compField.GetValue tree :?> CompactionCoordinator
-        cc.Error <- Some(exn "injected compaction error")
-        (tree :> System.IDisposable).Dispose())
-
-[<Fact>]
-let ``LsmTree Dispose handles flush coordinator errors`` () =
-    withTestDir "dispose_flush_err" (fun testDir ->
-        let tree = new LsmTree(testDir)
-        tree.Put("k", "v")
-        tree.Flush()
-
-        let flField =
-            typeof<LsmTree>
-                .GetField(
-                    "flushCoordinator",
-                    System.Reflection.BindingFlags.NonPublic
-                    ||| System.Reflection.BindingFlags.Instance
-                )
-
-        let fc = flField.GetValue tree :?> FlushCoordinator
-        fc.Error <- Some(exn "injected flush error")
-        (tree :> System.IDisposable).Dispose())
-
-[<Fact>]
 let ``RangeScan with NewIterator and explicit Dispose`` () =
     withTestDir "rscan_iter_dispose" (fun testDir ->
         use tree = new LsmTree(testDir)
@@ -646,3 +576,73 @@ let ``RangeScan with tombstone resurrected key shows latest value`` () =
         tree.Put("k", "v2")
         let result = tree.RangeScan("k", "k") |> Seq.toList
         assertEqual [ "k", "v2" ] result "Resurrected key shows latest")
+
+[<Fact>]
+let ``RangeScan with snapshot handle survives compaction`` () =
+    withTestDir "snap_handle_rscan" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+        tree.Put("k", "v1")
+        tree.Flush()
+
+        use snap = tree.Snapshot()
+        tree.Put("k", "v2")
+        tree.Flush()
+        tree.Put("k", "v3")
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        let result = tree.RangeScan("k", "k", snapshot = snap) |> Seq.toList
+        assertEqual [ "k", "v1" ] result "RangeScan with handle sees old version after compaction")
+
+[<Fact>]
+let ``LsmTree compaction cancellation during Dispose`` () =
+    withTestDir "compact_cancel" (fun testDir ->
+        let tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+
+        for i = 1 to 5 do
+            tree.Put($"k{i}", $"v{i}")
+            tree.Flush()
+
+        (tree :> System.IDisposable).Dispose())
+
+[<Fact>]
+let ``LsmTree Dispose handles compaction coordinator errors`` () =
+    withTestDir "dispose_compact_err" (fun testDir ->
+        let tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+
+        for i = 1 to 3 do
+            tree.Put($"k{i}", $"v{i}")
+            tree.Flush()
+
+        tree.WaitForCompaction()
+
+        let compField =
+            typeof<LsmTree>
+                .GetField(
+                    "compaction",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let cc = compField.GetValue tree :?> CompactionCoordinator
+        cc.Error <- Some(exn "injected compaction error")
+        (tree :> System.IDisposable).Dispose())
+
+[<Fact>]
+let ``LsmTree Dispose handles flush coordinator errors`` () =
+    withTestDir "dispose_flush_err" (fun testDir ->
+        let tree = new LsmTree(testDir)
+        tree.Put("k", "v")
+        tree.Flush()
+
+        let flField =
+            typeof<LsmTree>
+                .GetField(
+                    "flushCoordinator",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let fc = flField.GetValue tree :?> FlushCoordinator
+        fc.Error <- Some(exn "injected flush error")
+        (tree :> System.IDisposable).Dispose())

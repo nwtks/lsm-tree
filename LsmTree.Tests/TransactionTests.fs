@@ -17,6 +17,20 @@ let ``Transaction Put reads own writes within same transaction`` () =
         tx.Commit())
 
 [<Fact>]
+let ``Transaction put after delete resurrects key`` () =
+    withTestDir "tx_put_after_del" (fun dir ->
+        use tree = new LsmTree(dir)
+        use tx = tree.BeginTransaction()
+        tx.Delete "k"
+        tx.Put("k", "resurrected")
+        assertEqual (Some "resurrected") (tx.Get "k") "Put after delete resurrects key within same txn"
+        tx.Commit()
+
+        use tx2 = tree.BeginTransaction()
+        assertEqual (Some "resurrected") (tx2.Get "k") "Resurrected key visible to new txn"
+        tx2.Commit())
+
+[<Fact>]
 let ``Transaction delete after put shadows previous value`` () =
     withTestDir "tx_del_after_put" (fun dir ->
         use tree = new LsmTree(dir)
@@ -29,20 +43,6 @@ let ``Transaction delete after put shadows previous value`` () =
 
         use tx2 = tree.BeginTransaction()
         assertEqual None (tx2.Get "k") "Delete after put committed is visible to new txn"
-        tx2.Commit())
-
-[<Fact>]
-let ``Transaction put after delete resurrects key`` () =
-    withTestDir "tx_put_after_del" (fun dir ->
-        use tree = new LsmTree(dir)
-        use tx = tree.BeginTransaction()
-        tx.Delete "k"
-        tx.Put("k", "resurrected")
-        assertEqual (Some "resurrected") (tx.Get "k") "Put after delete resurrects key within same txn"
-        tx.Commit()
-
-        use tx2 = tree.BeginTransaction()
-        assertEqual (Some "resurrected") (tx2.Get "k") "Resurrected key visible to new txn"
         tx2.Commit())
 
 [<Fact>]

@@ -1,69 +1,120 @@
-# F# LSM-Tree Library
+# F# LSM-Tree
 
-A high-performance, fully-featured **Log-Structured Merge-Tree** (LSM-Tree) storage engine implemented natively in F#.
-This project demonstrates the core architectural concepts behind modern database systems like LevelDB and RocksDB, combining F#'s functional data-processing strengths with lock-free concurrent data structures and lightweight synchronization primitives.
+A high-performance **Log-Structured Merge-Tree** (LSM-Tree) storage engine implemented natively in F#.
+The project demonstrates the architectural concepts behind engines like LevelDB and RocksDB — WAL durability, lock-free SkipList mutations, immutable SSTables with in-memory indexes and Bloom filters, multi-level cascade compaction, and MVCC snapshot isolation — combining F#'s functional data-processing strengths with lightweight synchronization.
 
 ---
 
 ## 🚀 Key Features
 
 ### Write-Ahead Log (WAL)
-Ensures crash safety and immediate durability. All `Put` and `Delete` operations are persisted to a `.log` file before being applied to the in-memory MemTable, guaranteeing full recovery upon engine restart.
-- **Fast single-key path**: `PutSingle`/`DeleteSingle` bypass transaction markers, reducing WAL overhead for single-key operations.
-- **Atomic transaction recovery**: Uncommitted transactions (missing `COMMIT`) are automatically discarded on restart.
-- **Fault-tolerant parser**: Malformed lines are skipped; orphaned entries are safely recovered under last-writer-wins semantics.
+
+Durability journal persisted to `wal.log` before each mutation.
+On restart, the WAL is replayed into a fresh MemTable.
+
+- **Fast single-key path**: `Put`/`Delete` call `PutSingle`/`DeleteSingle`, writing a bare `PUT`/`DEL` line (no `BEGIN`/`COMMIT` markers) with `sync = false` (no `fsync`). Transaction `Commit` always uses `fsync`.
+- **Atomic transaction recovery**: Committed transactions (`BEGIN`+`COMMIT`) are fully recovered; uncommitted ones (`BEGIN` without `COMMIT`) are discarded.
+  Explicit `ABORT <seq>` records are recognized and ignored.
+- **Fault-tolerant parser**: Malformed lines are skipped with a `[WARN]` log; orphaned `PUT`/`DEL` (no preceding `BEGIN`) are recovered as committed under the engine's last-writer-wins semantics.
+- **Streaming recovery**: `File.ReadLines` (lazy) in two passes — first to collect committed/begun sequence sets, second to emit entries.
+  Memory use is O(unique sequence count), not O(file size).
+- **Flush rotation**: On each MemTable flush, the live `wal.log` is renamed to `wal_<guid>.old` and deleted only after the SSTable is written.
+  Stale `.old` files from a crash remain on disk and are scanned during recovery (their entries are filtered out once absorbed into SSTables).
 
 ### MemTable (Lock-Free SkipList)
-In-memory mutations are buffered within a custom mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
-- **Lock-Free Concurrency**: CAS-based node insertion enables concurrent `Put` operations without blocking.
-- **Automatic flush**: When the MemTable exceeds `memTableSizeLimit`, it is atomically swapped to an immutable MemTable and **asynchronously** flushed to an SSTable. Flushes are sequentialized (at most one in-flight at a time).
-- **Flush APIs**: `Flush()` (synchronous, waits for completion) and `FlushAsync()` (returns `Async<unit>`). Both propagate flush failures as `AggregateException`.
+
+In-memory mutations are buffered in a custom mutable **SkipList** with $O(\log N)$ probabilistic insertions and lookups.
+
+- **Lock-Free Concurrency**: CAS-based node insertion (`Interlocked.CompareExchange`) enables concurrent `Put` operations without blocking; `SkipListNode.Next` is `internal` so the publish-once invariant is enforced by the compiler.
+- **Atomic swap**: When `SizeBytes` exceeds `memTableSizeLimit`, the MemTable is atomically swapped to an immutable MemTable under `mainLock` and **asynchronously** flushed to an SSTable.
+  Flushes are sequentialized (at most one in flight) by `FlushCoordinator`.
+- **Size accounting**: `Put`/`Delete` add `NODE_OVERHEAD + keyBytes + SEQ_SIZE + valueBytes` (tombstones omit the value term) to `SizeBytes` via `Interlocked.Add`.
+  `Flush()` checks the threshold after each direct write.
+- **Flush APIs**: `Flush()` (synchronous, waits for completion) and `FlushAsync()` (`Async<unit>`).
+  Both propagate flush failures as `AggregateException` (one-shot error slot — the first waiter observes it, then it is cleared).
+  `Dispose()` waits for in-flight flush completion before disposing the coordinator.
 
 ### SSTable (Sorted String Table)
-Immutable on-disk files produced when the MemTable is flushed:
-- **In-memory index + Bloom filter**: At startup, each SSTable loads an entry index and Bloom filter into RAM. Lookups perform in-memory binary search on the index, then a single `Seek`+`Read` for the value payload — misses are rejected $O(1)$ by the Bloom filter with no disk I/O.
-- **Range scan via index**: `SSTable.GetRange` uses the index's sorted order to find range boundaries via binary search (`lowerBound`/`upperBound`), then reads entries sequentially within the range.
-- **Concurrent reads**: Uses `ReaderWriterLockSlim` — concurrent readers proceed in parallel, while `GetAll` and `Dispose` serialize exclusively.
-- **Bloom filters**: FNV-1a double-hashing, 10 bits/item, 7 hash functions. The second hash is forced odd (`h2 ||| 1u`) so probes never collapse onto a single bit or a fixed parity.
+
+Immutable on-disk files produced when the MemTable is flushed.
+The on-disk layout is `[data][index][bloom][footer]` (footer: always 32 B — `indexOffset`/`bloomOffset`/`maxSeq`/`magic`, magic `0x4C534D54` = `"LSMT"`).
+
+- **In-memory index + Bloom filter**: `SSTable.load` does three sequential reads — footer (from end of file), Bloom filter, then the whole index region in one `ReadExactly`.
+  The data region is **not touched** at open time.
+  `Get` does an in-memory binary search on the `IndexEntry[]`, then a single `Seek`+`Read` for the value payload; the Bloom filter rejects non-existent keys $O(1)$ with no disk I/O.
+- **Inline index**: `IndexEntry` is a `[<Struct>]` record (`Key`, `Seq`, `Offset`, `KeyByteLen`) stored inline in the index region, so building the in-memory array needs no data-region access.
+  Keys are thus stored twice (data + index); the overhead is bounded by Σ key length.
+- **Range scan via index**: `SSTable.GetRange` uses `lowerBound`/`upperBound` binary searches to find the range, then reads values sequentially from the data region (one `Seek`, then buffered reads — no per-entry `Seek`).
+- **`GetAll` (compaction)**: Reads the entire data region with one `ReadExactly` and parses it in memory — the same region-batch pattern as `loadIndex`.
+- **Concurrent reads**: `ReaderWriterLockSlim` per SSTable — concurrent `Get`/`GetRange` proceed in parallel, while `GetAll` and `Dispose` serialize exclusively.
+- **Bloom filters**: FNV-1a double-hashing, 10 bits/item, 7 hash functions.
+  The second hash is forced odd (`h2 ||| 1u`) so probes never collapse onto a single bit or a fixed parity.
+  **Caveat**: bit placement changed in an earlier build; regenerate SSTables (delete the data directory) when upgrading across that change — old files still load but cannot be trusted (see `docs/trade-off.md`).
+- **Atomic install**: `SSTableWriter.writeCore` writes to a `.sst.tmp` file and renames it to `.sst` on success; stale `.tmp` files are deleted on startup.
 
 ### Range Scans
-In-memory k-way merge across all storage layers (MemTable, immutable MemTable, and each SSTable):
-- **Sorted results**: Keys are returned in `String.CompareOrdinal` order, deduplicated (latest visible version wins).
-- **Snapshot-isolated**: `RangeScan`/`NewIterator` accept a `SnapshotHandle` for consistent time-travel scans that compaction cannot prune.
+
+In-memory k-way merge across all storage layers (MemTable, immutable MemTable, and each SSTable).
+
+- **Sorted results**: Keys are returned in `String.CompareOrdinal` order, deduplicated — the latest visible version (highest `seq ≤ snapshot`) wins.
+- **Snapshot-isolated**: `NewIterator` registers its snapshot with `SnapshotManager` **before** collecting sources; `RangeScan`/`NewIterator` accept an optional `SnapshotHandle` for consistent time-travel scans that compaction cannot prune.
+  Dispose the iterator (or `use` it) to release the snapshot.
 - **Two APIs**: `RangeScan` returns `seq<string * string>` (auto-disposing); `NewIterator` returns `IIterator` (manual lifetime).
+  `IIterator.Current` before the first `MoveNext()` (or after `false`) throws `InvalidOperationException`.
+- **Source materialization**: Each layer produces a `(string * int64 * string option)[]` of in-range entries; `MoveNext` then performs an in-memory k-way merge holding no locks.
+  For very large ranges, memory is proportional to the in-range entry count — prefer bounded ranges.
+- **Disposal safety**: `SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read; the whole collection is retried (max 8) and falls back to collecting under `ssTablesLock`.
+- **Two APIs**: `RangeScan` returns `seq<string * string>` (auto-disposing); `NewIterator` returns `IIterator` (manual lifetime). `IIterator.Current` before the first `MoveNext()` (or after `false`) throws `InvalidOperationException`.
+- **Source materialization**: Each layer produces a `(string * int64 * string option)[]` of in-range entries; `MoveNext` then performs an in-memory k-way merge holding no locks. For very large ranges, memory is proportional to the in-range entry count — prefer bounded ranges.
+- **Disposal safety**: `SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read; the whole collection is retried (max 8) and falls back to collecting under `ssTablesLock`.
 
 ### Background Multi-Level Compaction & Automatic Pruning
-- **Configurable level limits**: e.g., `[| 4; 10; 100; 1000 |]` means L0 over 4 files triggers compaction to L1, L1 over 10 triggers compaction to L2, etc. Reducing the **length** of this array for an existing database makes startup **fail fast** (`InvalidDataException`) if on-disk SSTables exceed the new level count — remove the orphaned files first if you intend to shrink.
+
+- **Configurable level limits**: e.g., `[| 4; 10; 100; 1000 |]` means L0 over 4 files triggers compaction to L1, L1 over 10 triggers compaction to L2, etc.
+  Reducing the **length** of this array for an existing database makes startup **fail fast** (`InvalidDataException`) — orphaned files at deleted levels must be removed (or `compactLevelLimits` expanded) first.
+- **All-files selection**: When a level exceeds its limit, **all** files in that level are merged into one SSTable at the next level.
+  Partial (overflow-only) compaction is unsafe here because Ln files are not guaranteed to be non-overlapping (L0→L1 merges cover the entire key range).
 - **Snapshot-aware pruning**: Versions visible to **registered** snapshots (`SnapshotHandle`, transactions, iterators) are preserved; stale versions are purged.
-- **Tombstone elimination**: Deletion markers are completely removed from the final storage level.
-- **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels.
-- **Compaction APIs**: `WaitForCompaction()` (synchronous, waits for completion) and `WaitForCompactionAsync()` (returns `Async<unit>`). Both propagate compaction failures as `AggregateException`.
+  `minActiveSnapshot` is re-queried at the start of each merge — never cached.
+- **Tombstone elimination**: Deletion markers are completely removed from the final storage level (`isLastLevel` → tombstones with `seq < minSnap` and no live value are dropped).
+- **Cascade**: A single flush can trigger compaction cascading through multiple levels (`compact` recurses to `level + 1`); at most one compaction runs at a time (`CompactionCoordinator`).
+- **Compaction APIs**: `WaitForCompaction()` (synchronous) and `WaitForCompactionAsync()` (`Async<unit>`).
+  Both propagate compaction failures as `AggregateException` (one-shot error slot — same semantics as the flush APIs).
+  `Dispose()` cancels compaction and waits for it to drain.
 
 ### Direct Put/Delete (Fast Path)
-Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers. The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` with `sync=false` (no `fsync` for performance) and applied to the MemTable in one atomic step.
+
+Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers.
+The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` (with `sync = false`) and applied to the MemTable under a `mainLock` read lock in one atomic step (`writeWithFlushCheck`), then the flush threshold is re-checked.
 
 ### Atomic Transactions with Snapshot Isolation
+
 Multi-key atomic updates via a dedicated `ITransaction` API:
-- **Commit & Rollback**: Transactions commit atomically (all operations share a single sequence number) or roll back discarding all pending changes.
-- **Read Own Writes**: `ITransaction.Get` reads pending writes within the same transaction before falling back to the snapshot.
-- **Snapshot Isolation**: Each transaction operates on a stable snapshot, ensuring consistent reads even during concurrent writes.
-- **`IDisposable` lifecycle**: Active snapshots are automatically released when the transaction is disposed.
+
+- **Commit & Rollback**: `Commit` writes `BEGIN`, all ops, then `COMMIT` with `sync = true` to the WAL and applies the ops to the MemTable under a single `commitSeq` (one `NextSequence`); `Rollback` discards pending changes and releases the snapshot.
+  Pending ops are buffered in a list and scanned linearly by `Get`.
+- **Read Own Writes**: `ITransaction.Get` reads pending writes within the same transaction before falling back to the engine snapshot (`LsmTree.Get(key, Some snapshot)`).
+- **Snapshot Isolation**: Each transaction registers its snapshot with `SnapshotManager` at `BeginTransaction` time, ensuring consistent reads even during concurrent writes.
+- **`IDisposable` lifecycle**: Disposing the transaction releases its registered snapshot.
+  Use `use` in F# — a leaked transaction (or `SnapshotHandle`) pins `minActiveSnapshot` and prevents compaction from pruning, causing unbounded disk growth.
 
 ---
 
 ## 🏗️ Architecture & Internals
 
-See [docs/architecture.md](docs/architecture.md) for the WAL format, SSTable binary format, concurrency model, compaction algorithm, and MVCC design.
+See [docs/architecture.md](docs/architecture.md) for the WAL format, SSTable binary layout, concurrency model, compaction algorithm, range-scan algorithm, and MVCC design.
+See [docs/trade-off.md](docs/trade-off.md) for design trade-offs and [docs/gotchas.md](docs/gotchas.md) for known pitfalls.
 
 ---
 
 ## ⚠️ Known Limitations
 
 - **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL). Binary data must be base64-encoded by the caller.
-- **Single WAL file**: One active WAL per instance. Renamed to `wal_<guid>.old` on each flush (deleted after the SSTable is successfully written); stale `.old` files from crashes remain on disk and are replayed during recovery.
+- **Single WAL file**: One live `wal.log` per instance, renamed to `wal_<guid>.old` on each flush (deleted after the SSTable is written); stale `.old` files from crashes remain on disk and are scanned during recovery.
 - **`LsmTransaction.Get` O(n) local scan**: The pending ops list is scanned linearly (`Seq.tryFind`). Avoid thousands of keys in a single transaction if you need fast local reads.
 - **No replication/clustering**: Single-node storage engine only.
-- **Empty SSTable flush race**: `MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList. A flush between increment and insert can produce an empty SSTable (no data loss — WAL guarantees recovery).
+- **Empty SSTable flush race**: `MemTable.Put`/`Delete` increment `SizeBytes` **before** inserting into the SkipList, so a flush triggered between the increment and the insert can produce an empty SSTable (no data loss — the WAL guarantees recovery).
+  Tests asserting post-flush SSTable file counts should account for this.
 
 ---
 
@@ -95,7 +146,7 @@ Benchmarks use [BenchmarkDotNet](https://benchmarkdotnet.org/) with `[<MemoryDia
 ### Building
 
 ```bash
-# Build the library and tests
+# Build the library, tests, and benchmark
 dotnet build
 ```
 
@@ -181,12 +232,12 @@ let past = db.Get("config:theme", v1)      // Some "dark" — historical view
 
 `Snapshot()` returns a `SnapshotHandle` that **registers** the referenced
 version with the compaction pruner, so it cannot be pruned while the handle is
-alive. Dispose it (or use `use`) to release the version for pruning — a leaked
+alive.
+Dispose it (or use `use`) to release the version for pruning — a leaked
 handle keeps old versions on disk indefinitely.
 
-> **Note**: The raw `int64` overloads (`db.Get(key, ?snapshot)`, `NewIterator` /
-> `RangeScan` with `snapshot = seq`) are **best-effort** and may race with
-> compaction pruning. Use `SnapshotHandle` for correctness.
+> **Note**: The raw `int64` overloads (`db.Get(key, ?snapshot)`, `NewIterator` / `RangeScan` with `snapshot = seq`) are **best-effort** and may race with compaction pruning.
+> Use `SnapshotHandle` for correctness.
 
 ### Constructor Options
 
@@ -217,7 +268,7 @@ use db = new LsmTree("./data")
 db.Flush()
 db.WaitForCompaction()
 
-// Async alternatives
+// Async alternatives (each returns Async<unit>, raises AggregateException on failure)
 // do! db.FlushAsync()
 // do! db.WaitForCompactionAsync()
 
