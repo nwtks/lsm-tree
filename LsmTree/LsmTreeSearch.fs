@@ -10,11 +10,11 @@ module LsmTreeSearch =
             | NotFound -> searchInTable key snap rest
             | r -> r
 
-    let searchInTables ssTablesLock (ssTables: SSTable list[]) key snap level : SearchResult =
-        lock ssTablesLock (fun () -> searchInTable key snap ssTables.[level])
+    let searchInTables ssTablesLock (ssTables: SSTable list[]) key snap level =
+        lock ssTablesLock (fun () -> ssTables.[level]) |> searchInTable key snap
 
     [<TailCall>]
-    let rec searchLevel ssTablesLock (ssTables: SSTable list[]) key snap level : SearchResult =
+    let rec searchLevel ssTablesLock (ssTables: SSTable list[]) key snap level =
         if level >= ssTables.Length then
             NotFound
         else

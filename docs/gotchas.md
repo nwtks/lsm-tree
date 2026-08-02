@@ -73,3 +73,11 @@ Accessing `IIterator.Current` before the first `MoveNext()` call (or after `Move
 ### Bloom filter probe spread: h2 forced odd
 
 `BloomFilter.keyIndex` computes probe positions as `(h1 + seed * h2) % bitSize` with `h2` forced odd (`h2 ||| 1u`). Without this, a key whose FNV-1a low 32 bits are 0 would set/check the same bit for all 7 probes (a 1-bit fingerprint), and an even `h2` keeps every probe at a fixed parity — half the bit space is never used. **Compatibility caveat**: this changes bit placement relative to earlier builds. Bloom data written by older code is probed at different positions by new code, and since `SSTable.Get` treats a bloom miss as `NotFound`, keys that exist in old SSTables can be silently missed (false negative). Regenerate SSTables (delete the data directory) after upgrading across this change; the on-disk layout is unchanged, so old files still load — they just can't be trusted.
+
+### Point Get snapshots are safe; range scans must keep the lock
+
+`LsmTreeSearch.searchInTables` copies the level list under `ssTablesLock` and reads **outside** the lock; `SSTable.Get` tolerates a concurrently disposed table by catching `ObjectDisposedException` → `NotFound`, and the search continues to the next level where compaction's merged table holds the same data (`minSnap` retention invariant). **Do not apply this pattern to range scans**: `collectRangeSources` must keep holding `ssTablesLock` during `GetRange` — a scan gathers all levels' sources in one pass, so if a table were disposed after a snapshot, the merged table holding its data would not be in the snapshot and the scan would silently lose data (torn read). If you ever make `GetRange` lock-free, you must also solve disposal-vs-reader coordination (refcount or deferral) first.
+
+### `SSTable.Get` on a disposed table returns `NotFound`, not an exception
+
+`SSTable.Get` catches `ObjectDisposedException` (thrown by `EnterReadLock`/`EnterReadLock` on a disposed `rwLock` or by an in-flight read) and returns `NotFound`. Callers can no longer rely on an exception to detect a use-after-dispose bug; conversely, tests that assert `Get` throws after `Dispose()` will now fail. See [trade-off.md](trade-off.md) (`Point Get: ssTablesLock snapshot + skip disposed tables`).

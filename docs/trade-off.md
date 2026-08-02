@@ -292,3 +292,21 @@
 - **Option 3: persisted manifest**: records `compactLevelLimits` at open time and validates on restart. Detects intent changes, but adds a new on-disk artifact, a fallback path for old databases, and new corruption modes.
 - **Option 4: warn + absorb `MaxSeq` only**: keeps startup working but still drops data — only fixes the sequence regression, not the loss.
 - **Option 5: documentation only**: no protection.
+
+## Point Get: `ssTablesLock` snapshot + skip disposed tables
+
+**Choice**: `LsmTreeSearch.searchInTables` copies the level's `SSTable list` reference under `ssTablesLock` and performs the disk I/O (`SSTable.Get`) **outside** the lock. `SSTable.Get` catches `ObjectDisposedException` and returns `NotFound`, so a table disposed by a concurrent compaction after the snapshot is silently skipped and the search continues to lower levels.
+
+**Why**: Point Get previously held `ssTablesLock` (a plain `obj` monitor) for the entire `Seek` + `Read` I/O. This fully serialized concurrent point Gets even though reads are read-only, and a slow Get blocked flush/compaction (`addSSTable` L0 registration, `replaceLevelTables`, `triggerCompaction` flag ops). F# lists are immutable and array slots are only ever reassigned (never mutated), so copying the reference is a consistent, O(1) snapshot — there is no torn-list risk.
+
+**Safety invariant**: This is correct only because compaction retains **all** entries with `seq >= minSnap` in the merged table at the next level (`pruneVersions`). When the search falls through a disposed L0 table, its data (at `seq >= minSnap`) is guaranteed present in the next level's merged table, and every registered snapshot is `>= minSnap`. Disposal after snapshot is safe because `SSTable.Get`'s read-lock acquisition throws `ObjectDisposedException` once `rwLock.Dispose()` has run — the `try/with` wraps the whole `withReadLock` call, so both the `EnterReadLock` failure and an in-flight read failure map to `NotFound`.
+
+**Trade-off**:
+- **Torn-snapshot window**: a Get can observe a state where an L0 table is already disposed but its merged replacement is not yet visible. This is harmless for point Get (data is found at the next level), but **range scans must NOT use this pattern** — `collectRangeSources` still holds `ssTablesLock` during `GetRange` because it gathers all levels' sources in one pass: if a table were disposed after a snapshot, the merged table holding its data would not be in the snapshot → torn read / data loss.
+- **`ObjectDisposedException` catch scope**: the catch also swallows a hypothetical reader-side disposal bug (a genuine double-dispose while reading). For point Get the cost is a false `NotFound`; compaction invariants keep the correct answer reachable at a lower level.
+- **`NotFound` on disposed table**: `Get` on an explicitly disposed table (e.g., a caller bug) now returns `NotFound` instead of throwing — behavior change, masked by the same catch.
+
+**Alternatives considered**:
+- **Convert `ssTablesLock` to `ReaderWriterLockSlim`**: read-lock during I/O, write-lock for structure changes. Preserves structure safety without copying, but leaves the disposal lifecycle coupled to the lock — compaction's `cleanupSSTables` (dispose + file delete) would need to stay under the write lock or be deferred, and the lock still serializes the I/O critical section during long reads.
+- **Snapshot + refcount**: track active readers per table and defer disposal until the count drops. Removes the `NotFound` fallback entirely, but adds per-table refcount bookkeeping and a second lock.
+- **Docs only**: document the serialization as a known limit; no behavior change.

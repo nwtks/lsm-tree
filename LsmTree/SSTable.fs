@@ -221,19 +221,22 @@ type SSTable(path) =
             | Some idx ->
                 let entry = index.[idx]
 
-                LockExtensions.withReadLock rwLock (fun () ->
-                    fs.Seek(
-                        entry.Offset
-                        + SSTable.SEQ_BYTE_SIZE
-                        + SSTable.KEY_LEN_BYTE_SIZE
-                        + int64 entry.KeyByteLen,
-                        System.IO.SeekOrigin.Begin
-                    )
-                    |> ignore
+                try
+                    LockExtensions.withReadLock rwLock (fun () ->
+                        fs.Seek(
+                            entry.Offset
+                            + SSTable.SEQ_BYTE_SIZE
+                            + SSTable.KEY_LEN_BYTE_SIZE
+                            + int64 entry.KeyByteLen,
+                            System.IO.SeekOrigin.Begin
+                        )
+                        |> ignore
 
-                    match SSTable.readItem br with
-                    | Some v -> Found v
-                    | None -> Tombstone)
+                        match SSTable.readItem br with
+                        | Some v -> Found v
+                        | None -> Tombstone)
+                with :? System.ObjectDisposedException ->
+                    NotFound
             | None -> NotFound
         else
             NotFound

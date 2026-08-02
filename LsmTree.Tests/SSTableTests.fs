@@ -210,6 +210,19 @@ let ``SSTable Get returns NotFound for missing key`` () =
         (sst :> System.IDisposable).Dispose())
 
 [<Fact>]
+let ``SSTable Get returns NotFound for disposed SSTable`` () =
+    withTestDir "sst_get_disposed" (fun testDataDir ->
+        let path = writeSst testDataDir "L0_disposed.sst" [ "k", 1L, Some "v" ]
+        let sst = new SSTable(path)
+        assertEqual (Found "v") (sst.Get("k", System.Int64.MaxValue)) "Get before dispose returns value"
+        (sst :> System.IDisposable).Dispose()
+
+        assertEqual
+            NotFound
+            (sst.Get("k", System.Int64.MaxValue))
+            "Get after dispose returns NotFound without throwing")
+
+[<Fact>]
 let ``SSTable GetRange returns entries within range`` () =
     withTestDir "sst_range_basic" (fun testDataDir ->
         let path =
