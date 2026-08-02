@@ -13,23 +13,6 @@ let ``SSTable validateIndexOffset throws when offset is out of range`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateIndexOffset 100L 100L SSTable.FOOTER_SIZE)
 
 [<Fact>]
-let ``SSTable validateIndexCount throws when count is negative`` () =
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateIndexCount 100L 50L -1 SSTable.FOOTER_SIZE)
-
-[<Fact>]
-let ``SSTable validateIndexCount throws when count exceeds remaining space`` () =
-    Assert.Throws<System.IO.InvalidDataException>(fun () ->
-        SSTable.validateIndexCount 100L 50L 100000 SSTable.FOOTER_SIZE)
-
-[<Fact>]
-let ``SSTable validateEntryOffsets throws when offset is negative`` () =
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateEntryOffsets 100L [| -1L |])
-
-[<Fact>]
-let ``SSTable validateEntryOffsets throws when offset equals file limit`` () =
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateEntryOffsets 100L [| 100L |])
-
-[<Fact>]
 let ``SSTable validateBloomOffset throws when bloom offset precedes index offset`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () ->
         SSTable.validateBloomOffset 100L 50L 30L SSTable.FOOTER_SIZE)

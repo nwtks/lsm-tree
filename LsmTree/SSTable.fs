@@ -31,24 +31,6 @@ module SSTable =
             System.IO.InvalidDataException $"SSTable index offset {offset} is out of range (file size: {fileLen})"
             |> raise
 
-    let validateIndexCount fileLen offset count footerSize =
-        let remaining = fileLen - footerSize - offset - INDEX_COUNT_BYTE_SIZE
-
-        if count < 0 then
-            System.IO.InvalidDataException $"SSTable index entry count is negative: {count}"
-            |> raise
-
-        if int64 count * SEQ_BYTE_SIZE > remaining then
-            System.IO.InvalidDataException $"SSTable index of {count} entries would exceed remaining space"
-            |> raise
-
-    let validateEntryOffsets offset (offsets: int64[]) =
-        match offsets |> Array.tryFindIndex (fun o -> o < 0L || o >= offset) with
-        | Some i ->
-            System.IO.InvalidDataException $"SSTable entry offset at index {i} is out of range: {offsets.[i]}"
-            |> raise
-        | None -> ()
-
     let validateBloomOffset fileLen indexOffset offset footerSize =
         if offset < indexOffset then
             System.IO.InvalidDataException
