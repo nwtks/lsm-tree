@@ -44,7 +44,15 @@ If you ever change these coordinators or add a new background async operation th
 
 ### RangeIterator dispose releases snapshot
 
-`RangeIterator` registers a snapshot at construction time and releases it at `Dispose()`. If you forget to call `Dispose()` (or don't use `use` in F#), the snapshot remains active in `SnapshotManager`, preventing compaction from pruning stale versions. This can cause unbounded disk growth. Always `use` iterators or call `Dispose()` explicitly.
+`NewIterator` registers its snapshot sequence **before** collecting range sources (see `LsmTree.NewIterator`) and `RangeIterator` releases it at `Dispose()`. If you forget to call `Dispose()` (or don't use `use` in F#), the snapshot remains active in `SnapshotManager`, preventing compaction from pruning stale versions. This can cause unbounded disk growth. Always `use` iterators or call `Dispose()` explicitly.
+
+### Snapshot handle leak pins pruning
+
+`Snapshot()` returns a registered `SnapshotHandle`. If the handle is never disposed, its sequence stays in the refcounted active-snapshot registry forever, so `GetMinActiveSnapshot()` never advances past it and compaction cannot prune **any** older versions — unbounded disk growth. Use `use` (or ensure `Dispose()` on every path). Handles are **refcounted**: `NewIterator` re-registers the same sequence internally, so the same sequence may appear with count > 1; each acquire needs a matching release. Double-dispose is safe (a missing entry is a no-op).
+
+### Raw `int64` snapshot reads are best-effort
+
+`Get(key, ?snapshot: int64)` (and `handle.Seq` passed directly) do **not** register the sequence. Compaction can prune the version between the snapshot read and the lookup, returning `None` for a version that existed moments earlier. This is the exact race Option 1 (snapshot handle API) was designed to fix — prefer `SnapshotHandle` in new code. The `int64` overload exists only for backward compatibility.
 
 ### `RangeIterator.Current` before `MoveNext` throws
 

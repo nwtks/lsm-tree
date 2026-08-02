@@ -92,7 +92,7 @@ let ``Transaction commit advances sequence number exactly once`` () =
         tx.Commit()
 
         let snapAfter = tree.Snapshot()
-        Assert.True(snapAfter > snapBefore))
+        Assert.True(snapAfter.Seq > snapBefore.Seq))
 
 [<Fact>]
 let ``Transaction empty commit does not advance sequence`` () =
@@ -104,7 +104,7 @@ let ``Transaction empty commit does not advance sequence`` () =
         tx.Commit()
 
         let snapAfter = tree.Snapshot()
-        assertEqual snapBefore snapAfter "Sequence should not advance on empty commit")
+        assertEqual snapBefore.Seq snapAfter.Seq "Sequence should not advance on empty commit")
 
 [<Fact>]
 let ``Transaction snapshot at start sees only committed data`` () =
@@ -208,7 +208,7 @@ let ``Transaction Rollback advances sequence number for ABORT record`` () =
         tx.Rollback()
 
         let snapAfter = tree.Snapshot()
-        Assert.True(snapAfter > snapBefore, "Rollback should advance sequence for ABORT WAL record"))
+        Assert.True(snapAfter.Seq > snapBefore.Seq, "Rollback should advance sequence for ABORT WAL record"))
 
 [<Fact>]
 let ``Transaction concurrent transactions on different keys`` () =

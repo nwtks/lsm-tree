@@ -68,6 +68,71 @@ let ``LsmTree MVCC returns correct versions at each snapshot`` () =
         assertEqual (Some "v2") (tree.Get "k") "direct latest sees v2")
 
 [<Fact>]
+let ``Snapshot handle prevents compaction from pruning old versions`` () =
+    withTestDir "snap_handle_prune" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+        tree.Put("k", "v1")
+        tree.Flush()
+
+        use snap = tree.Snapshot()
+        tree.Put("k", "v2")
+        tree.Flush()
+        tree.Put("k", "v3")
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        assertEqual (Some "v1") (tree.Get("k", snap)) "Old version preserved while snapshot handle is active"
+        assertEqual (Some "v3") (tree.Get "k") "Latest version still visible")
+
+[<Fact>]
+let ``Snapshot handle release allows compaction to prune old versions`` () =
+    withTestDir "snap_handle_release" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+        tree.Put("k", "v1")
+        tree.Flush()
+
+        let snap = tree.Snapshot()
+        tree.Put("k", "v2")
+        tree.Flush()
+        snap.Dispose()
+
+        tree.Put("k", "v3")
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        assertEqual None (tree.Get("k", snap.Seq)) "Old version pruned after handle release"
+        assertEqual (Some "v3") (tree.Get "k") "Latest version still visible")
+
+[<Fact>]
+let ``Snapshot handle double dispose is safe`` () =
+    withTestDir "snap_handle_double" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v")
+
+        let snap = tree.Snapshot()
+        snap.Dispose()
+        snap.Dispose()
+
+        assertEqual (Some "v") (tree.Get "k") "Data readable after double dispose")
+
+[<Fact>]
+let ``RangeScan with snapshot handle survives compaction`` () =
+    withTestDir "snap_handle_rscan" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+        tree.Put("k", "v1")
+        tree.Flush()
+
+        use snap = tree.Snapshot()
+        tree.Put("k", "v2")
+        tree.Flush()
+        tree.Put("k", "v3")
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        let result = tree.RangeScan("k", "k", snapshot = snap) |> Seq.toList
+        assertEqual [ "k", "v1" ] result "RangeScan with handle sees old version after compaction")
+
+[<Fact>]
 let ``LsmTree transaction commits and restarts correctly`` () =
     withTestDir "tx_restart" (fun testDir ->
         do

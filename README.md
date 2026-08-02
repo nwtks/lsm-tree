@@ -29,12 +29,12 @@ Immutable on-disk files produced when the MemTable is flushed:
 ### Range Scans
 In-memory k-way merge across all storage layers (MemTable, immutable MemTable, and each SSTable):
 - **Sorted results**: Keys are returned in `String.CompareOrdinal` order, deduplicated (latest visible version wins).
-- **Snapshot-isolated**: `RangeScan`/`NewIterator` accept an optional snapshot parameter for consistent time-travel scans.
+- **Snapshot-isolated**: `RangeScan`/`NewIterator` accept a `SnapshotHandle` for consistent time-travel scans that compaction cannot prune.
 - **Two APIs**: `RangeScan` returns `seq<string * string>` (auto-disposing); `NewIterator` returns `IIterator` (manual lifetime).
 
 ### Background Multi-Level Compaction & Automatic Pruning
 - **Configurable level limits**: e.g., `[| 4; 10; 100; 1000 |]` means L0 over 4 files triggers compaction to L1, L1 over 10 triggers compaction to L2, etc.
-- **Snapshot-aware pruning**: Versions visible to active snapshots are preserved; stale versions are purged.
+- **Snapshot-aware pruning**: Versions visible to **registered** snapshots (`SnapshotHandle`, transactions, iterators) are preserved; stale versions are purged.
 - **Tombstone elimination**: Deletion markers are completely removed from the final storage level.
 - **Cascade compaction**: A single flush can trigger compaction cascading through multiple levels.
 - **Compaction APIs**: `WaitForCompaction()` (synchronous, waits for completion) and `WaitForCompactionAsync()` (returns `Async<unit>`).
@@ -161,8 +161,8 @@ use it = db.NewIterator("a", "z")
 while it.MoveNext() do
     printfn "%s = %s" (fst it.Current) (snd it.Current)
 
-// With snapshot isolation
-let snap = db.Snapshot()
+// With snapshot isolation (handle — safe against compaction)
+use snap = db.Snapshot()
 // ... concurrent writes ...
 let pastView = db.RangeScan("a", "z", snapshot = snap) |> Seq.toList
 ```
@@ -171,13 +171,22 @@ let pastView = db.RangeScan("a", "z", snapshot = snap) |> Seq.toList
 
 ```fsharp
 db.Put("config:theme", "dark")
-let v1 = db.Snapshot()           // snapshot at version 1
+use v1 = db.Snapshot()           // registered snapshot handle at version 1
 
 db.Put("config:theme", "light")
 
 let current = db.Get("config:theme")       // Some "light"
 let past = db.Get("config:theme", v1)      // Some "dark" — historical view
 ```
+
+`Snapshot()` returns a `SnapshotHandle` that **registers** the referenced
+version with the compaction pruner, so it cannot be pruned while the handle is
+alive. Dispose it (or use `use`) to release the version for pruning — a leaked
+handle keeps old versions on disk indefinitely.
+
+> **Note**: The raw `int64` overloads (`db.Get(key, ?snapshot)`, `NewIterator` /
+> `RangeScan` with `snapshot = seq`) are **best-effort** and may race with
+> compaction pruning. Use `SnapshotHandle` for correctness.
 
 ### Constructor Options
 

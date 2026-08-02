@@ -189,3 +189,23 @@
 **Alternatives considered**:
 - **Linked `CancellationTokenSource`**: ensures child tasks are cancelled before parent disposal, but adds complexity for coordinating three independent async scopes (flush, compaction, dispose).
 - **Task-based with `Task.WhenAll`**: more structured, but `.NET` `Task` doesn't have built-in `Async` interop without `Async.StartAsTask`.
+
+---
+
+## Snapshot handle API (Option 1): registered `SnapshotHandle` for compaction-safe reads
+
+**Choice**: `LsmTree.Snapshot()` now returns a **registered** `SnapshotHandle` (`IDisposable`) instead of a raw `int64`. `AcquireSnapshot()` on `LsmTreeSnapshot` registers the current sequence in a refcounted `Map<int64, int>` (reassigned under a lock — an immutable structure keeps the register/release logic side-effect free); `SnapshotHandle.Dispose()` decrements/removes it. `Get(key, snapshot: SnapshotHandle)` (plus `NewIterator`/`RangeScan` with `snapshot = handle`) reads through the registered sequence. A best-effort `Get(key, ?snapshot: int64)` overload is retained for backward compatibility. `NewIterator` now registers its snapshot **before** collecting range sources (previously after — an ordering hole).
+
+**Why**: The previous design was racy. `Snapshot()` returned an **unregistered** `int64`; compaction's `pruneVersions isLastLevel minSnap` could prune a version between the caller's `Snapshot()` and `Get(key, v1)`, returning `None` for a version that existed at snapshot time (time-travel window). `NewIterator` had the same hole reversed: sources were snapshotted before the snapshot was registered, so a compaction between the two could prune versions the iterator was about to materialize.
+
+**Trade-off**:
+- **Breaking API change**: `Snapshot()` return type changed from `int64` to `SnapshotHandle`. Callers comparing sequences (e.g., `snapAfter > snapBefore`) must use `.Seq`. Existing tests were updated accordingly.
+- **Caller disposal obligation**: A handle that is never disposed (leaked) keeps `minSnap` pinned low forever → compaction cannot prune → unbounded disk growth. F# `use` makes this easy to get right, but it is now the caller's responsibility.
+- **Refcounting cost**: `RegisterSnapshot`/`ReleaseSnapshot` take a lock on every acquire/release. Negligible for point operations, but a hot path that acquires/releases snapshots at high frequency pays a small lock cost.
+- **Raw `int64` escape hatch remains**: `Get(key, ?snapshot)` and `handle.Seq` still allow unregistered reads. These are documented as **best-effort** — they may still race with pruning. Keeping them preserves source compatibility at the cost of a footgun.
+
+**Alternatives considered**:
+- **Option 2: compaction-safe table swapping (atomic rename + hard-link/rename-retry)**: compaction never deletes a table still referenced by an active reader; the reader keeps a file handle. No API change, but requires OS-level file lifecycle coupling and leaves tombstone versions on disk indefinitely for the reader's lifetime.
+- **Option 3: version retention markers (write `RETAIN <seq>` markers)**: compaction leaves a marker table instead of pruning; GC runs later. Keeps `int64` API but adds a second pass and more disk churn.
+- **Option 4: epoch-based reclamation**: reads join an epoch; compaction defers pruning until the epoch drains. No API change, but adds per-read epoch bookkeeping and can stall pruning under long-lived readers.
+- **Option 5: copy-on-write / refcounted SSTables**: table-level refcounts instead of sequence-level. More memory per table and more complex lifecycle management.

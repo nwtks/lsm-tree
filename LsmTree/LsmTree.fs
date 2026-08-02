@@ -147,10 +147,10 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         let seq = snapshotManager.NextSequence()
         wal.Abort(seq, false)
 
-    member _.Snapshot() = snapshotManager.CurrentSequence()
+    member _.Snapshot() = snapshotManager.AcquireSnapshot()
 
     member this.BeginTransaction() =
-        let snap = this.Snapshot()
+        let snap = snapshotManager.CurrentSequence()
         snapshotManager.RegisterSnapshot snap
         new LsmTransaction(this :> ILsmTree, snap) :> ITransaction
 
@@ -158,9 +158,12 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
 
     member _.Delete key = deleteDirect key
 
-    member this.Get(key, ?snapshot) =
-        defaultArg snapshot (this.Snapshot())
+    member _.Get(key, ?snapshot: int64) =
+        defaultArg snapshot (snapshotManager.CurrentSequence())
         |> LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key
+
+    member _.Get(key, snapshot: SnapshotHandle) =
+        LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key snapshot.Seq
 
     member _.Flush() =
         flushMemTable ()
@@ -182,16 +185,20 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
     member _.ReleaseSnapshot snapshot =
         snapshotManager.ReleaseSnapshot snapshot
 
-    member this.NewIterator(fromKey, toKey, ?snapshot) =
+    member _.NewIterator(fromKey, toKey, ?snapshot: SnapshotHandle) =
         if isNull fromKey then
             nullArg "fromKey"
 
         if isNull toKey then
             nullArg "toKey"
 
-        let snap = defaultArg snapshot (this.Snapshot())
-        let sources = collectRangeSources fromKey toKey
+        let snap =
+            match snapshot with
+            | Some handle -> handle.Seq
+            | None -> snapshotManager.CurrentSequence()
+
         snapshotManager.RegisterSnapshot snap
+        let sources = collectRangeSources fromKey toKey
         new RangeIterator(snapshotManager, sources, snap) :> IIterator
 
     member this.RangeScan(fromKey, toKey, ?snapshot) =
