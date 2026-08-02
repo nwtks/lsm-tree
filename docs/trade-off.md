@@ -198,6 +198,21 @@
 
 ---
 
+## SkipListNode: internal `Next`
+
+**Choice**: `SkipListNode.Next` is now an explicit `internal member` (no longer a public auto-property). `Key`/`Seq`/`Value` remain public immutable get-only properties. All access to `Next` (reads via `Volatile.Read`, CAS writes via `Interlocked.CompareExchange`) happens inside the same assembly (module functions in `SkipList.fs` and the `SkipList` class), so `internal` visibility is sufficient.
+
+**Why**: `Next` is the only mutable field — a `SkipListNode[]` written by CAS during lock-free insertion. Lock-free reads (`Volatile.Read(&pred.Next.[lvl])`) rely on the invariant that a *published* node's `Next` array is never rewritten (only unpublished levels of `newNode.Next` are touched during retry). Public exposure of the array let external code corrupt that invariant (`node.Next.[i] <- x`), turning a subtle concurrency bug into a public API hazard. Internalizing it makes the invariant enforceable by the compiler.
+
+**Trade-off**: External code can no longer walk the skip list structure directly (only via `SkipList.Find`/`Entries`/`EntriesRange`), and cannot construct `SkipListNode` instances. The skip list internals become assembly-private — acceptable because the public API (`SkipList`) never returned nodes anyway.
+
+**Alternatives considered**:
+- **Full redesign of insertion (publish-once, copy-on-write)**: eliminates the mutable array entirely, but rewrites the core CAS algorithm with high risk to lock-free correctness.
+- **Immutable record**: poor fit — the null-terminated linked structure needs `AllowNullLiteral` and per-level mutation during insertion.
+- **Documentation + tests only**: no compile-time protection; the hazard remains for any caller of the public API.
+
+---
+
 ## SearchResult: struct DU replaces `(string option) option`
 
 **Choice**: The internal lookup chain returns `SearchResult`, a `[<Struct>]` discriminated union with three cases: `Found of string`, `Tombstone`, `NotFound`. Previously it used nested `string option option` where `Some(Some v)` = live, `Some None` = tombstone, `None` = not found.

@@ -3,10 +3,10 @@ namespace LsmTree
 [<AllowNullLiteral>]
 type SkipListNode(key: string, seq: int64, value: string option, level: int) =
     let next = Array.zeroCreate<SkipListNode> level
-    member val Key = key
-    member val Seq = seq
-    member val Value = value
-    member val Next = next
+    member _.Key = key
+    member _.Seq = seq
+    member _.Value = value
+    member internal _.Next = next
 
 [<Struct>]
 type SearchResult =
