@@ -28,6 +28,21 @@
 
 ---
 
+## WAL write path: single lock + single write helper
+
+**Choice**: All WAL mutations (`Put`, `PutSingle`, `Delete`, `DeleteSingle`, `Begin`, `Commit`, `Abort`) funnel through one private `write sync log` helper that takes `walLock`, writes the line, and flushes to disk only when `sync = true`. Non-durable variants (`Put`/`Delete`/`Begin`, used by the single-key fast path and transaction markers) call it with `sync = false`.
+
+**Why**: Previously the "lock + `WriteLine`" pattern was duplicated inline in `Put`/`Delete`/`Begin` while the `*Single`/`Commit`/`Abort` variants used a helper — the flush-on-demand semantics were scattered across five sites. Consolidating keeps the lock scope and durability decision in exactly one place.
+
+**Trade-off**: The `write` helper intentionally does **not** swallow I/O exceptions (unlike `Dispose`, which must not throw). Callers rely on exceptions propagating to the caller of `Put`/`Commit` etc. No behavior change vs. the previous inline code; this is a structural cleanup.
+
+**Alternatives considered**:
+- **Batch writer thread + queue**: higher throughput under concurrency, but breaks the `Commit(sync = true)` durability guarantee (returns before fsync) and adds crash-drain complexity.
+- **Merge `walLock` into `mainLock`**: invalid — a write lock would serialize all reads; a read lock would leave `StreamWriter` unprotected across concurrent writers.
+- **Move WAL writes outside `mainLock`**: invalid — the swap in `flushMemTable` could interleave between the WAL append and the MemTable insert, losing the write when the old WAL is deleted.
+
+---
+
 ## Single-key fast path: bypass transactions
 
 **Choice**: `LsmTree.Put` and `LsmTree.Delete` bypass the transaction system entirely. They use `wal.PutSingle`/`wal.DeleteSingle`, which write bare `PUT`/`DEL` lines to the WAL (no `BEGIN`/`COMMIT` markers), and apply the mutation directly to the MemTable under a read lock — no snapshot registration, no `ops` list.

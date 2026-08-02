@@ -111,7 +111,7 @@ type WAL(path: string) =
     let walLock = obj ()
     let mutable disposed = false
 
-    let writeSync sync (log: string) =
+    let write sync (log: string) =
         lock walLock (fun () ->
             writer.WriteLine log
 
@@ -122,36 +122,33 @@ type WAL(path: string) =
     member _.Put(seq: int64, key: string, value: string) =
         let k = WALRecovery.utf8ToBase64 key
         let v = WALRecovery.utf8ToBase64 value
-        let log = $"{WALRecovery.PUT} {seq} {k} {v}"
-        lock walLock (fun () -> writer.WriteLine log)
+        $"{WALRecovery.PUT} {seq} {k} {v}" |> write false
 
     member _.PutSingle(seq: int64, key: string, value: string, ?sync: bool) =
         let sync = defaultArg sync true
         let k = WALRecovery.utf8ToBase64 key
         let v = WALRecovery.utf8ToBase64 value
-        $"{WALRecovery.PUT} {seq} {k} {v}" |> writeSync sync
+        $"{WALRecovery.PUT} {seq} {k} {v}" |> write sync
 
     member _.Delete(seq: int64, key: string) =
         let k = WALRecovery.utf8ToBase64 key
-        let log = $"{WALRecovery.DEL} {seq} {k}"
-        lock walLock (fun () -> writer.WriteLine log)
+        $"{WALRecovery.DEL} {seq} {k}" |> write false
 
     member _.DeleteSingle(seq: int64, key: string, ?sync: bool) =
         let sync = defaultArg sync true
         let k = WALRecovery.utf8ToBase64 key
-        $"{WALRecovery.DEL} {seq} {k}" |> writeSync sync
+        $"{WALRecovery.DEL} {seq} {k}" |> write sync
 
     member _.Begin(seq: int64) =
-        let log = $"{WALRecovery.BEGIN} {seq}"
-        lock walLock (fun () -> writer.WriteLine log)
+        $"{WALRecovery.BEGIN} {seq}" |> write false
 
     member _.Commit(seq: int64, ?sync: bool) =
         let sync = defaultArg sync true
-        $"{WALRecovery.COMMIT} {seq}" |> writeSync sync
+        $"{WALRecovery.COMMIT} {seq}" |> write sync
 
     member _.Abort(seq: int64, ?sync: bool) =
         let sync = defaultArg sync true
-        $"{WALRecovery.ABORT} {seq}" |> writeSync sync
+        $"{WALRecovery.ABORT} {seq}" |> write sync
 
     member this.Close() = (this :> System.IDisposable).Dispose()
 
