@@ -200,6 +200,10 @@ module SSTable =
         let value = readItem br
         entry.Key, entry.Seq, value
 
+type RangeReadResult =
+    | RangeOk of entries: (string * int64 * string option)[]
+    | RangeDisposed
+
 type SSTable(path) =
     let fs =
         new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
@@ -251,16 +255,20 @@ type SSTable(path) =
 
     member _.GetRange(fromKey, toKey) =
         if index.Length = 0 then
-            [||]
+            RangeOk [||]
         else
             let lo = SSTable.lowerBound index fromKey 0 (index.Length - 1)
             let hi = SSTable.upperBound index toKey 0 (index.Length - 1)
 
             if lo >= hi then
-                [||]
+                RangeOk [||]
             else
-                LockExtensions.withReadLock rwLock (fun () ->
-                    Array.init (hi - lo) (fun i -> SSTable.readIndexedEntryAt fs br index.[lo + i]))
+                try
+                    LockExtensions.withReadLock rwLock (fun () ->
+                        Array.init (hi - lo) (fun i -> SSTable.readIndexedEntryAt fs br index.[lo + i]))
+                    |> RangeOk
+                with :? System.ObjectDisposedException ->
+                    RangeDisposed
 
     interface System.IDisposable with
         member _.Dispose() =

@@ -302,7 +302,7 @@
 **Safety invariant**: This is correct only because compaction retains **all** entries with `seq >= minSnap` in the merged table at the next level (`pruneVersions`). When the search falls through a disposed L0 table, its data (at `seq >= minSnap`) is guaranteed present in the next level's merged table, and every registered snapshot is `>= minSnap`. Disposal after snapshot is safe because `SSTable.Get`'s read-lock acquisition throws `ObjectDisposedException` once `rwLock.Dispose()` has run — the `try/with` wraps the whole `withReadLock` call, so both the `EnterReadLock` failure and an in-flight read failure map to `NotFound`.
 
 **Trade-off**:
-- **Torn-snapshot window**: a Get can observe a state where an L0 table is already disposed but its merged replacement is not yet visible. This is harmless for point Get (data is found at the next level), but **range scans must NOT use this pattern** — `collectRangeSources` still holds `ssTablesLock` during `GetRange` because it gathers all levels' sources in one pass: if a table were disposed after a snapshot, the merged table holding its data would not be in the snapshot → torn read / data loss.
+- **Torn-snapshot window**: a Get can observe a state where an L0 table is already disposed but its merged replacement is not yet visible. This is harmless for point Get (data is found at the next level). Range scans cannot use this fallthrough — they use a separate snapshot + retry pattern (see the Range Scan section below).
 - **`ObjectDisposedException` catch scope**: the catch also swallows a hypothetical reader-side disposal bug (a genuine double-dispose while reading). For point Get the cost is a false `NotFound`; compaction invariants keep the correct answer reachable at a lower level.
 - **`NotFound` on disposed table**: `Get` on an explicitly disposed table (e.g., a caller bug) now returns `NotFound` instead of throwing — behavior change, masked by the same catch.
 
@@ -310,3 +310,21 @@
 - **Convert `ssTablesLock` to `ReaderWriterLockSlim`**: read-lock during I/O, write-lock for structure changes. Preserves structure safety without copying, but leaves the disposal lifecycle coupled to the lock — compaction's `cleanupSSTables` (dispose + file delete) would need to stay under the write lock or be deferred, and the lock still serializes the I/O critical section during long reads.
 - **Snapshot + refcount**: track active readers per table and defer disposal until the count drops. Removes the `NotFound` fallback entirely, but adds per-table refcount bookkeeping and a second lock.
 - **Docs only**: document the serialization as a known limit; no behavior change.
+
+## Range Scan: `ssTablesLock` snapshot + retry on disposal
+
+**Choice**: `LsmTree.collectRangeSources` copies the level-list array under `ssTablesLock`, then performs `SSTable.GetRange` I/O **outside** the lock. `SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read (catch of `ObjectDisposedException`); otherwise it returns `RangeOk entries`. If any table in the snapshot is detected as disposed, **or** the snapshot's list references no longer match the current ones (checked under `ssTablesLock`; F# lists are immutable, so reference equality suffices), the entire collection — MemTable + immutable + SSTable — is retried. After 8 retries it falls back to collecting under `ssTablesLock` (the pre-change behavior), which is safe because structure changes are blocked.
+
+**Why**: Range scans cannot use the point-Get fallthrough: the merge over all levels is a union with no "next level" to continue to, so a table disposed after a snapshot would silently lose that table's data (torn read). But disposal only ever happens **after** the table is removed from the list (`replaceLevelTables` under lock → `cleanupSSTables` outside), so a re-collected snapshot is always the current truth and retries converge. Retrying the whole collection also keeps the snapshot consistent across mem/sst: a flush between the mem read and the sst read would otherwise duplicate entries (the immutable MemTable appears in both reads) — tolerated, but re-collecting avoids it. Reference-change validation catches a removed+disposed table that the reader never touched (e.g., disposed before its `GetRange` was attempted because it fell outside the requested range) — disposal detection alone is not a reliable signal in that case.
+
+**Trade-off**:
+- **Retry I/O amplification**: each retry re-reads all sources. Rare in practice (requires a compaction completing mid-scan), bounded by the retry cap + locked fallback.
+- **`ObjectDisposedException` as control flow**: `GetRange` converts it to `RangeDisposed`. An empty result is a legitimate `RangeOk [||]` and must not be confused with disposal — this is why the retry signal lives in the DU, not in the array result.
+- **Latency spike**: the locked fallback re-introduces the pre-change serialization, but only after 8 failed attempts (effectively never; requires continuous compaction churn during the scan).
+- **Theoretical livelock**: under unbounded concurrent compaction, retries could repeat indefinitely — bounded by the cap, after which the locked fallback always succeeds because structure changes are blocked.
+
+**Alternatives considered**:
+- **Retry only on `RangeDisposed` (no reference validation)**: cheaper (no second lock pass), but misses a removed+disposed table the reader never touched → torn read. Reference validation is required for correctness.
+- **Skip disposed tables like point Get**: unsafe for scans (union has no fallthrough) — rejected.
+- **Swallow disposal inside `GetRange` (return empty)**: would silently produce a torn read — rejected.
+- **ReaderWriterLockSlim / refcount / deferred disposal**: as in the point-Get section; rejected for the same reasons.

@@ -134,7 +134,7 @@ Each range scan proceeds in three phases:
 
 1. **Source materialization**: Under appropriate locks, each storage layer (MemTable, immutable MemTable, per-SSTable) produces a `(string * int64 * string option)[]` of entries whose keys fall within `[fromKey, toKey]` (inclusive, `CompareOrdinal` ordering).
    - **MemTable**: `SkipList.EntriesRange` traverses the `Next.[0]` chain from `head`, skipping nodes with key < `fromKey`, collecting until key > `toKey`. No lock required — the SkipList is lock-free.
-   - **SSTable**: `SSTable.GetRange` performs two binary searches on the in-memory index (`lowerBound`/`upperBound`) to find the offset range, then reads entries sequentially under a per-SSTable read lock. Each key appears at most once per SSTable.
+   - **SSTable**: `collectRangeSources` copies the level-list array under `ssTablesLock`, then calls `SSTable.GetRange` **outside** the lock. `GetRange` performs two binary searches on the in-memory index (`lowerBound`/`upperBound`) to find the offset range, then reads entries sequentially under a per-SSTable read lock. If a table was disposed mid-read (`GetRange` returns `RangeDisposed`) or the snapshot's list references drifted, the whole collection is retried (max 8 attempts), falling back to collecting under `ssTablesLock`. Each key appears at most once per SSTable.
 
 2. **Merge**: `RangeIterator` holds a `SourceCursor` array (one per source). `MoveNext` repeatedly:
    - Picks the minimum key across all cursors via `pickMinKey` (O(K) where K = source count).
@@ -149,7 +149,7 @@ Each range scan proceeds in three phases:
 | Phase | Lock held | Duration |
 |---|---|---|
 | Materialize MemTable sources | `mainLock` (ReadLock) | Reference capture + SkipList traversal |
-| Materialize SSTable sources | `ssTablesLock` + per-SSTable `rwLock` (ReadLock) | Binary search + sequential iteration |
+| Materialize SSTable sources | `ssTablesLock` (snapshot copy only, then released) + per-SSTable `rwLock` (ReadLock) | Binary search + sequential iteration **outside** `ssTablesLock`; retry whole collection on disposal/drift (max 8), then locked fallback |
 | Merge (`MoveNext`) | **None** | All data is in materialized arrays |
 | Iterator construction | `snapshotManager.RegisterSnapshot` | Instant |
 | Iterator dispose | `snapshotManager.ReleaseSnapshot` | Instant |

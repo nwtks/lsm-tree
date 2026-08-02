@@ -104,19 +104,53 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
 
         for level in ssTables do
             for sst in level do
-                let entries = sst.GetRange(fromKey, toKey)
-
-                if entries.Length > 0 then
-                    acc <- entries :: acc
+                match sst.GetRange(fromKey, toKey) with
+                | RangeOk entries ->
+                    if entries.Length > 0 then
+                        acc <- entries :: acc
+                | RangeDisposed -> ()
 
         acc
 
-    let collectRangeSources fromKey toKey =
+    let collectSstSourcesFromSnapshot fromKey toKey (snapshot: SSTable list[]) =
+        let readTable (disposed, acc) (sst: SSTable) =
+            if disposed then
+                disposed, acc
+            else
+                match sst.GetRange(fromKey, toKey) with
+                | RangeOk entries -> false, (if entries.Length > 0 then entries :: acc else acc)
+                | RangeDisposed -> true, acc
+
+        snapshot
+        |> Array.fold (fun (disposed, acc) level -> List.fold readTable (disposed, acc) level) (false, [])
+
+    let snapshotStable (snapshot: SSTable list[]) =
+        lock ssTablesLock (fun () ->
+            Array.forall2
+                (fun snapLevel curLevel -> System.Object.ReferenceEquals(snapLevel, curLevel))
+                snapshot
+                ssTables)
+
+    [<TailCall>]
+    let rec tryCollectRangeSources fromKey toKey maxRetries attempt =
         let memSources =
             LockExtensions.withReadLock mainLock (fun () -> collectMemSources fromKey toKey)
 
-        let sstSources = lock ssTablesLock (fun () -> collectSstSources fromKey toKey)
-        memSources @ sstSources |> List.rev |> List.toArray
+        let snapshot = lock ssTablesLock (fun () -> Array.copy ssTables)
+        let disposed, sstSources = collectSstSourcesFromSnapshot fromKey toKey snapshot
+
+        if disposed then
+            tryCollectRangeSources fromKey toKey maxRetries (attempt + 1)
+        elif snapshotStable snapshot then
+            memSources @ sstSources |> List.rev |> List.toArray
+        elif attempt < maxRetries then
+            tryCollectRangeSources fromKey toKey maxRetries (attempt + 1)
+        else
+            let sstSources = lock ssTablesLock (fun () -> collectSstSources fromKey toKey)
+            memSources @ sstSources |> List.rev |> List.toArray
+
+    let collectRangeSources fromKey toKey =
+        tryCollectRangeSources fromKey toKey 8 0
 
     let applyTransactionOps commitSeq ops =
         ops

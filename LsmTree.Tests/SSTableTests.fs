@@ -235,10 +235,13 @@ let ``SSTable GetRange returns entries within range`` () =
                   "d", 4L, Some "vd" ]
 
         use sst = new SSTable(path)
-        let result = sst.GetRange("b", "c")
-        assertEqual 2 result.Length "Two entries in [b,c]"
-        assertEqual ("b", 2L, Some "vb") result.[0] "First entry is b"
-        assertEqual ("c", 3L, Some "vc") result.[1] "Second entry is c")
+
+        match sst.GetRange("b", "c") with
+        | RangeOk result ->
+            assertEqual 2 result.Length "Two entries in [b,c]"
+            assertEqual ("b", 2L, Some "vb") result.[0] "First entry is b"
+            assertEqual ("c", 3L, Some "vc") result.[1] "Second entry is c"
+        | RangeDisposed -> failwith "unexpected RangeDisposed")
 
 [<Fact>]
 let ``SSTable GetRange includes tombstones`` () =
@@ -247,10 +250,13 @@ let ``SSTable GetRange includes tombstones`` () =
             writeSst testDataDir "L0_range_tomb.sst" [ "a", 1L, Some "va"; "b", 2L, None; "c", 3L, Some "vc" ]
 
         use sst = new SSTable(path)
-        let result = sst.GetRange("b", "c")
-        assertEqual 2 result.Length "Two entries in [b,c]"
-        assertEqual ("b", 2L, None) result.[0] "Tombstone entry"
-        assertEqual ("c", 3L, Some "vc") result.[1] "Live value entry")
+
+        match sst.GetRange("b", "c") with
+        | RangeOk result ->
+            assertEqual 2 result.Length "Two entries in [b,c]"
+            assertEqual ("b", 2L, None) result.[0] "Tombstone entry"
+            assertEqual ("c", 3L, Some "vc") result.[1] "Live value entry"
+        | RangeDisposed -> failwith "unexpected RangeDisposed")
 
 [<Fact>]
 let ``SSTable GetRange returns empty when range outside data`` () =
@@ -259,16 +265,30 @@ let ``SSTable GetRange returns empty when range outside data`` () =
             writeSst testDataDir "L0_outside.sst" [ "c", 1L, Some "vc"; "d", 2L, Some "vd" ]
 
         use sst = new SSTable(path)
-        assertEqual [||] (sst.GetRange("a", "b")) "Range before data returns empty"
-        assertEqual [||] (sst.GetRange("e", "z")) "Range after data returns empty")
+        assertEqual (RangeOk [||]) (sst.GetRange("a", "b")) "Range before data returns empty"
+        assertEqual (RangeOk [||]) (sst.GetRange("e", "z")) "Range after data returns empty")
 
 [<Fact>]
 let ``SSTable GetRange returns empty for SSTable with no entries`` () =
     withTestDir "sst_range_empty" (fun testDataDir ->
         let path = writeSst testDataDir "L0_empty_range.sst" []
         use sst = new SSTable(path)
-        let result = sst.GetRange("a", "z")
-        assertEqual [||] result "Empty SSTable GetRange returns [||]")
+        assertEqual (RangeOk [||]) (sst.GetRange("a", "z")) "Empty SSTable GetRange returns empty")
+
+[<Fact>]
+let ``SSTable GetRange returns RangeDisposed for disposed SSTable`` () =
+    withTestDir "sst_range_disposed" (fun testDataDir ->
+        let path =
+            writeSst testDataDir "L0_range_disposed.sst" [ "a", 1L, Some "va"; "b", 2L, Some "vb" ]
+
+        let sst = new SSTable(path)
+
+        match sst.GetRange("a", "b") with
+        | RangeOk entries -> assertEqual 2 entries.Length "GetRange before dispose returns entries"
+        | RangeDisposed -> failwith "unexpected RangeDisposed"
+
+        (sst :> System.IDisposable).Dispose()
+        assertEqual RangeDisposed (sst.GetRange("a", "b")) "GetRange after dispose returns RangeDisposed")
 
 [<Fact>]
 let ``SSTable double dispose does not throw`` () =
