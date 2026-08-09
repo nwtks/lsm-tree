@@ -4,14 +4,6 @@ open Xunit
 open LsmTree
 
 [<Fact>]
-let ``BloomFilter empty filter always returns true for MightContain`` () =
-    let bf = BloomFilter([||], 0)
-    assertEqual true (bf.MightContain "any") "Empty BloomFilter true"
-
-    let bf2 = BloomFilter.create 0
-    assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
-
-[<Fact>]
 let ``BloomFilter keyIndex forces odd h2 so probes spread`` () =
     let bf = BloomFilter.create 100
 
@@ -39,6 +31,14 @@ let ``BloomFilter Add and MightContain for specific keys`` () =
     assertEqual true (bf.MightContain "apple") "apple should be found"
     assertEqual true (bf.MightContain "banana") "banana should be found"
     assertEqual true (bf.MightContain "cherry") "cherry should be found"
+
+[<Fact>]
+let ``BloomFilter empty filter always returns true for MightContain`` () =
+    let bf = BloomFilter([||], 0)
+    assertEqual true (bf.MightContain "any") "Empty BloomFilter true"
+
+    let bf2 = BloomFilter.create 0
+    assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
 
 [<Fact>]
 let ``BloomFilter handles empty string key`` () =

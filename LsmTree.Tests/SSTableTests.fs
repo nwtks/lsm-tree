@@ -78,6 +78,28 @@ let ``SSTable load and loadIndex handle empty SSTable`` () =
         assertEqual 0L maxSeq "Empty SSTable maxSeq = 0")
 
 [<Fact>]
+let ``SSTable loadIndex handles tombstone and value entries`` () =
+    withTestDir "sst_idx_tomb" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "idx_tomb.sst")
+        SSTableWriter.write path [ "gone", 2L, None; "keep", 1L, Some "val" ] |> ignore
+
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
+
+        use br = new System.IO.BinaryReader(fs)
+        let _, _, _, index = SSTable.load fs br
+        assertEqual 2 index.Length "Should have 2 index entries"
+        assertEqual "gone" index.[0].Key "First entry key"
+        assertEqual 2L index.[0].Seq "First entry seq"
+        assertEqual "keep" index.[1].Key "Second entry key"
+        assertEqual 1L index.[1].Seq "Second entry seq")
+
+[<Fact>]
 let ``SSTable readValue roundtrips correctly`` () =
     use ms = new System.IO.MemoryStream()
     use bw = new System.IO.BinaryWriter(ms)
@@ -106,28 +128,6 @@ let ``SSTable readItem roundtrips None`` () =
     ms.Position <- 0L
     use br = new System.IO.BinaryReader(ms)
     assertEqual None (SSTable.readItem br) "readItem should roundtrip None"
-
-[<Fact>]
-let ``SSTable loadIndex handles tombstone and value entries`` () =
-    withTestDir "sst_idx_tomb" (fun testDataDir ->
-        let path = System.IO.Path.Combine(testDataDir, "idx_tomb.sst")
-        SSTableWriter.write path [ "gone", 2L, None; "keep", 1L, Some "val" ] |> ignore
-
-        use fs =
-            new System.IO.FileStream(
-                path,
-                System.IO.FileMode.Open,
-                System.IO.FileAccess.Read,
-                System.IO.FileShare.Read
-            )
-
-        use br = new System.IO.BinaryReader(fs)
-        let _, _, _, index = SSTable.load fs br
-        assertEqual 2 index.Length "Should have 2 index entries"
-        assertEqual "gone" index.[0].Key "First entry key"
-        assertEqual 2L index.[0].Seq "First entry seq"
-        assertEqual "keep" index.[1].Key "Second entry key"
-        assertEqual 1L index.[1].Seq "Second entry seq")
 
 [<Fact>]
 let ``SSTable binSearchIndex finds existing key`` () =
