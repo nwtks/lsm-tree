@@ -342,6 +342,18 @@ let ``SSTable double dispose does not throw`` () =
         (sst :> System.IDisposable).Dispose())
 
 [<Fact>]
+let ``SSTable GetAll on disposed SSTable returns empty array`` () =
+    withTestDir "sst_getall_disposed" (fun testDataDir ->
+        let path =
+            writeSst testDataDir "L0_getall.sst" [ "a", 1L, Some "va"; "b", 2L, Some "vb" ]
+
+        let sst = new SSTable(path)
+        (sst :> System.IDisposable).Dispose()
+
+        let result = sst.GetAll()
+        assertEqual 0 result.Length "GetAll on disposed SSTable returns empty array")
+
+[<Fact>]
 let ``SSTableWriter writeBytes writes length-prefixed bytes`` () =
     use ms = new System.IO.MemoryStream()
     use bw = new System.IO.BinaryWriter(ms)

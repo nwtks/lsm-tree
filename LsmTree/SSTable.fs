@@ -259,15 +259,18 @@ type SSTable(path) =
             NotFound
 
     member _.GetAll() =
-        LockExtensions.withWriteLock rwLock (fun () ->
-            if index.Length > 0 then
-                let dataLen = int (indexOffset - index.[0].Offset)
-                let buf = SSTable.readDataRegion fs index.[0].Offset dataLen
-                use ms = new System.IO.MemoryStream(buf)
-                use br2 = new System.IO.BinaryReader(ms)
-                SSTable.readAllEntries br2 index.Length
-            else
-                [||])
+        try
+            LockExtensions.withReadLock rwLock (fun () ->
+                if index.Length > 0 then
+                    let dataLen = int (indexOffset - index.[0].Offset)
+                    let buf = SSTable.readDataRegion fs index.[0].Offset dataLen
+                    use ms = new System.IO.MemoryStream(buf)
+                    use br2 = new System.IO.BinaryReader(ms)
+                    SSTable.readAllEntries br2 index.Length
+                else
+                    [||])
+        with :? System.ObjectDisposedException ->
+            [||]
 
     member _.GetRange(fromKey, toKey) =
         if index.Length = 0 then
