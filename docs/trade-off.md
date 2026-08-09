@@ -15,7 +15,7 @@ Parallel flushes would absorb bursts better but require sequence-number gating t
 
 **Alternatives considered**:
 - **Synchronous flush**: predictably blocks the caller for the full SSTable write duration (tens of ms for large MemTables).
-- **Parallel flushes**: higher peak memory and disk I/O; ordering complexity.
+- **Parallel flushes**: absorbs bursts better but requires sequence-number gating to ensure the correct SSTable installation order.
 
 ---
 
@@ -32,8 +32,10 @@ Disabling `AutoFlush` eliminates redundant page-cache flushes on every `WriteLin
 This window is limited to writes between the last durable `Commit` and the crash — consistent with ACID durability guarantees.
 
 **Alternatives considered**:
-- **`AutoFlush = true`**: no crash-process protection for the `StreamWriter` buffer, but redundant `Flush(false)` calls on every line.
-- **`stream.Flush(true)` on every `WriteLine`**: ~100–200 ops/s on HDDs; uncommitted data is discarded on recovery anyway.
+- **`AutoFlush = true`**: calls `StreamWriter.Flush()` on every `WriteLine` (data to page cache only).
+  Redundant page-cache flushes, but no crash window.
+- **`stream.Flush(true)` on every `WriteLine`**: ~100–200 ops/s on HDDs.
+  Uncommitted data is discarded on recovery anyway.
 
 ---
 
@@ -47,11 +49,13 @@ Consolidating keeps the lock scope and durability decision in exactly one place.
 
 **Trade-off**: The `write` helper intentionally does **not** swallow I/O exceptions (unlike `Dispose`, which must not throw).
 Callers rely on exceptions propagating to the caller of `Put`/`Commit` etc.
-No behavior change vs. the previous inline code; this is a structural cleanup.
+No behavior change vs. the previous inline code.
+This is a structural cleanup.
 
 **Alternatives considered**:
 - **Batch writer thread + queue**: higher throughput under concurrency, but breaks the `Commit(sync = true)` durability guarantee (returns before fsync) and adds crash-drain complexity.
-- **Merge `walLock` into `mainLock`**: invalid — a write lock would serialize all reads; a read lock would leave `StreamWriter` unprotected across concurrent writers.
+- **Merge `walLock` into `mainLock`**: invalid — a write lock would serialize all reads.
+  A read lock would leave `StreamWriter` unprotected across concurrent writers.
 - **Move WAL writes outside `mainLock`**: invalid — the swap in `flushMemTable` could interleave between the WAL append and the MemTable insert, losing the write when the old WAL is deleted.
 
 ---
@@ -69,8 +73,10 @@ This is safe under last-writer-wins semantics.
 The WAL file is no longer purely transactional — recovery iterates once to find committed + begun sequences, then filters.
 
 **Alternatives considered**:
-- **Full transactions for every write**: simpler WAL recovery, but every `Put` pays 2× WAL lines + snapshot overhead.
-- **Object pooling for transactions**: reduces allocation but doesn't eliminate WAL marker overhead.
+- **Full transactions for every write**: simpler WAL recovery.
+  Every `Put` pays 2× WAL lines + snapshot allocation and lock churn.
+  (Avoided due to allocation and lock overhead.)
+- **Object pooling**: reduces allocation but doesn't eliminate WAL marker overhead.
 
 ---
 
@@ -87,7 +93,8 @@ Inlining all index fields in a separate region consolidates open-time I/O into *
 The data region is read only on demand for value payloads.
 
 **Trade-off**:
-- **File size**: Keys are stored twice (once in the data region, once in the index region). The overhead is bounded by Σ key length and is small relative to value payloads in typical workloads.
+- **File size**: Keys are stored twice (once in the data region, once in the index region).
+  The overhead is bounded by Σ key length and is small relative to value payloads in typical workloads.
 - **Format is not self-describing across versions**: Older `.sst` files written with the `int64[] offsets` format are not readable by the current loader.
   This engine does not ship a migration path — restart from an empty directory if upgrading across this format change.
 
@@ -95,9 +102,11 @@ The data region is read only on demand for value payloads.
 The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field), so per-entry memory cost is the struct layout (~28 bytes) plus the key string reference.
 
 **Alternatives considered**:
-- **`int64[]` offsets in index region, walk data region at open**: avoids storing keys twice, but open-time I/O scales with total entry count (each entry's seq+key header must be parsed).
-- **Disk-based binary search**: zero index memory, but log₂N seeks per lookup.
-- **Memory-mapped I/O**: lets the OS page lazily, but cross-platform behavior varies.
+- **`int64[]` offsets in index region, walk data region at open**: avoids storing keys twice.
+  Open-time I/O scales with total entry count (each entry's seq+key header must be parsed).
+- **Disk-based binary search**: zero index memory but log₂N seeks per lookup.
+- **Memory-mapped I/O**: lets the OS page lazily.
+  Cross-platform behavior varies.
 
 ---
 
@@ -111,20 +120,24 @@ The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field
 - By materializing only the range `[fromKey, toKey]` instead of the entire file, memory overhead is proportional to the result set, not the data size.
 
 **Trade-off**:
-- **Memory**: Range entries are materialized into arrays. For a full `["", "\uFFFF"]` scan over 1 million entries, ~32 MB across all sources (at the project's < 1 MB per SSTable scale, this is bounded).
+- **Memory**: Range entries are materialized into arrays.
+  For a full `["", "\uFFFF"]` scan over 1 million entries, ~32 MB across all sources (at the project's < 1 MB per SSTable scale, this is bounded).
 - **O(K) `pickMinKey` per step**: All SSTables at all levels are included as sources (L0 overlap design requires scanning all files).
   With `compactLevelLimits [|4;10;100;1000|]`, K ≤ ~1114.
   Most cursors are exhausted early, so the average case is lower, but worst-case remains O(K).
 - **One `Seek` per range, then sequential reads**: `SSTable.GetRange` seeks once to the first entry's value offset, then reads the remaining values sequentially (`readRangeEntries`).
-  Entries are written back-to-back with no padding, so after reading entry *i*'s value the stream sits at entry *i*+1's record start; the per-entry `seq`+`keyLen`+`key` header is skipped with a buffered `ReadBytes` (no syscall, no `Seek`, no UTF-8 decode of the discarded key).
+  Entries are written back-to-back with no padding, so after reading entry *i*'s value the stream sits at entry *i*+1's record start.
+  The per-entry `seq`+`keyLen`+`key` header is skipped with a buffered `ReadBytes` (no syscall, no `Seek`, no UTF-8 decode of the discarded key).
   Cost is one `Seek` + ~R buffered reads instead of R `Seek`s — `FileStream`'s 4 KiB buffer serves most entries without syscalls.
 - **`GetAll` reads the data region in one batch**: Compaction calls `SSTable.GetAll` on every source table each round.
   It reads the whole data region (`index.[0].Offset` → `indexOffset`) with a single `ReadExactly` and parses it in memory via `MemoryStream` (`readDataRegion` + `readAllEntries`) — the same region-batch pattern `loadIndex` already uses.
   Instead of ~R small buffered reads (a syscall per 4 KiB buffer refill), `GetAll` does 1 read syscall per table.
 - **`GetAll` peak memory ≈ data region + parsed tuples**: The temporary `byte[]` holds the entire data region (e.g. 64 MB for a 64 MB table) in addition to the materialized `(key, seq, value)` array.
-  Bounded and acceptable at this project's < 1 MB per SSTable scale; for huge tables, chunked parsing would trade syscalls for memory.
+  Bounded and acceptable at this project's < 1 MB per SSTable scale.
+  For huge tables, chunked parsing would trade syscalls for memory.
 - **ReadLock duration on SSTables**: Per-SSTable read lock is held during `GetRange` (binary search + sequential reads).
-  Compaction's `GetAll` (WriteLock) and `Dispose` (WriteLock) wait. For small ranges this is negligible.
+  Compaction's `GetAll` (WriteLock) and `Dispose` (WriteLock) wait.
+  For small ranges this is negligible.
 
 **Alternatives considered**:
 - **Cursor + heap k-way merge (streaming)**: Lower memory, but per-step locking complexity and cursor lifecycle management is severe.
@@ -137,7 +150,8 @@ The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field
 
 **Choice**: `SSTable.Get` takes a read lock (`withReadLock`).
 `GetAll` (used by compaction) and `Dispose` take a write lock (`withWriteLock`).
-Multiple readers proceed concurrently; a writer blocks all readers.
+Multiple readers proceed concurrently.
+A writer blocks all readers.
 
 **Why**: The in-memory index made binary search lock-free.
 Only the final `Seek`+`Read` payload access needs protection.
@@ -215,7 +229,9 @@ An even `h2` (half of all keys) kept every probe at the same parity, silently ha
 Forcing `h2` odd fixes both at zero memory cost.
 
 **Trade-off**: **Bit placement changed vs. earlier builds.**
-The on-disk layout (byte count + bytes) is unchanged and old files still load, but probes land at different positions, so bloom data written by older code can produce false negatives when read by new code — and `SSTable.Get` treats a bloom miss as `NotFound`, silently missing keys that exist in old files.
+The on-disk layout (byte count + bytes) is unchanged and old files still load, but probes land at different positions.
+Bloom data written by older code can produce false negatives when read by new code.
+Additionally, `SSTable.Get` treats a bloom miss as `NotFound`, silently missing keys that exist in old files.
 SSTables must be regenerated (delete the data directory) when upgrading across this change.
 This is a pre-release project, so no on-disk version guard was added.
 
@@ -239,7 +255,8 @@ WAL recovery tolerates truncation, so engine integrity is preserved on next star
 If the last bytes aren't durable, they're recovered from WAL on restart — acceptable for crash-safety, but invisible to operators.
 
 **Alternatives considered**:
-- **Propagate errors from `Dispose`**: violates .NET guidelines; skips subsequent cleanup.
+- **Propagate errors from `Dispose`**: violates .NET guidelines.
+  Skips subsequent cleanup.
 - **Explicit `Close()` that returns errors**: breaking API change; `use` pattern no longer usable.
 
 ---
@@ -258,7 +275,8 @@ Range queries would require an iterator API and merging across multiple SSTables
 
 **Alternatives considered**:
 - **Binary keys/values**: more general, but complicates WAL parsing and index comparison.
-- **Range queries**: requires iterator merging across all storage levels; significant API and implementation complexity.
+- **Range queries**: requires iterator merging across all storage levels.
+  Significant API and implementation complexity.
 
 ---
 
@@ -285,7 +303,7 @@ The skip list internals become assembly-private — acceptable because the publi
 ## SearchResult: struct DU replaces `(string option) option`
 
 **Choice**: The internal lookup chain returns `SearchResult`, a `[<Struct>]` discriminated union with three cases: `Found of string`, `Tombstone`, `NotFound`.
-Previously it used nested `string option option` where `Some(Some v)` = live, `Some None` = tombstone, `None` = not found.
+Previously it used nested `string option option`. `Some(Some v)` = live, `Some None` = tombstone, `None` = not found.
 
 **Why**: Every `Get` on the hot path allocated two heap objects just to return a three-state result.
 `SearchResult` eliminates all allocation — all three cases are value types.
@@ -344,7 +362,8 @@ A best-effort `Get(key, ?snapshot: int64)` overload is retained for backward com
 `NewIterator` now registers its snapshot **before** collecting range sources (previously after — an ordering hole).
 
 **Why**: The previous design was racy.
-`Snapshot()` returned an **unregistered** `int64`; compaction's `pruneVersions isLastLevel minSnap` could prune a version between the caller's `Snapshot()` and `Get(key, v1)`, returning `None` for a version that existed at snapshot time (time-travel window).
+`Snapshot()` returned an **unregistered** `int64`.
+Compaction's `pruneVersions isLastLevel minSnap` could prune a version between the caller's `Snapshot()` and `Get(key, v1)`, returning `None` for a version that existed at snapshot time (time-travel window).
 `NewIterator` had the same hole reversed: sources were snapshotted before the snapshot was registered, so a compaction between the two could prune versions the iterator was about to materialize.
 
 **Trade-off**:
@@ -360,11 +379,14 @@ A best-effort `Get(key, ?snapshot: int64)` overload is retained for backward com
   Keeping them preserves source compatibility at the cost of a footgun.
 
 **Alternatives considered**:
-- **Compaction-safe table swapping (atomic rename + hard-link/rename-retry)**: compaction never deletes a table still referenced by an active reader; the reader keeps a file handle.
+- **Compaction-safe table swapping (atomic rename + hard-link/rename-retry)**: compaction never deletes a table still referenced by an active reader.
+  The reader keeps a file handle.
   No API change, but requires OS-level file lifecycle coupling and leaves tombstone versions on disk indefinitely for the reader's lifetime.
-- **Version retention markers (write `RETAIN <seq>` markers)**: compaction leaves a marker table instead of pruning; GC runs later.
+- **Version retention markers (write `RETAIN <seq>` markers)**: compaction leaves a marker table instead of pruning.
+  GC runs later.
   Keeps `int64` API but adds a second pass and more disk churn.
-- **Epoch-based reclamation**: reads join an epoch; compaction defers pruning until the epoch drains.
+- **Epoch-based reclamation**: reads join an epoch.
+  Compaction defers pruning until the epoch drains.
   No API change, but adds per-read epoch bookkeeping and can stall pruning under long-lived readers.
 - **Copy-on-write / refcounted SSTables**: table-level refcounts instead of sequence-level.
   More memory per table and more complex lifecycle management.
@@ -386,12 +408,14 @@ Consequences:
 **Trade-off**:
 - **Breaking change**: existing databases opened with a smaller config now fail to start instead of silently degrading.
   Recovery requires restoring the original (or longer) `compactLevelLimits` or manually removing the orphaned files.
-- **No auto-recovery**: the engine stops and leaves the decision to the operator; there is no in-place migration.
+- **No auto-recovery**: the engine stops and leaves the decision to the operator.
+  There is no in-place migration.
 - **Level-count-only validation**: files below the count but written under different limit *values* (e.g., different deepest-level pruning semantics) are not detected — validation is based on file names only.
 
 **Alternatives considered**:
 - **Auto-migration (rename orphaned files into the new deepest level)**: transparent startup, but silently absorbs config mistakes and changes tombstone-pruning semantics (old middle-level files become deepest level).
-- **Persisted manifest**: records `compactLevelLimits` at open time and validates on restart. Detects intent changes, but adds a new on-disk artifact, a fallback path for old databases, and new corruption modes.
+- **Persisted manifest**: records `compactLevelLimits` at open time and validates on restart.
+  Detects intent changes, but adds a new on-disk artifact, a fallback path for old databases, and new corruption modes.
 - **Warn + absorb `MaxSeq` only**: keeps startup working but still drops data — only fixes the sequence regression, not the loss.
 
 ## Point Get: `ssTablesLock` snapshot + skip disposed tables
@@ -401,18 +425,22 @@ Consequences:
 
 **Why**: Point Get previously held `ssTablesLock` (a plain `obj` monitor) for the entire `Seek` + `Read` I/O.
 This fully serialized concurrent point Gets even though reads are read-only, and a slow Get blocked flush/compaction (`addSSTable` L0 registration, `replaceLevelTables`, `triggerCompaction` flag ops).
-F# lists are immutable and array slots are only ever reassigned (never mutated), so copying the reference is a consistent, O(1) snapshot — there is no torn-list risk.
+F# lists are immutable and array slots are only ever reassigned (never mutated).
+Copying the reference is a consistent, O(1) snapshot — there is no torn-list risk.
 
 **Safety invariant**: This is correct only because compaction retains **all** entries with `seq >= minSnap` in the merged table at the next level (`pruneVersions`).
-When the search falls through a disposed L0 table, its data (at `seq >= minSnap`) is guaranteed present in the next level's merged table, and every registered snapshot is `>= minSnap`.
-Disposal after snapshot is safe because `SSTable.Get`'s read-lock acquisition throws `ObjectDisposedException` once `rwLock.Dispose()` has run — the `try/with` wraps the whole `withReadLock` call, so both the `EnterReadLock` failure and an in-flight read failure map to `NotFound`.
+When the search falls through a disposed L0 table, its data (at `seq >= minSnap`) is guaranteed present in the next level's merged table.
+Every registered snapshot is `>= minSnap`.
+Disposal after snapshot is safe because `SSTable.Get`'s read-lock acquisition throws `ObjectDisposedException` once `rwLock.Dispose()` has run.
+The `try/with` wraps the whole `withReadLock` call, so both the `EnterReadLock` failure and an in-flight read failure map to `NotFound`.
 
 **Trade-off**:
 - **Torn-snapshot window**: a Get can observe a state where an L0 table is already disposed but its merged replacement is not yet visible.
   This is harmless for point Get (data is found at the next level).
   Range scans cannot use this fallthrough — they use a separate snapshot + retry pattern (see the Range Scan section below).
 - **ObjectDisposedException catch scope**: the catch also swallows a hypothetical reader-side disposal bug (a genuine double-dispose while reading).
-  For point Get the cost is a false `NotFound`; compaction invariants keep the correct answer reachable at a lower level.
+  For point Get the cost is a false `NotFound`.
+  Compaction invariants keep the correct answer reachable at a lower level.
 - **`NotFound` on disposed table**: `Get` on an explicitly disposed table (e.g., a caller bug) now returns `NotFound` instead of throwing — behavior change, masked by the same catch.
 
 **Alternatives considered**:
@@ -420,12 +448,14 @@ Disposal after snapshot is safe because `SSTable.Get`'s read-lock acquisition th
   Preserves structure safety without copying, but leaves the disposal lifecycle coupled to the lock — compaction's `cleanupSSTables` (dispose + file delete) would need to stay under the write lock or be deferred, and the lock still serializes the I/O critical section during long reads.
 - **Snapshot + refcount**: track active readers per table and defer disposal until the count drops.
   Removes the `NotFound` fallback entirely, but adds per-table refcount bookkeeping and a second lock.
-- **Docs only**: document the serialization as a known limit; no behavior change.
+- **Docs only**: document the serialization as a known limit.
+  No behavior change.
 
 ## Range Scan: `ssTablesLock` snapshot + retry on disposal
 
 **Choice**: `LsmTree.tryCollectRangeSources` (driven by the public `collectRangeSources` entry) copies the level-list array under `ssTablesLock`, then performs `SSTable.GetRange` I/O **outside** the lock.
-`SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read (catch of `ObjectDisposedException`); otherwise it returns `RangeOk entries`.
+`SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read (catch of `ObjectDisposedException`).
+Otherwise it returns `RangeOk entries`.
 If any table in the snapshot is detected as disposed, **or** the snapshot's list references no longer match the current ones (checked under `ssTablesLock`; F# lists are immutable, so reference equality suffices), the entire collection — MemTable + immutable + SSTable — is retried.
 After 8 retries it falls back to collecting under `ssTablesLock` (the pre-change behavior), which is safe because structure changes are blocked.
 
@@ -447,4 +477,5 @@ Reference-change validation catches a removed+disposed table that the reader nev
   Reference validation is required for correctness.
 - **Skip disposed tables like point Get**: unsafe for scans (union has no fallthrough) — rejected.
 - **Swallow disposal inside `GetRange` (return empty)**: would silently produce a torn read — rejected.
-- **ReaderWriterLockSlim / refcount / deferred disposal**: as in the point-Get section; rejected for the same reasons.
+- **ReaderWriterLockSlim / refcount / deferred disposal**: as in the point-Get section.
+  Rejected for the same reasons.

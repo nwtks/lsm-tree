@@ -25,7 +25,8 @@ This file provides guidance for AI agents working in this repository.
 
 ## Cross-Platform Compatibility
 
-All code — including test code — must work on **both Windows and Linux**. Avoid:
+All code — including test code — must work on **both Windows and Linux**.
+Avoid:
 
 - Hard-coded path separators; use `System.IO.Path.Combine`.
 - Platform-specific APIs without fallback (e.g., `stream.Flush(true)` / `FileStream.Flush(bool)` is supported on both).
@@ -42,8 +43,10 @@ All code — including test code — must work on **both Windows and Linux**. Av
 - **Use `[<TailCall>]` on recursive functions** that loop to prevent stack overflows.
 - Do not introduce new external NuGet packages without checking existing dependencies in the `.fsproj` files first.
 - **Cyclomatic complexity** — Every function/method must keep its keyword-calculated complexity ≤ 15 (hard limit).
-  Keep it ≤ 10 where practical. After `dotnet test`, the `scripts/check-complexity.fsx` script reads `coverage.cobertura.xml` and reports both a keyword-based estimate (calculated) and the Coverlet reference value — the error/warning thresholds apply to the **calculated** column.
-  Configure thresholds in `Directory.Build.props`. If the check fails, split the function into smaller helpers or simplify branching.
+  Keep it ≤ 10 where practical.
+  After `dotnet test`, the `scripts/check-complexity.fsx` script reads `coverage.cobertura.xml` and reports both a keyword-based estimate (calculated) and the Coverlet reference value — the error/warning thresholds apply to the **calculated** column.
+  Configure thresholds in `Directory.Build.props`.
+  If the check fails, split the function into smaller helpers or simplify branching.
 
 ---
 

@@ -53,7 +53,8 @@ The `offset` field points to the start of the corresponding entry in the data re
 The key bytes are stored inline in the index, so the data region does **not** need to be accessed during SSTable open.
 
 - **Footer**: always 32 bytes (four `int64` fields).
-- **Magic**: `0x4C534D54` (`"LSMT"` in ASCII). Wrong magic raises `InvalidDataException`.
+- **Magic**: `0x4C534D54` (`"LSMT"` in ASCII).
+  Wrong magic raises `InvalidDataException`.
 - **Index**: packed `int32` count followed by `count` inline `IndexEntry` records (seq + offset + key).
   All fields needed to build the in-memory `IndexEntry[]` are present here — the data region is read lazily only for value payloads on `Get`/`GetRange`.
 - **Bloom filter**: packed `int32` byte count + raw bytes.
@@ -109,13 +110,16 @@ Stale `.tmp` files from a crash are automatically deleted on startup (`loadSSTab
 1. You may acquire `mainLock` (write) while already holding `ssTablesLock`, but **never acquire `ssTablesLock` while already holding `mainLock`** — this prevents deadlocks.
 2. `CompactionCoordinator` auto-properties (`IsCompacting`, `Error`) are always read/written under `ssTablesLock`.
 3. At most one compaction runs at a time.
-   Both `CompactionCoordinator` and `FlushCoordinator` use a `ManualResetEvent` for completion signaling and implement `IDisposable` with a disposed-flag guard; they are disposed in `LsmTree.Dispose()` after waiting for in-flight operations.
-4. The WAL instance is protected by its own `walLock` object; WAL operations are serialized.
+   Both `CompactionCoordinator` and `FlushCoordinator` use a `ManualResetEvent` for completion signaling and implement `IDisposable` with a disposed-flag guard.
+   They are disposed in `LsmTree.Dispose()` after waiting for in-flight operations.
+4. The WAL instance is protected by its own `walLock` object.
+   WAL operations are serialized.
 5. Per‑SSTable `rwLock` is independent — do not acquire `mainLock` or `ssTablesLock` while holding a SSTable read/write lock (to avoid unexpected contention).
 6. `activeSnapshotsLock` is independent — hold only while reading/writing the active snapshot set.
    Never acquire `mainLock` or `ssTablesLock` while holding `activeSnapshotsLock`.
 7. `globalSeq` uses `Interlocked` operations exclusively — no lock is required to read or advance the sequence number.
-8. `flushLock` is independent — `AcquireAndReset` performs `WaitOne()` outside the lock then `Reset()` inside with a `disposed` flag guard (returns `bool`: `false` if disposed); `SignalCompleted` and `Dispose` take the lock.
+8. `flushLock` is independent — `AcquireAndReset` performs `WaitOne()` outside the lock then `Reset()` inside with a `disposed` flag guard (returns `bool`: `false` if disposed).
+   `SignalCompleted` and `Dispose` take the lock.
    `WaitForCompletion` catches `ObjectDisposedException` to tolerate the dispose race.
    Never acquire `flushLock` while holding `mainLock` or `ssTablesLock`.
 
@@ -152,13 +156,15 @@ The engine supports range scans via `LsmTree.RangeScan(fromKey, toKey, ?snapshot
 Each range scan proceeds in three phases:
 
 1. **Source materialization**: Under appropriate locks, each storage layer (MemTable, immutable MemTable, per-SSTable) produces a `(string * int64 * string option)[]` of entries whose keys fall within `[fromKey, toKey]` (inclusive, `CompareOrdinal` ordering).
-   - **MemTable**: `SkipList.EntriesRange` traverses the `Next.[0]` chain from `head`, skipping nodes with key < `fromKey`, collecting until key > `toKey`. No lock required — the SkipList is lock-free.
+   - **MemTable**: `SkipList.EntriesRange` traverses the `Next.[0]` chain from `head`, skipping nodes with key < `fromKey`, collecting until key > `toKey`.
+     No lock required — the SkipList is lock-free.
    - **SSTable**: `tryCollectRangeSources` copies the level-list array under `ssTablesLock`, then calls `SSTable.GetRange` **outside** the lock.
      `GetRange` performs two binary searches on the in-memory index (`lowerBound`/`upperBound`) to find the offset range, then reads entries sequentially under a per-SSTable read lock; it returns a `RangeReadResult` DU (`RangeOk entries` / `RangeDisposed`).
      If a table was disposed mid-read (`RangeDisposed`) or the snapshot's list references no longer match (`snapshotStable` — reference equality, since F# lists are immutable), the whole collection is retried (max 8 attempts), falling back to collecting under `ssTablesLock`.
      Each key appears at most once per SSTable.
 
-2. **Merge**: `RangeIterator` holds a `SourceCursor` array (one per source). `MoveNext` repeatedly:
+2. **Merge**: `RangeIterator` holds a `SourceCursor` array (one per source).
+   `MoveNext` repeatedly:
    - Picks the minimum key across all cursors via `pickMinKey` (O(K) where K = source count).
    - Drains all entries with that key from all cursors.
    - Among collected entries, selects the one with the highest `seq <= snapshot`.

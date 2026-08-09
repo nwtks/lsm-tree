@@ -12,7 +12,8 @@ The project demonstrates the architectural concepts behind engines like LevelDB 
 Durability journal persisted to `wal.log` before each mutation.
 On restart, the WAL is replayed into a fresh MemTable.
 
-- **Fast single-key path**: `Put`/`Delete` call `PutSingle`/`DeleteSingle`, writing a bare `PUT`/`DEL` line (no `BEGIN`/`COMMIT` markers) with `sync = false` (no `fsync`). Transaction `Commit` always uses `fsync`.
+- **Fast single-key path**: `Put`/`Delete` call `PutSingle`/`DeleteSingle`, writing a bare `PUT`/`DEL` line (no `BEGIN`/`COMMIT` markers) with `sync = false` (no `fsync`).
+  Transaction `Commit` always uses `fsync`.
 - **Atomic transaction recovery**: Committed transactions (`BEGIN`+`COMMIT`) are fully recovered; uncommitted ones (`BEGIN` without `COMMIT`) are discarded.
   Explicit `ABORT <seq>` records are recognized and ignored.
 - **Fault-tolerant parser**: Malformed lines are skipped with a `[WARN]` log; orphaned `PUT`/`DEL` (no preceding `BEGIN`) are recovered as committed under the engine's last-writer-wins semantics.
@@ -28,7 +29,7 @@ In-memory mutations are buffered in a custom mutable **SkipList** with $O(\log N
 - **Lock-Free Concurrency**: CAS-based node insertion (`Interlocked.CompareExchange`) enables concurrent `Put` operations without blocking; `SkipListNode.Next` is `internal` so the publish-once invariant is enforced by the compiler.
 - **Atomic swap**: When `SizeBytes` exceeds `memTableSizeLimit`, the MemTable is atomically swapped to an immutable MemTable under `mainLock` and **asynchronously** flushed to an SSTable.
   Flushes are sequentialized (at most one in flight) by `FlushCoordinator`.
-- **Size accounting**: `Put`/`Delete` add `NODE_OVERHEAD + keyBytes + SEQ_SIZE + valueBytes` (tombstones omit the value term) to `SizeBytes` via `Interlocked.Add`.
+- **Size accounting**: `Put`/`Delete` add `NODE_OVERHEAD (32) + keyBytes + SEQ_SIZE + valueBytes` (tombstones omit the value term) to `SizeBytes` via `Interlocked.Add`.
   `Flush()` checks the threshold after each direct write.
 - **Flush APIs**: `Flush()` (synchronous, waits for completion) and `FlushAsync()` (`Async<unit>`).
   Both propagate flush failures as `AggregateException` (one-shot error slot — the first waiter observes it, then it is cleared).
@@ -64,9 +65,6 @@ In-memory k-way merge across all storage layers (MemTable, immutable MemTable, a
 - **Source materialization**: Each layer produces a `(string * int64 * string option)[]` of in-range entries; `MoveNext` then performs an in-memory k-way merge holding no locks.
   For very large ranges, memory is proportional to the in-range entry count — prefer bounded ranges.
 - **Disposal safety**: `SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read; the whole collection is retried (max 8) and falls back to collecting under `ssTablesLock`.
-- **Two APIs**: `RangeScan` returns `seq<string * string>` (auto-disposing); `NewIterator` returns `IIterator` (manual lifetime). `IIterator.Current` before the first `MoveNext()` (or after `false`) throws `InvalidOperationException`.
-- **Source materialization**: Each layer produces a `(string * int64 * string option)[]` of in-range entries; `MoveNext` then performs an in-memory k-way merge holding no locks. For very large ranges, memory is proportional to the in-range entry count — prefer bounded ranges.
-- **Disposal safety**: `SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read; the whole collection is retried (max 8) and falls back to collecting under `ssTablesLock`.
 
 ### Background Multi-Level Compaction & Automatic Pruning
 
@@ -85,7 +83,7 @@ In-memory k-way merge across all storage layers (MemTable, immutable MemTable, a
 ### Direct Put/Delete (Fast Path)
 
 Single-key `Put` and `Delete` bypass the transaction system entirely — no `BeginTransaction`/`Commit` overhead, no snapshot registration, no WAL `BEGIN`/`COMMIT` markers.
-The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` (with `sync = false`) and applied to the MemTable under a `mainLock` read lock in one atomic step (`writeWithFlushCheck`), then the flush threshold is re-checked.
+The operation is written directly to the WAL via `PutSingle`/`DeleteSingle` (with `sync = false`) outside the lock, then applied to the MemTable under a `mainLock` read lock (`writeWithFlushCheck`), where the flush threshold is re-checked.
 
 ### Atomic Transactions with Snapshot Isolation
 
@@ -109,9 +107,11 @@ See [docs/trade-off.md](docs/trade-off.md) for design trade-offs and [docs/gotch
 
 ## ⚠️ Known Limitations
 
-- **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL). Binary data must be base64-encoded by the caller.
+- **String-only keys/values**: UTF-8 strings only (base64-encoded in WAL).
+  Binary data must be base64-encoded by the caller.
 - **Single WAL file**: One live `wal.log` per instance, renamed to `wal_<guid>.old` on each flush (deleted after the SSTable is written); stale `.old` files from crashes remain on disk and are scanned during recovery.
-- **`LsmTransaction.Get` O(n) local scan**: The pending ops list is scanned linearly (`Seq.tryFind`). Avoid thousands of keys in a single transaction if you need fast local reads.
+- **`LsmTransaction.Get` O(n) local scan**: The pending ops list is scanned linearly (`Seq.tryFind`).
+  Avoid thousands of keys in a single transaction if you need fast local reads.
 - **No replication/clustering**: Single-node storage engine only.
 - **Empty SSTable flush race**: `MemTable.Put`/`Delete` increment `SizeBytes` **before** inserting into the SkipList, so a flush triggered between the increment and the insert can produce an empty SSTable (no data loss — the WAL guarantees recovery).
   Tests asserting post-flush SSTable file counts should account for this.
