@@ -25,8 +25,11 @@ module LockExtensions =
     let disposeOf (d: System.IDisposable) =
         try
             d.Dispose()
-        with _ ->
-            ()
+        with
+        | :? System.IO.IOException as ex ->
+            log $"[WARN] LsmTree: IO error during Dispose of {d.GetType().Name}: {ex.Message}"
+        | :? System.ObjectDisposedException -> ()
+        | ex -> log $"[ERROR] LsmTree: Unexpected error during Dispose of {d.GetType().Name}: {ex}"
 
     let checkCoordinatorError (coord: ICoordinatorError) lockObj context =
         lock lockObj (fun () ->
