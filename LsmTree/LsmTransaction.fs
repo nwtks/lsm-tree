@@ -9,12 +9,11 @@ type ITransaction =
     abstract member Rollback: unit -> unit
 
 type ILsmTree =
-    abstract member Get: key: string * snapshot: int64 option -> string option
+    abstract member Get: key: string * snapshot: SnapshotHandle -> string option
     abstract member CommitTransaction: ops: (string * string option) list -> unit
     abstract member RollbackTransaction: unit -> unit
-    abstract member ReleaseSnapshot: snapshot: int64 -> unit
 
-type LsmTransaction(lsm: ILsmTree, snapshot) =
+type LsmTransaction(lsm: ILsmTree, snapshot: SnapshotHandle) =
     let mutable ops = []
     let mutable finished = false
 
@@ -38,7 +37,7 @@ type LsmTransaction(lsm: ILsmTree, snapshot) =
             match local with
             | Some(_, Some v) -> Some v
             | Some(_, None) -> None
-            | None -> lsm.Get(key, Some snapshot)
+            | None -> lsm.Get(key, snapshot)
 
         member this.Commit() =
             checkFinished ()
@@ -59,5 +58,5 @@ type LsmTransaction(lsm: ILsmTree, snapshot) =
 
         member _.Dispose() =
             if not finished then
-                lsm.ReleaseSnapshot snapshot
+                snapshot.Dispose()
                 finished <- true

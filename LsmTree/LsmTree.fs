@@ -186,17 +186,22 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
     member _.Snapshot() = snapshotManager.AcquireSnapshot()
 
     member this.BeginTransaction() =
-        let snap = snapshotManager.CurrentSequence()
-        snapshotManager.RegisterSnapshot snap
+        let snap = snapshotManager.AcquireSnapshot()
         new LsmTransaction(this :> ILsmTree, snap) :> ITransaction
 
     member _.Put(key, value) = putDirect key value
 
     member _.Delete key = deleteDirect key
 
-    member _.Get(key, ?snapshot: int64) =
-        defaultArg snapshot (snapshotManager.CurrentSequence())
-        |> LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key
+    member _.Get key =
+        LsmTreeSearch.findValue
+            mainLock
+            memTable
+            immutableMemTable
+            ssTablesLock
+            ssTables
+            key
+            (snapshotManager.CurrentSequence())
 
     member _.Get(key, snapshot: SnapshotHandle) =
         LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key snapshot.Seq
@@ -280,8 +285,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
                 LockExtensions.disposeOf flushCoordinator
 
     interface ILsmTree with
-        member this.Get(key, snapshot) = this.Get(key, ?snapshot = snapshot)
+        member this.Get(key, snapshot) = this.Get(key, snapshot)
         member _.CommitTransaction ops = commitTransaction ops
         member _.RollbackTransaction() = rollbackTransaction ()
-
-        member this.ReleaseSnapshot snapshot = this.ReleaseSnapshot snapshot

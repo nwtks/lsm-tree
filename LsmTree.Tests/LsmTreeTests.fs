@@ -100,7 +100,7 @@ let ``Snapshot handle release allows compaction to prune old versions`` () =
         tree.Flush()
         tree.WaitForCompaction()
 
-        assertEqual None (tree.Get("k", snap.Seq)) "Old version pruned after handle release"
+        assertEqual None (tree.Get("k", snap)) "Old version pruned after handle release"
         assertEqual (Some "v3") (tree.Get "k") "Latest version still visible")
 
 [<Fact>]
@@ -141,10 +141,10 @@ let ``Snapshot refcount: register same seq twice needs two releases`` () =
         tree.Put("k", "v3")
         tree.Flush()
         tree.WaitForCompaction()
-        assertEqual (Some "v1") (tree.Get("k", seq)) "v1 preserved while refcount > 0"
+        assertEqual (Some "v1") (tree.Get("k", snap)) "v1 preserved while refcount > 0"
 
         snapMgr.ReleaseSnapshot seq
-        assertEqual (Some "v1") (tree.Get("k", seq)) "v1 still preserved as live value after both releases")
+        assertEqual (Some "v1") (tree.Get("k", snap)) "v1 still preserved as live value after both releases")
 
 [<Fact>]
 let ``Snapshot refcount: multiple snapshots at different seqs`` () =
