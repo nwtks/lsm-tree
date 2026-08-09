@@ -126,16 +126,19 @@ module LsmTreeFlush =
                 | None -> acc)
             None
 
-    let collectVersions advance (current: (string * int64 * string option) option[]) key =
-        let versions = ResizeArray()
+    let collectVersions
+        advance
+        (versions: ResizeArray<int64 * string option>)
+        (current: (string * int64 * string option) option[])
+        key
+        =
+        versions.Clear()
 
         for i in 0 .. current.Length - 1 do
             while current.[i] |> Option.exists (fun (k, _, _) -> k = key) do
                 let _, seq, value = current.[i].Value
                 versions.Add(seq, value)
                 advance i
-
-        versions
 
     let pruneVersions isLastLevel minSnap (versions: ResizeArray<int64 * string option>) =
         let sorted = versions |> Seq.sortByDescending fst |> Seq.toList
@@ -168,12 +171,15 @@ module LsmTreeFlush =
                 pos.[i] <- pos.[i] + 1
                 current.[i] <- entryAt i
 
+            let versions = ResizeArray 256
             let mutable running = true
 
             while running do
                 match findMinKey current with
                 | Some key ->
-                    for s, v in collectVersions advance current key |> pruneVersions isLastLevel minSnap do
+                    collectVersions advance versions current key
+
+                    for s, v in pruneVersions isLastLevel minSnap versions do
                         yield key, s, v
                 | None -> running <- false
         }
