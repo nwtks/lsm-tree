@@ -116,6 +116,57 @@ let ``Snapshot handle double dispose is safe`` () =
         assertEqual (Some "v") (tree.Get "k") "Data readable after double dispose")
 
 [<Fact>]
+let ``Snapshot refcount: register same seq twice needs two releases`` () =
+    withTestDir "snap_refcount_twice" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+        tree.Put("k", "v1")
+        tree.Flush()
+        let snap = tree.Snapshot()
+        let seq = snap.Seq
+
+        let snapMgrField =
+            typeof<LsmTree>
+                .GetField(
+                    "snapshotManager",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let snapMgr = snapMgrField.GetValue tree :?> LsmTreeSnapshot
+        snapMgr.RegisterSnapshot seq
+        snap.Dispose()
+
+        tree.Put("k", "v2")
+        tree.Flush()
+        tree.Put("k", "v3")
+        tree.Flush()
+        tree.WaitForCompaction()
+        assertEqual (Some "v1") (tree.Get("k", seq)) "v1 preserved while refcount > 0"
+
+        snapMgr.ReleaseSnapshot seq
+        assertEqual (Some "v1") (tree.Get("k", seq)) "v1 still preserved as live value after both releases")
+
+[<Fact>]
+let ``Snapshot refcount: multiple snapshots at different seqs`` () =
+    withTestDir "snap_refcount_multi" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+        tree.Put("k", "v1")
+        tree.Flush()
+        use snap1 = tree.Snapshot()
+
+        tree.Put("k", "v2")
+        tree.Flush()
+        use snap2 = tree.Snapshot()
+
+        tree.Put("k", "v3")
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        assertEqual (Some "v1") (tree.Get("k", snap1)) "snap1 sees v1"
+        assertEqual (Some "v2") (tree.Get("k", snap2)) "snap2 sees v2"
+        assertEqual (Some "v3") (tree.Get "k") "latest sees v3")
+
+[<Fact>]
 let ``LsmTree transaction commits and restarts correctly`` () =
     withTestDir "tx_restart" (fun testDir ->
         do
