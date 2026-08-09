@@ -595,6 +595,44 @@ let ``RangeScan with snapshot handle survives compaction`` () =
         assertEqual [ "k", "v1" ] result "RangeScan with handle sees old version after compaction")
 
 [<Fact>]
+let ``RangeScan with rangeScanMaxRetries=0 uses locked fallback path`` () =
+    withTestDir "rscan_retry_zero" (fun testDir ->
+        use tree = new LsmTree(testDir, rangeScanMaxRetries = 0)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        tree.Put("c", "vc")
+        tree.Flush()
+
+        let result = tree.RangeScan("a", "c") |> Seq.toList
+        assertEqual [ "a", "va"; "b", "vb"; "c", "vc" ] result "Works with maxRetries=0")
+
+[<Fact>]
+let ``RangeScan with rangeScanMaxRetries=0 across MemTable and SSTable`` () =
+    withTestDir "rscan_retry_zero_mixed" (fun testDir ->
+        use tree = new LsmTree(testDir, rangeScanMaxRetries = 0)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        tree.Flush()
+        tree.Put("c", "vc")
+        tree.Put("d", "vd")
+
+        let result = tree.RangeScan("a", "d") |> Seq.toList
+        assertEqual [ "a", "va"; "b", "vb"; "c", "vc"; "d", "vd" ] result "Mixed layers with maxRetries=0")
+
+[<Fact>]
+let ``RangeScan with rangeScanMaxRetries=1 retries at least once`` () =
+    withTestDir "rscan_retry_one" (fun testDir ->
+        use tree = new LsmTree(testDir, rangeScanMaxRetries = 1)
+
+        for i = 1 to 20 do
+            tree.Put(sprintf "k%02d" i, "v")
+
+        tree.Flush()
+
+        let result = tree.RangeScan("k00", "k99") |> Seq.toList
+        Assert.True(result.Length = 20, sprintf "Expected 20 keys, got %d" result.Length))
+
+[<Fact>]
 let ``LsmTree compaction cancellation during Dispose`` () =
     withTestDir "compact_cancel" (fun testDir ->
         let tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])

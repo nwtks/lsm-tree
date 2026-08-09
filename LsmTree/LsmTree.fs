@@ -1,11 +1,13 @@
 namespace LsmTree
 
-type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[]) =
+type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[], ?rangeScanMaxRetries: int) =
     let memTableLimit = defaultArg memTableSizeLimit (1024 * 1024)
 
     let compactLevelLimits =
         defaultArg compactLevelLimits [| 4; 10; 100; 1000 |]
         |> LsmTreeLoader.validateCompactLevelLimits
+
+    let rangeScanRetries = defaultArg rangeScanMaxRetries 8
 
     let walPath = System.IO.Path.Combine(dataDir, "wal.log")
     let mutable immutableMemTable: MemTable option = None
@@ -150,7 +152,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             memSources @ sstSources |> List.rev |> List.toArray
 
     let collectRangeSources fromKey toKey =
-        tryCollectRangeSources fromKey toKey 8 0
+        tryCollectRangeSources fromKey toKey rangeScanRetries 0
 
     let applyTransactionOps commitSeq ops =
         ops
