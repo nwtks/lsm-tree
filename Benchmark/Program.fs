@@ -7,10 +7,39 @@ open BenchmarkDotNet.Attributes
 open BenchmarkDotNet.Running
 open LsmTree
 
+[<AbstractClass>]
+type BenchmarkBase(testDirName: string) =
+    let testDir = Path.Combine(Environment.CurrentDirectory, testDirName)
+    let mutable db: LsmTree = Unchecked.defaultof<_>
+
+    member _.TestDir = testDir
+    member _.Db = db
+
+    member _.DoSetup() =
+        if Directory.Exists testDir then
+            try
+                Directory.Delete(testDir, true)
+            with _ ->
+                ()
+
+        Directory.CreateDirectory testDir |> ignore
+        db <- new LsmTree(testDir)
+
+    member _.DoCleanup() =
+        try
+            db.Close()
+        with _ ->
+            ()
+
+        if Directory.Exists testDir then
+            try
+                Directory.Delete(testDir, true)
+            with _ ->
+                ()
+
 [<MemoryDiagnoser>]
 type PutBenchmark() =
-    let testDir = Path.Combine(Environment.CurrentDirectory, "bench_put")
-    let mutable db: LsmTree = Unchecked.defaultof<_>
+    inherit BenchmarkBase "bench_put"
 
     [<Params(10000)>]
     member val N = 0 with get, set
@@ -22,41 +51,29 @@ type PutBenchmark() =
 
     [<IterationSetup>]
     member this.Setup() =
-        if Directory.Exists testDir then
-            try
-                Directory.Delete(testDir, true)
-            with _ ->
-                ()
-
-        db <- new LsmTree(testDir)
+        base.DoSetup()
         this.Value <- String('x', this.ValueSize)
 
     [<IterationCleanup>]
-    member _.Cleanup() =
-        db.Close()
-
-        if Directory.Exists testDir then
-            try
-                Directory.Delete(testDir, true)
-            with _ ->
-                ()
+    member _.Cleanup() = base.DoCleanup()
 
     [<Benchmark(Baseline = true)>]
     member this.SequentialPut() =
         let v = this.Value
 
         for i = 1 to this.N do
-            db.Put($"k{i}", v)
+            base.Db.Put($"k{i}", v)
 
     [<Benchmark>]
     member this.ConcurrentPut() =
         let v = this.Value
+        let db = base.Db
         Parallel.For(1, this.N + 1, fun i -> db.Put($"ck{i}", v)) |> ignore
 
     [<Benchmark>]
     member this.TransactionPut() =
         let v = this.Value
-        use tx = db.BeginTransaction()
+        use tx = base.Db.BeginTransaction()
 
         for i = 1 to this.N do
             tx.Put($"tk{i}", v)
@@ -65,8 +82,7 @@ type PutBenchmark() =
 
 [<MemoryDiagnoser>]
 type GetBenchmark() =
-    let testDir = Path.Combine(Environment.CurrentDirectory, "bench_get")
-    let mutable db: LsmTree = Unchecked.defaultof<_>
+    inherit BenchmarkBase "bench_get"
     let rand = Random 42
 
     [<Params(10000, 30000)>]
@@ -74,14 +90,8 @@ type GetBenchmark() =
 
     [<GlobalSetup>]
     member this.Setup() =
-        if Directory.Exists testDir then
-            try
-                Directory.Delete(testDir, true)
-            with _ ->
-                ()
-
-        db <- new LsmTree(testDir)
-        use tx = db.BeginTransaction()
+        base.DoSetup()
+        use tx = base.Db.BeginTransaction()
 
         for i = 1 to this.N do
             tx.Put($"k{i}", "v")
@@ -89,48 +99,34 @@ type GetBenchmark() =
         tx.Commit()
 
     [<GlobalCleanup>]
-    member _.Cleanup() =
-        db.Close()
-
-        if Directory.Exists testDir then
-            try
-                Directory.Delete(testDir, true)
-            with _ ->
-                ()
+    member _.Cleanup() = base.DoCleanup()
 
     [<Benchmark>]
     member this.RandomHitGet() =
         let target = $"k{rand.Next(1, this.N)}"
-        db.Get target |> ignore
+        base.Db.Get target |> ignore
 
     [<Benchmark>]
     member this.RandomMissGet() =
         let target = $"miss_{rand.Next(1, this.N)}"
-        db.Get target |> ignore
+        base.Db.Get target |> ignore
 
     [<Benchmark>]
     member this.SequentialGet() =
         for i = 1 to this.N do
-            db.Get $"k{i}" |> ignore
+            base.Db.Get $"k{i}" |> ignore
 
 [<MemoryDiagnoser>]
 type DeleteBenchmark() =
-    let testDir = Path.Combine(Environment.CurrentDirectory, "bench_del")
-    let mutable db: LsmTree = Unchecked.defaultof<_>
+    inherit BenchmarkBase "bench_del"
 
     [<Params(10000)>]
     member val N = 0 with get, set
 
     [<IterationSetup>]
     member this.Setup() =
-        if Directory.Exists testDir then
-            try
-                Directory.Delete(testDir, true)
-            with _ ->
-                ()
-
-        db <- new LsmTree(testDir)
-        use tx = db.BeginTransaction()
+        base.DoSetup()
+        use tx = base.Db.BeginTransaction()
 
         for i = 1 to this.N do
             tx.Put($"k{i}", "v")
@@ -138,27 +134,21 @@ type DeleteBenchmark() =
         tx.Commit()
 
     [<IterationCleanup>]
-    member _.Cleanup() =
-        db.Close()
-
-        if Directory.Exists testDir then
-            try
-                Directory.Delete(testDir, true)
-            with _ ->
-                ()
+    member _.Cleanup() = base.DoCleanup()
 
     [<Benchmark(Baseline = true)>]
     member this.SequentialDelete() =
         for i = 1 to this.N do
-            db.Delete $"k{i}"
+            base.Db.Delete $"k{i}"
 
     [<Benchmark>]
     member this.ConcurrentDelete() =
+        let db = base.Db
         Parallel.For(1, this.N + 1, fun i -> db.Delete $"k{i}") |> ignore
 
     [<Benchmark>]
     member this.TransactionDelete() =
-        use tx = db.BeginTransaction()
+        use tx = base.Db.BeginTransaction()
 
         for i = 1 to this.N do
             tx.Delete $"k{i}"
@@ -167,8 +157,7 @@ type DeleteBenchmark() =
 
 [<MemoryDiagnoser>]
 type MixedWorkloadBenchmark() =
-    let testDir = Path.Combine(Environment.CurrentDirectory, "bench_mixed")
-    let mutable db: LsmTree = Unchecked.defaultof<_>
+    inherit BenchmarkBase "bench_mixed"
     let rand = Random 42
 
     [<Params(10000)>]
@@ -176,14 +165,8 @@ type MixedWorkloadBenchmark() =
 
     [<IterationSetup>]
     member this.Setup() =
-        if Directory.Exists testDir then
-            try
-                Directory.Delete(testDir, true)
-            with _ ->
-                ()
-
-        db <- new LsmTree(testDir)
-        use tx = db.BeginTransaction()
+        base.DoSetup()
+        use tx = base.Db.BeginTransaction()
 
         for i = 1 to this.N do
             tx.Put($"k{i}", "v")
@@ -191,36 +174,29 @@ type MixedWorkloadBenchmark() =
         tx.Commit()
 
     [<IterationCleanup>]
-    member _.Cleanup() =
-        db.Close()
-
-        if Directory.Exists testDir then
-            try
-                Directory.Delete(testDir, true)
-            with _ ->
-                ()
+    member _.Cleanup() = base.DoCleanup()
 
     [<Benchmark>]
     member this.ReadHeavy() =
-        for i = 1 to this.N do
+        for _ = 1 to this.N do
             if rand.Next 100 < 90 then
-                db.Get $"k{rand.Next(1, this.N)}" |> ignore
+                base.Db.Get $"k{rand.Next(1, this.N)}" |> ignore
             else
-                db.Put($"k{rand.Next(1, this.N)}", "v")
+                base.Db.Put($"k{rand.Next(1, this.N)}", "v")
 
     [<Benchmark>]
     member this.WriteHeavy() =
-        for i = 1 to this.N do
+        for _ = 1 to this.N do
             if rand.Next 100 < 50 then
-                db.Get $"k{rand.Next(1, this.N)}" |> ignore
+                base.Db.Get $"k{rand.Next(1, this.N)}" |> ignore
             else
-                db.Put($"k{rand.Next(1, this.N)}", "v")
+                base.Db.Put($"k{rand.Next(1, this.N)}", "v")
 
 [<EntryPoint>]
 let main argv =
     printfn "Starting LSM-Tree Benchmarks..."
-    let summary1 = BenchmarkRunner.Run<PutBenchmark>()
-    let summary2 = BenchmarkRunner.Run<GetBenchmark>()
-    let summary3 = BenchmarkRunner.Run<DeleteBenchmark>()
-    let summary4 = BenchmarkRunner.Run<MixedWorkloadBenchmark>()
+    BenchmarkRunner.Run<PutBenchmark>() |> ignore
+    BenchmarkRunner.Run<GetBenchmark>() |> ignore
+    BenchmarkRunner.Run<DeleteBenchmark>() |> ignore
+    BenchmarkRunner.Run<MixedWorkloadBenchmark>() |> ignore
     0
