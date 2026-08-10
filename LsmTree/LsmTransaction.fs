@@ -14,7 +14,7 @@ type ILsmTree =
     abstract member RollbackTransaction: unit -> unit
 
 type LsmTransaction(lsm: ILsmTree, snapshot: SnapshotHandle) =
-    let mutable ops = []
+    let ops = System.Collections.Generic.Dictionary<string, string option>()
     let mutable finished = false
 
     let checkFinished () =
@@ -24,26 +24,24 @@ type LsmTransaction(lsm: ILsmTree, snapshot: SnapshotHandle) =
     interface ITransaction with
         member _.Put(key, value) =
             checkFinished ()
-            ops <- (key, Some value) :: ops
+            ops[key] <- Some value
 
         member _.Delete key =
             checkFinished ()
-            ops <- (key, None) :: ops
+            ops[key] <- None
 
         member _.Get key =
             checkFinished ()
-            let local = ops |> Seq.tryFind (fun (k, _) -> k = key)
 
-            match local with
-            | Some(_, Some v) -> Some v
-            | Some(_, None) -> None
-            | None -> lsm.Get(key, snapshot)
+            match ops.TryGetValue key with
+            | true, v -> v
+            | false, _ -> lsm.Get(key, snapshot)
 
         member this.Commit() =
             checkFinished ()
 
             try
-                lsm.CommitTransaction(ops |> Seq.rev |> Seq.toList)
+                ops |> Seq.map (|KeyValue|) |> Seq.toList |> lsm.CommitTransaction
             finally
                 (this :> ITransaction).Dispose()
 
@@ -52,7 +50,7 @@ type LsmTransaction(lsm: ILsmTree, snapshot: SnapshotHandle) =
 
             try
                 lsm.RollbackTransaction()
-                ops <- []
+                ops.Clear()
             finally
                 (this :> ITransaction).Dispose()
 
