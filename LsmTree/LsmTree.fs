@@ -187,7 +187,12 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
 
     member this.BeginTransaction() =
         let snap = snapshotManager.AcquireSnapshot()
-        new LsmTransaction(this :> ILsmTree, snap) :> ITransaction
+
+        try
+            new LsmTransaction(this :> ILsmTree, snap) :> ITransaction
+        with ex ->
+            snap.Dispose()
+            raise ex
 
     member _.Put(key, value) = putDirect key value
 
@@ -244,8 +249,13 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             | None -> snapshotManager.CurrentSequence()
 
         snapshotManager.RegisterSnapshot snap
-        let sources = collectRangeSources fromKey toKey
-        new RangeIterator(snapshotManager, sources, snap) :> IIterator
+
+        try
+            let sources = collectRangeSources fromKey toKey
+            new RangeIterator(snapshotManager, sources, snap) :> IIterator
+        with ex ->
+            snapshotManager.ReleaseSnapshot snap
+            raise ex
 
     member this.RangeScan(fromKey, toKey, ?snapshot) =
         seq {

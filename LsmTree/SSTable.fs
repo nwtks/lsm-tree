@@ -222,7 +222,14 @@ type SSTable(path) =
         new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
 
     let br = new System.IO.BinaryReader(fs)
-    let bloomFilter, maxSeq, indexOffset, index = SSTable.load fs br
+
+    let bloomFilter, maxSeq, indexOffset, index =
+        try
+            SSTable.load fs br
+        with ex ->
+            br.Dispose()
+            raise ex
+
     let rwLock = new System.Threading.ReaderWriterLockSlim()
     let mutable disposed = false
 
