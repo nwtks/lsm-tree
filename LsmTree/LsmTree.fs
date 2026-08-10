@@ -1,7 +1,10 @@
 namespace LsmTree
 
 type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[], ?rangeScanMaxRetries: int) =
-    let memTableLimit = defaultArg memTableSizeLimit (1024 * 1024)
+    let memTableLimit =
+        match memTableSizeLimit with
+        | Some limit when limit <= 0 -> invalidArg "memTableSizeLimit" "memTableSizeLimit must be positive"
+        | _ -> defaultArg memTableSizeLimit (1024 * 1024)
 
     let compactLevelLimits =
         defaultArg compactLevelLimits [| 4; 10; 100; 1000 |]
