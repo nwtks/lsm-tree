@@ -207,8 +207,8 @@ module SSTable =
 
         Array.init (hi - lo) (fun i ->
             if i > 0 then
-                br.ReadBytes(int SEQ_BYTE_SIZE + int KEY_LEN_BYTE_SIZE + index.[lo + i].KeyByteLen)
-                |> ignore
+                let headerSize = SEQ_BYTE_SIZE + KEY_LEN_BYTE_SIZE + int64 index.[lo + i].KeyByteLen
+                fs.Seek(headerSize, System.IO.SeekOrigin.Current) |> ignore
 
             let entry = index.[lo + i]
             entry.Key, entry.Seq, readItem br)
