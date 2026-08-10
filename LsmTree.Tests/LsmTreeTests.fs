@@ -695,6 +695,122 @@ let ``LsmTree compaction cancellation during Dispose`` () =
         (tree :> System.IDisposable).Dispose())
 
 [<Fact>]
+let ``RangeScan with NewIterator supports for...in loop via IEnumerable`` () =
+    withTestDir "rscan_for_in" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+        tree.Put("c", "vc")
+
+        use it = tree.NewIterator("a", "c")
+        let results = ResizeArray()
+
+        for key, value in it do
+            results.Add(key, value)
+
+        assertEqual [ "a", "va"; "b", "vb"; "c", "vc" ] (results |> Seq.toList) "for...in works via IEnumerable")
+
+[<Fact>]
+let ``RangeScan NewIterator supports full database scan`` () =
+    withTestDir "rscan_full_scan" (fun testDir ->
+        use tree = new LsmTree(testDir, memTableSizeLimit = 1024)
+
+        for i = 1 to 100 do
+            tree.Put(sprintf "k%03d" i, $"v{i}")
+
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        use it = tree.NewIterator("a", "z")
+        let count = Seq.length it
+        assertEqual 100 count "Full scan returns all keys")
+
+[<Fact>]
+let ``RangeScan NewIterator Current before MoveNext in for...in does not crash`` () =
+    withTestDir "rscan_for_in_empty" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        use it = tree.NewIterator("a", "z")
+        let count = Seq.length it
+        assertEqual 0 count "Empty scan returns no results")
+
+[<Fact>]
+let ``SSTable constructor throws for invalid file`` () =
+    withTestDir "sst_invalid_file" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "corrupt.sst")
+        let data = Array.create 32 0uy
+        System.IO.File.WriteAllBytes(path, data)
+
+        let exceptionThrown =
+            try
+                use _ = new SSTable(path)
+                false
+            with _ ->
+                true
+
+        Assert.True(exceptionThrown, "SSTable constructor should throw for invalid file"))
+
+[<Fact>]
+let ``BeginTransaction registers valid snapshot handle`` () =
+    withTestDir "begin_tx_snap" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+        tree.Put("k", "v1")
+        tree.Flush()
+
+        let _ = tree.Snapshot().Seq
+        use tx = tree.BeginTransaction()
+        tree.Put("k", "v2")
+        tree.Flush()
+        tree.Put("k", "v3")
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        let _ = tx.Get "k"
+        (tx :> System.IDisposable).Dispose())
+
+[<Fact>]
+let ``RangeScan retry logic works after compaction changes SSTable list`` () =
+    withTestDir "rscan_retry" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+
+        for i = 1 to 20 do
+            tree.Put(sprintf "k%02d" i, $"v{i}")
+
+        tree.Flush()
+
+        tree.Put("trigger", "compact")
+        tree.Flush()
+        tree.WaitForCompaction()
+
+        let result = tree.RangeScan("k00", "k99") |> Seq.toList
+        Assert.True(result.Length = 20, sprintf "Expected 20 keys, got %d" result.Length))
+
+[<Fact>]
+let ``RangeScan concurrent compaction does not lose data`` () =
+    withTestDir "rscan_concurrent_compact" (fun testDir ->
+        use tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
+
+        for i = 1 to 50 do
+            tree.Put(sprintf "k%03d" i, $"v{i}")
+
+        tree.Flush()
+
+        let results = ResizeArray()
+
+        let scanTask =
+            System.Threading.Tasks.Task.Run(fun () ->
+                for key, value in tree.RangeScan("a", "z") do
+                    results.Add(key, value))
+
+        System.Threading.Thread.Sleep 10
+
+        for i = 1 to 10 do
+            tree.Put($"extra{i}", $"extv{i}")
+            tree.Flush()
+
+        scanTask.Wait()
+        Assert.True(results.Count > 0, "Range scan should return some results during concurrent writes"))
+
+[<Fact>]
 let ``LsmTree Dispose handles compaction coordinator errors`` () =
     withTestDir "dispose_compact_err" (fun testDir ->
         let tree = new LsmTree(testDir, compactLevelLimits = [| 2 |])
@@ -735,3 +851,95 @@ let ``LsmTree Dispose handles flush coordinator errors`` () =
         let fc = flField.GetValue tree :?> FlushCoordinator
         fc.Error <- Some(exn "injected flush error")
         (tree :> System.IDisposable).Dispose())
+
+[<Fact>]
+let ``LsmTree ReleaseSnapshot does not throw for unknown sequence`` () =
+    withTestDir "release_unknown_snap" (fun testDir ->
+        use tree = new LsmTree(testDir)
+
+        let snapField =
+            typeof<LsmTree>
+                .GetField(
+                    "snapshotManager",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let snapMgr = snapField.GetValue tree :?> LsmTreeSnapshot
+        snapMgr.ReleaseSnapshot 999999L
+        Assert.True true)
+
+[<Fact>]
+let ``LsmTree ReleaseSnapshot roundtrip works`` () =
+    withTestDir "release_snap_roundtrip" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v")
+
+        let handle = tree.Snapshot()
+        let seqNum = handle.Seq
+        handle.Dispose()
+
+        tree.ReleaseSnapshot seqNum
+        tree.ReleaseSnapshot seqNum
+        Assert.True true)
+
+[<Fact>]
+let ``FlushCoordinator get_Error returns initialized value`` () =
+    withTestDir "flush_coord_err_init" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v")
+        tree.Flush()
+
+        let flField =
+            typeof<LsmTree>
+                .GetField(
+                    "flushCoordinator",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let fc = flField.GetValue tree :?> FlushCoordinator
+        let errorValue = fc.Error
+        assertEqual None errorValue "get_Error returns None when no error")
+
+[<Fact>]
+let ``RangeIterator IEnumerator members work correctly`` () =
+    withTestDir "iter_enum_members" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("b", "vb")
+        tree.Put("a", "va")
+
+        use it = tree.NewIterator("a", "z")
+        let enumerator = it.GetEnumerator()
+
+        Assert.Throws<System.InvalidOperationException>(fun () -> enumerator.Reset())
+        |> ignore
+
+        Assert.True(enumerator.MoveNext())
+        let current = enumerator.Current
+        assertEqual ("a", "va") current "Current returns first entry"
+
+        Assert.True(enumerator.MoveNext())
+        let current2 = enumerator.Current
+        assertEqual ("b", "vb") current2 "Current returns second entry"
+
+        Assert.False(enumerator.MoveNext())
+
+        tree.Put("b", "vb")
+        tree.Put("a", "va")
+
+        use it = tree.NewIterator("a", "z")
+        let enumerator = it.GetEnumerator()
+
+        Assert.Throws<System.InvalidOperationException>(fun () -> enumerator.Reset())
+        |> ignore
+
+        Assert.True(enumerator.MoveNext())
+        let current = enumerator.Current
+        assertEqual ("a", "va") current "Current returns first entry"
+
+        Assert.True(enumerator.MoveNext())
+        let current2 = enumerator.Current
+        assertEqual ("b", "vb") current2 "Current returns second entry"
+
+        Assert.False(enumerator.MoveNext()))

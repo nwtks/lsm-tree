@@ -2,6 +2,7 @@ namespace LsmTree
 
 type IIterator =
     inherit System.IDisposable
+    inherit System.Collections.Generic.IEnumerable<string * string>
     abstract MoveNext: unit -> bool
     abstract Current: (string * string)
 
