@@ -97,6 +97,21 @@ type RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string * int64 * 
         member this.MoveNext() = this.MoveNext()
         member this.Current = this.Current
 
+    interface System.Collections.Generic.IEnumerator<string * string> with
+        member this.Current = this.Current
+
+    interface System.Collections.IEnumerator with
+        member this.MoveNext() = this.MoveNext()
+        member this.Current = this.Current
+        member _.Reset() = invalidOp "Reset not supported"
+
+    interface System.Collections.Generic.IEnumerable<string * string> with
+        member this.GetEnumerator() =
+            this :> System.Collections.Generic.IEnumerator<string * string>
+
+    interface System.Collections.IEnumerable with
+        member this.GetEnumerator() = this :> System.Collections.IEnumerator
+
     interface System.IDisposable with
         member _.Dispose() =
             if not disposed then
