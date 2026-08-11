@@ -3,13 +3,15 @@
 ### MemTable flush races with Put/Delete
 
 See [trade-off.md](trade-off.md) (`MemTable flush: async, fire-and-forget, sequentialized`).
-No data loss occurs, but an empty SSTable may be produced — `MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList, so a flush triggered between the increment and insert can produce an empty SSTable.
+No data loss occurs, but an empty SSTable may be produced.
+`MemTable.Put`/`Delete` increment `sizeBytes` before inserting into the SkipList, so a flush triggered between the increment and insert can produce an empty SSTable.
 Be aware when asserting post-flush SSTable file counts in tests.
 
 ### `do...use` scoping avoids double-dispose
 
 When testing restart (create engine → close → reopen), use `do...use tree = new LsmTree(...)` to scope the first engine's lifetime explicitly, then `use tree2 = new LsmTree(...)` for the second.
-Calling `.Close()` before a `use` block ends triggers a double-dispose — `LsmTree.Dispose()` guards against this with a `disposed` flag and `LockExtensions.disposeOf`, but relying on this is fragile and violates the `IDisposable` contract.
+Calling `.Close()` before a `use` block ends triggers a double-dispose.
+`LsmTree.Dispose()` guards against this with a `disposed` flag and `LockExtensions.disposeOf`, but relying on this is fragile and violates the `IDisposable` contract.
 
 ### SSTable `ReaderWriterLockSlim` double‑dispose safety
 
@@ -43,7 +45,8 @@ Create L0 files via manual `Flush()` calls followed by `WaitForCompaction()` to 
 The fire-and-forget `asyncFlushToSSTable` may call `triggerCompaction` or `flushCoordinator.SignalCompleted()` **after** `Dispose()` has already disposed the coordinator's `ManualResetEvent`.
 
 **Fix** (see `LsmTreeFlush.fs`):
-1. `triggerCompaction` checks `compaction.Token.IsCancellationRequested` — prevents starting new compactions after `Cancel()` during dispose.
+1. `triggerCompaction` checks `compaction.Token.IsCancellationRequested`.
+   Prevents starting new compactions after `Cancel()` during dispose.
 2. `CompactionCoordinator.SetCompleted()` and `FlushCoordinator.SignalCompleted()` have a `disposed` flag guard.
 3. `FlushCoordinator.AcquireAndReset()` checks the `disposed` flag under `flushLock` and returns `false` if disposed, so a new flush cycle is skipped during shutdown.
 4. `CompactionCoordinator.Token` is captured with `member val` (not `member _`) so the `CancellationToken` object survives CTS disposal.
@@ -67,13 +70,6 @@ Use `use` (always `Dispose()` on every path).
 Handles are **refcounted**: `NewIterator` re-registers the same sequence internally, so the same sequence may appear with count > 1.
 Each acquire needs a matching release.
 Double-dispose is safe (a missing entry is a no-op).
-
-### Raw `int64` snapshot reads are best-effort
-
-`Get(key, ?snapshot: int64)` (and `handle.Seq` passed directly) do **not** register the sequence.
-Compaction can prune the version between the snapshot read and the lookup, returning `None` for a version that existed moments earlier.
-This is the exact race the registered `SnapshotHandle` API was designed to fix — prefer `SnapshotHandle` in new code.
-The `int64` overload exists only for backward compatibility.
 
 ### SSTable read methods reposition the FileStream internally
 
@@ -115,7 +111,8 @@ If full-database iteration is needed, batch via multiple smaller range scans.
 ### Bloom filter probe spread: h2 forced odd
 
 `BloomFilter.keyIndex` computes probe positions as `(h1 + seed * h2) % bitSize` with `h2` forced odd (`h2 ||| 1u`).
-Without this, a key whose FNV-1a low 32 bits are 0 would set/check the same bit for all 7 probes (a 1-bit fingerprint), and an even `h2` keeps every probe at a fixed parity — half the bit space is never used.
+Without this, a key whose FNV-1a low 32 bits are 0 would set/check the same bit for all 7 probes (a 1-bit fingerprint), and an even `h2` keeps every probe at a fixed parity.
+Half the bit space is never used.
 **Compatibility caveat**: this changes bit placement relative to earlier builds.
 Bloom data written by older code is probed at different positions by new code.
 Since `SSTable.Get` treats a bloom miss as `NotFound`, keys that exist in old SSTables can be silently missed (false negative).

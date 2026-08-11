@@ -15,7 +15,8 @@ This file provides guidance for AI agents working in this repository.
 | Design trade-offs | `docs/trade-off.md` |
 | Common mistakes / gotchas | `docs/gotchas.md` |
 
-- **When a design decision, trade-off, bug fix, or known issue occurs, update `docs/trade-off.md` or `docs/gotchas.md` immediately (in the same session) — do not defer.**
+- **When a design decision, trade-off, bug fix, or known issue occurs, update `docs/trade-off.md` or `docs/gotchas.md` immediately (in the same session).**
+- **Do not defer updates.**
 - When a new trade-off or gotcha arises, first consider appending to the relevant `docs/` file.
   Only add to AGENTS.md if it's an "implicit rule not obvious from the codebase."
 - Only keep project-specific implicit rules in AGENTS.md.
@@ -25,7 +26,7 @@ This file provides guidance for AI agents working in this repository.
 
 ## Cross-Platform Compatibility
 
-All code — including test code — must work on **both Windows and Linux**.
+All code must work on **both Windows and Linux** (including test code).
 Avoid:
 
 - Hard-coded path separators; use `System.IO.Path.Combine`.
@@ -37,14 +38,18 @@ Avoid:
 
 ## Coding Conventions
 
-- Prefer functional programming idioms over imperative ones throughout the codebase — including test code.
-- **Favor expressions over statements** — Use `match` expressions, `if`/`then`/`else`, and pattern matching instead of imperative control flow.
-- **Leverage discriminated unions** — Model domain concepts with DUs for exhaustiveness checking.
+- Prefer functional programming idioms over imperative ones throughout the codebase.
+  This includes test code.
+- **Favor expressions over statements**.
+  Use `match` expressions, `if`/`then`/`else`, and pattern matching instead of imperative control flow.
+- **Leverage discriminated unions**.
+  Model domain concepts with DUs for exhaustiveness checking.
 - **Use `[<TailCall>]` on recursive functions** that loop to prevent stack overflows.
 - Do not introduce new external NuGet packages without checking existing dependencies in the `.fsproj` files first.
-- **Cyclomatic complexity** — Every function/method must keep its keyword-calculated complexity ≤ 15 (hard limit).
+- **Cyclomatic complexity**: Every function/method must keep its keyword-calculated complexity ≤ 15 (hard limit).
   Keep it ≤ 10 where practical.
-  After `dotnet test`, the `scripts/check-complexity.fsx` script reads `coverage.cobertura.xml` and reports both a keyword-based estimate (calculated) and the Coverlet reference value — the error/warning thresholds apply to the **calculated** column.
+  After `dotnet test`, `scripts/check-complexity.fsx` reads `coverage.cobertura.xml` and reports both a keyword-based estimate (calculated) and the Coverlet reference value.
+  The error/warning thresholds apply to the **calculated** column.
   Configure thresholds in `Directory.Build.props`.
   If the check fails, split the function into smaller helpers or simplify branching.
 
@@ -62,11 +67,14 @@ Avoid:
   2. When multiple test cases target the same source function, order them by **test priority**: normal (happy path) → error cases → fault/failure scenarios.
 - **Prefer data-driven tests** (`[<Theory>]` + `[<InlineData>]`) when multiple test cases share the same test logic but differ only in inputs or expected outputs.
   This reduces code duplication and makes it easy to add new cases.
-- **Use a unique suffix** per test — tests may run in parallel.
+- **Use a unique test directory name** per test.
+  Tests may run in parallel, so directory names must not collide.
 - Each test uses `withTestDir "<unique_name>" (fun testDir -> ...)` to get an isolated temp directory (creates before use, cleans up after in `try`/`finally`).
-- Use `assertEqual expected actual msg` (wraps `Assert.True`) for readable failure output.
+- Use `assertEqual expected actual msg` for readable failure output.
+  (It wraps `Assert.True`.)
 - To simulate IO errors deterministically (e.g., for error propagation tests), use reflection to close private `FileStream` handles.
-  Never use file truncation (`SetLength`), as .NET's `FileStream` internal buffer can mask the corruption.
+  Never use file truncation (`SetLength`).
+  .NET's `FileStream` internal buffer can mask the corruption.
 
 ---
 
@@ -75,5 +83,7 @@ Avoid:
 1. Identify the owning layer: WAL, SkipList, MemTable, BloomFilter, SSTable, or LsmTree coordinator.
 2. Respect the `LsmTree.fsproj` compilation order (insert new files after their dependencies).
 3. Add `[<Fact>]` tests in the appropriate test file (`BloomFilterTests.fs`, `SkipListTests.fs`, etc.) with a unique `withTestDir` name.
-4. Run `dotnet test` — all tests must pass.
-5. If the feature changes the WAL or SSTable format, update both README.md and the recovery path, and add regression tests for backward compatibility.
+4. Run `dotnet test`.
+  All tests must pass.
+5. If the feature changes the WAL or SSTable format, update both README.md and the recovery path.
+  Add regression tests for backward compatibility.
