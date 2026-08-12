@@ -199,7 +199,7 @@ module internal LsmTreeFlush =
         let estimatedEntries = tablesToCompact |> List.sumBy (fun t -> t.Count)
         let isLastLevel = compactLevelLimits.Length = level + 1
 
-        mergeSortedEntries (List.rev tablesToCompact) isLastLevel minSnap
+        mergeSortedEntries tablesToCompact isLastLevel minSnap
         |> SSTableWriter.writeStream (ssTablePath dataDir (level + 1)) ct estimatedEntries
 
     let mergeAndCreateSSTable
