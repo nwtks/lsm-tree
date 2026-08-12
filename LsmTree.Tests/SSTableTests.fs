@@ -100,36 +100,6 @@ let ``SSTable loadIndex handles tombstone and value entries`` () =
         assertEqual 1L index.[1].Seq "Second entry seq")
 
 [<Fact>]
-let ``SSTable readValue roundtrips correctly`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    SSTableWriter.writeValue bw "roundtrip_val"
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    assertEqual "roundtrip_val" (SSTable.readValue br) "readValue should roundtrip"
-
-[<Fact>]
-let ``SSTable readItem roundtrips Some value`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    SSTableWriter.writeItem bw (Some "item_roundtrip")
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    assertEqual (Some "item_roundtrip") (SSTable.readItem br) "readItem should roundtrip Some"
-
-[<Fact>]
-let ``SSTable readItem roundtrips None`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    SSTableWriter.writeItem bw None
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    assertEqual None (SSTable.readItem br) "readItem should roundtrip None"
-
-[<Fact>]
 let ``SSTable binSearchIndex finds existing key`` () =
     let index =
         [| { Key = "present"
@@ -352,57 +322,6 @@ let ``SSTable GetAll on disposed SSTable returns empty array`` () =
 
         let result = sst.GetAll()
         assertEqual 0 result.Length "GetAll on disposed SSTable returns empty array")
-
-[<Fact>]
-let ``SSTableWriter writeBytes writes length-prefixed bytes`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    let bytes = "hello"B
-    SSTableWriter.writeBytes bw bytes
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    let len = br.ReadInt32()
-    assertEqual bytes.Length len "Length prefix should match"
-
-    let data = br.ReadBytes len
-    assertEqual "hello" (System.Text.Encoding.UTF8.GetString data) "Data should roundtrip"
-
-[<Fact>]
-let ``SSTableWriter writeValue writes length-prefixed string`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    SSTableWriter.writeValue bw "test_value"
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    let len = br.ReadInt32()
-    let data = br.ReadBytes len
-    assertEqual "test_value" (System.Text.Encoding.UTF8.GetString data) "Value should roundtrip"
-
-[<Fact>]
-let ``SSTableWriter writeItem writes Some value`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    SSTableWriter.writeItem bw (Some "item_val")
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    assertEqual false (br.ReadBoolean()) "Some value should write false (has value)"
-
-    let len = br.ReadInt32()
-    let data = br.ReadBytes len
-    assertEqual "item_val" (System.Text.Encoding.UTF8.GetString data) "Item value should roundtrip"
-
-[<Fact>]
-let ``SSTableWriter writeItem writes None`` () =
-    use ms = new System.IO.MemoryStream()
-    use bw = new System.IO.BinaryWriter(ms)
-    SSTableWriter.writeItem bw None
-    bw.Flush()
-    ms.Position <- 0L
-    use br = new System.IO.BinaryReader(ms)
-    assertEqual true (br.ReadBoolean()) "None should write true (no value)"
 
 [<Fact>]
 let ``SSTableWriter writes inline index and roundtrips`` () =

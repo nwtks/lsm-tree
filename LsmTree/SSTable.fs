@@ -316,16 +316,6 @@ module SSTableWriter =
         bw.Write bytes.Length
         bw.Write bytes
 
-    let writeValue (bw: System.IO.BinaryWriter) (value: string) =
-        System.Text.Encoding.UTF8.GetBytes value |> writeBytes bw
-
-    let writeItem (bw: System.IO.BinaryWriter) item =
-        match item with
-        | None -> bw.Write true
-        | Some v ->
-            bw.Write false
-            writeValue bw v
-
     let writeEntry
         (bw: System.IO.BinaryWriter)
         (fs: System.IO.FileStream)
