@@ -125,7 +125,7 @@ type internal WAL(path: string) =
         $"{WALRecovery.PUT} {seq} {k} {v}" |> write false
 
     member _.PutSingle(seq: int64, key: string, value: string, ?sync: bool) =
-        let sync = defaultArg sync true
+        let sync = defaultArg sync false
         let k = WALRecovery.utf8ToBase64 key
         let v = WALRecovery.utf8ToBase64 value
         $"{WALRecovery.PUT} {seq} {k} {v}" |> write sync
@@ -135,7 +135,7 @@ type internal WAL(path: string) =
         $"{WALRecovery.DEL} {seq} {k}" |> write false
 
     member _.DeleteSingle(seq: int64, key: string, ?sync: bool) =
-        let sync = defaultArg sync true
+        let sync = defaultArg sync false
         let k = WALRecovery.utf8ToBase64 key
         $"{WALRecovery.DEL} {seq} {k}" |> write sync
 
