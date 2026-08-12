@@ -135,7 +135,7 @@ The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field
 - **O(K) `pickMinKey` per step**: All SSTables at all levels are included as sources (L0 overlap design requires scanning all files).
   With `compactLevelLimits [|4;10;100;1000|]`, K ≤ ~1114.
   Most cursors are exhausted early, so the average case is lower, but worst-case remains O(K).
-- **One read per range, parsed in memory**: `SSTable.GetRange` reads the whole data region from `index.[lo].Offset` to `indexOffset` with a single `RandomAccess.Read`, then parses entries in memory (`readRangeEntries`).
+- **One read per range, parsed in memory**: `SSTable.GetRange` reads the in-range data region from `index.[lo].Offset` to `index.[hi].Offset` (or `indexOffset` when the range extends to the end) with a single `RandomAccess.Read`, then parses entries in memory (`readRangeEntries`).
   Entries are written back-to-back with no padding.
   The per-entry `seq`+`keyLen`+`key` header is skipped by advancing an in-memory position (no syscall, no `Seek`, no UTF-8 decode of the discarded key).
   Cost is one read syscall per range, regardless of the entry count.

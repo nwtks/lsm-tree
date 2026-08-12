@@ -82,7 +82,7 @@ The data region does **not** need to be accessed during SSTable open.
 The data region is only touched on demand:
 
 - `Get` reads the value payload at a computed offset with one `RandomAccess.Read` (after in-memory binary search on the index).
-- `GetRange` reads the data region from `index.[lo].Offset` to `indexOffset` in one `RandomAccess.Read`, then parses entries in memory.
+- `GetRange` reads the in-range data region from `index.[lo].Offset` to `index.[hi].Offset` (or `indexOffset` at the tail) in one `RandomAccess.Read`, then parses entries in memory.
 - `GetAll` (used by compaction) reads the entire data region in one `RandomAccess.Read` and parses it in memory.
   Uses the same region-batch pattern as `loadIndex`.
 

@@ -238,7 +238,8 @@ module internal SSTable =
 
     let readRangeEntries handle (index: IndexEntry[]) lo hi indexOffset =
         let fromOffset = index.[lo].Offset
-        let length = int (indexOffset - fromOffset)
+        let endOffset = if hi < index.Length then index.[hi].Offset else indexOffset
+        let length = int (endOffset - fromOffset)
         let buf = Array.zeroCreate<byte> length
         readExactly handle fromOffset buf
         let mutable pos = 0
