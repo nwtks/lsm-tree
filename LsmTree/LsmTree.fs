@@ -87,16 +87,19 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             wal.DeleteSingle(seq, key, false)
             memTable.Delete(key, seq))
 
-    let applyTransactionOps commitSeq ops =
+    let writeOpsToWal commitSeq ops =
         ops
         |> List.iter (fun (k, vOpt) ->
             match vOpt with
-            | Some v ->
-                wal.Put(commitSeq, k, v)
-                memTable.Put(k, commitSeq, v)
-            | None ->
-                wal.Delete(commitSeq, k)
-                memTable.Delete(k, commitSeq))
+            | Some v -> wal.Put(commitSeq, k, v)
+            | None -> wal.Delete(commitSeq, k))
+
+    let applyOpsToMemTable commitSeq ops =
+        ops
+        |> List.iter (fun (k, vOpt) ->
+            match vOpt with
+            | Some v -> memTable.Put(k, commitSeq, v)
+            | None -> memTable.Delete(k, commitSeq))
 
     let commitTransaction (ops: (string * string option) list) =
         let shouldFlush =
@@ -104,8 +107,9 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
                 if not ops.IsEmpty then
                     let commitSeq = snapshotManager.NextSequence()
                     wal.Begin commitSeq
-                    applyTransactionOps commitSeq ops
+                    writeOpsToWal commitSeq ops
                     wal.Commit(commitSeq, sync = true)
+                    applyOpsToMemTable commitSeq ops
 
                 memTable.SizeBytes >= memTableLimit)
 
