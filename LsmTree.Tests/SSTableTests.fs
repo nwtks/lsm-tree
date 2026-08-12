@@ -54,8 +54,7 @@ let ``SSTable load returns empty for short file`` () =
                 System.IO.FileShare.Read
             )
 
-        use br = new System.IO.BinaryReader(fs)
-        let _, maxSeq, _, index = SSTable.load fs br
+        let _, maxSeq, _, index = SSTable.load fs
         assertEqual [||] index "Short file should have empty index"
         assertEqual 0L maxSeq "Short file should have maxSeq 0")
 
@@ -72,8 +71,7 @@ let ``SSTable load and loadIndex handle empty SSTable`` () =
                 System.IO.FileShare.Read
             )
 
-        use br = new System.IO.BinaryReader(fs)
-        let _, maxSeq, _, index = SSTable.load fs br
+        let _, maxSeq, _, index = SSTable.load fs
         assertEqual [||] index "Empty SSTable should have empty index"
         assertEqual 0L maxSeq "Empty SSTable maxSeq = 0")
 
@@ -91,8 +89,7 @@ let ``SSTable loadIndex handles tombstone and value entries`` () =
                 System.IO.FileShare.Read
             )
 
-        use br = new System.IO.BinaryReader(fs)
-        let _, _, _, index = SSTable.load fs br
+        let _, _, _, index = SSTable.load fs
         assertEqual 2 index.Length "Should have 2 index entries"
         assertEqual "gone" index.[0].Key "First entry key"
         assertEqual 2L index.[0].Seq "First entry seq"
@@ -153,10 +150,11 @@ let ``SSTable readAllEntries preserves tombstone entries`` () =
                 System.IO.FileShare.Read
             )
 
-        use br = new System.IO.BinaryReader(fs)
-        let _, _, _, index = SSTable.load fs br
-        fs.Seek(index.[0].Offset, System.IO.SeekOrigin.Begin) |> ignore
-        let entries = SSTable.readAllEntries br index.Length
+        let _, _, indexOffset, index = SSTable.load fs
+        let dataLen = int (indexOffset - index.[0].Offset)
+        let buf = Array.zeroCreate<byte> dataLen
+        SSTable.readExactly fs.SafeFileHandle index.[0].Offset buf
+        let entries = SSTable.readAllEntries buf index.Length
         assertEqual 3 entries.Length "Should have 3 entries"
         assertEqual ("k1", 1L, Some "v1") entries.[0] "First entry is k1=v1"
         assertEqual ("k2", 2L, None) entries.[1] "Second entry is k2=tombstone"
@@ -339,8 +337,7 @@ let ``SSTableWriter writes inline index and roundtrips`` () =
                 System.IO.FileShare.Read
             )
 
-        use br = new System.IO.BinaryReader(fs)
-        let _, _, _, index = SSTable.load fs br
+        let _, _, _, index = SSTable.load fs
         assertEqual 3 index.Length "Should have 3 index entries"
         assertEqual "k1" index.[0].Key "First entry key"
         assertEqual 1L index.[0].Seq "First entry seq"

@@ -89,8 +89,9 @@ The WAL file is no longer purely transactional — recovery iterates once to fin
 ## SSTable read path: in-memory index + bloom filter, inline-index format
 
 **Choice**: The on-disk index region stores inline `IndexEntry` records (`seq + offset + keyByteLen + keyBytes`), not just `int64[]` offsets.
-At open time, `SSTable.load` reads the entire index region in a single `ReadExactly` and parses it in memory with `BinaryPrimitives` — the data region is not touched during open.
-A `Get` does a pure in-memory binary search on the index, then a single `Seek`+`Read` for the value payload.
+At open time, `SSTable.load` reads the entire index region in a single `RandomAccess.Read` and parses it in memory with `BinaryPrimitives`.
+The data region is not touched during open.
+A `Get` does a pure in-memory binary search on the index, then a single `RandomAccess.Read` for the value payload.
 A Bloom filter (10 bits/item, 7 hash functions) rejects non-existent keys before the binary search.
 
 **Why**: The earlier `int64[] offsets` format forced `loadIndex` to walk the data region at open time (parsing each entry's seq + key header to reconstruct `IndexEntry`).
@@ -134,18 +135,18 @@ The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field
 - **O(K) `pickMinKey` per step**: All SSTables at all levels are included as sources (L0 overlap design requires scanning all files).
   With `compactLevelLimits [|4;10;100;1000|]`, K ≤ ~1114.
   Most cursors are exhausted early, so the average case is lower, but worst-case remains O(K).
-- **One `Seek` per range, then sequential reads**: `SSTable.GetRange` seeks once to the first entry's value offset, then reads the remaining values sequentially (`readRangeEntries`).
-  Entries are written back-to-back with no padding, so after reading entry *i*'s value the stream sits at entry *i*+1's record start.
-  The per-entry `seq`+`keyLen`+`key` header is skipped with a buffered `ReadBytes` (no syscall, no `Seek`, no UTF-8 decode of the discarded key).
-  Cost is one `Seek` + ~R buffered reads instead of R `Seek`s — `FileStream`'s 4 KiB buffer serves most entries without syscalls.
+- **One read per range, parsed in memory**: `SSTable.GetRange` reads the whole data region from `index.[lo].Offset` to `indexOffset` with a single `RandomAccess.Read`, then parses entries in memory (`readRangeEntries`).
+  Entries are written back-to-back with no padding.
+  The per-entry `seq`+`keyLen`+`key` header is skipped by advancing an in-memory position (no syscall, no `Seek`, no UTF-8 decode of the discarded key).
+  Cost is one read syscall per range, regardless of the entry count.
 - **`GetAll` reads the data region in one batch**: Compaction calls `SSTable.GetAll` on every source table each round.
-  It reads the whole data region (`index.[0].Offset` → `indexOffset`) with a single `ReadExactly` and parses it in memory via `MemoryStream` (`readDataRegion` + `readAllEntries`) — the same region-batch pattern `loadIndex` already uses.
-  Instead of ~R small buffered reads (a syscall per 4 KiB buffer refill), `GetAll` does 1 read syscall per table.
+  It reads the whole data region (`index.[0].Offset` → `indexOffset`) with a single `RandomAccess.Read` and parses it in memory (`readAllEntries`) — the same region-batch pattern `loadIndex` already uses.
+  This is one read syscall per table.
 - **`GetAll` peak memory ≈ data region + parsed tuples**: The temporary `byte[]` holds the entire data region (e.g. 64 MB for a 64 MB table) in addition to the materialized `(key, seq, value)` array.
   Bounded and acceptable at this project's < 1 MB per SSTable scale.
   For huge tables, chunked parsing would trade syscalls for memory.
-- **ReadLock duration on SSTables**: Per-SSTable read lock is held during `GetRange` (binary search + sequential reads).
-  Compaction's `GetAll` (WriteLock) and `Dispose` (WriteLock) wait.
+- **ReadLock duration on SSTables**: Per-SSTable read lock is held during `GetRange` (binary search + in-memory parse) and `GetAll`.
+  `Dispose` (WriteLock) waits.
   For small ranges this is negligible.
 
 **Alternatives considered**:
@@ -156,23 +157,25 @@ The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field
 
 ---
 
-## SSTable concurrent reads: `ReaderWriterLockSlim`
+## SSTable concurrent reads: `RandomAccess.Read` + `ReaderWriterLockSlim`
 
-**Choice**: `SSTable.Get` takes a read lock (`withReadLock`).
-`GetAll` (used by compaction) and `Dispose` take a write lock (`withWriteLock`).
-Multiple readers proceed concurrently.
-A writer blocks all readers.
+**Choice**: All SSTable reads (`Get`, `GetRange`, `GetAll`) use `RandomAccess.Read` with explicit file offsets, so they are position-independent and thread-safe.
+The shared `FileStream` position is never relied upon.
+`ReaderWriterLockSlim` (`rwLock`) is kept only to guard the dispose race: readers hold the read lock during their read, and `Dispose` holds the write lock so it waits for in-flight readers before closing the file handle.
 
-**Why**: The in-memory index made binary search lock-free.
-Only the final `Seek`+`Read` payload access needs protection.
-A mutual-exclusion lock would serialize concurrent readers on hot SSTables even though each read is fast (~microseconds).
+**Why**: The earlier implementation shared one `FileStream` (and one `BinaryReader`) across `Get`, `GetRange`, and `GetAll`.
+Every read was a `Seek` + sequential `Read`, which is not thread-safe on a shared stream position.
+Concurrent `Get`/`GetRange` could interleave their `Seek`/`Read` and return corrupted data.
+`RandomAccess.Read` removes the shared position entirely, so concurrent reads are safe.
 
 **Trade-off**: `ReaderWriterLockSlim.Dispose()` cannot be called while any lock is held.
-`SSTable.Dispose()` uses the `shouldDispose` flag pattern: take write lock → set `disposed` flag → release file handles → return `true` → caller disposes `rwLock` *outside* the lock scope.
+`SSTable.Dispose()` uses the `shouldDispose` flag pattern: take write lock → set `disposed` flag → dispose the `FileStream` → return `true` → caller disposes `rwLock` *outside* the lock scope.
+A read after `Dispose` catches `ObjectDisposedException` and returns `NotFound`/`RangeDisposed`.
 
 **Alternatives considered**:
 - **`lock fs`**: simple, but serializes all readers.
 - **`SemaphoreSlim(1,1)`**: doesn't distinguish readers from writers.
+- **Shared `FileStream` + `BinaryReader` with `Seek`**: the previous design; position-dependent and thread-unsafe.
 
 ---
 
@@ -216,7 +219,7 @@ The pending dictionary is allocated per transaction regardless of size.
 ## BloomFilter `byte[]`: no pooling
 
 **Choice**: Each SSTable allocates a fresh `byte[]` for its bloom filter.
-Once during flush (`Array.zeroCreate`) and once during load (`br.ReadBytes`).
+Once during flush (`Array.zeroCreate`) and once during load (`Array.zeroCreate` + `RandomAccess.Read`).
 The array lives as long as the SSTable.
 
 **Why**: Bloom filter lifetimes are tied to SSTable lifetimes.
@@ -276,29 +279,26 @@ Acceptable for crash-safety, but invisible to operators.
 
 ---
 
-## API: string-only, point queries only
+## API: string-only keys and values
 
 **Choice**: Keys and values are UTF-8 strings.
 Binary data is supported via base64 encoding by the caller.
-The public API supports point lookups only (`Get`); `SSTable.GetAll()` is internal, used exclusively during compaction.
+The public API provides point lookups (`Get`), range scans (`RangeScan`/`NewIterator`), snapshots (`Snapshot`), and transactions (`BeginTransaction`).
+Internal storage types (`SSTable.GetAll`) are used exclusively during compaction.
 
 **Why**: String keys simplify the WAL text format, the binary search (`String.CompareOrdinal`), and the Bloom filter hash.
-Restricting to point lookups keeps the API minimal and the search chain (`MemTable → immutable → SSTable levels`) straightforward.
 
 **Trade-off**: Callers with binary keys pay base64 encoding overhead on every operation.
-Range queries would require an iterator API and merging across multiple SSTables + MemTable.
 
 **Alternatives considered**:
 - **Binary keys/values**: more general, but complicates WAL parsing and index comparison.
-- **Range queries**: requires iterator merging across all storage levels.
-  Significant API and implementation complexity.
 
 ---
 
 ## SkipListNode: internal `Next`
 
-**Choice**: `SkipListNode.Next` is now an explicit `internal member` (no longer a public auto-property).
-`Key`/`Seq`/`Value` remain public immutable get-only properties.
+**Choice**: `SkipListNode.Next` is an explicit `internal member` (no longer a public auto-property).
+`SkipListNode` itself is `type internal`, so `Key`/`Seq`/`Value` are also `internal`.
 All access to `Next` (reads via `Volatile.Read`, CAS writes via `Interlocked.CompareExchange`) happens inside the same assembly (module functions in `SkipList.fs` and the `SkipList` class), so `internal` visibility is sufficient.
 
 **Why**: `Next` is the only mutable field.
@@ -307,9 +307,9 @@ Lock-free reads (`Volatile.Read(&pred.Next.[lvl])`) rely on the invariant that a
 Public exposure of the array let external code corrupt that invariant (`node.Next.[i] <- x`), turning a subtle concurrency bug into a public API hazard.
 Internalizing it makes the invariant enforceable by the compiler.
 
-**Trade-off**: External code can no longer walk the skip list structure directly (only via `SkipList.Find`/`Entries`/`EntriesRange`), and cannot construct `SkipListNode` instances.
-The skip list internals become assembly-private.
-Acceptable because the public API (`SkipList`) never returned nodes anyway.
+**Trade-off**: External code cannot construct `SkipListNode` instances or walk the skip list structure at all.
+The entire skip list module is assembly-private.
+Acceptable because the public API (`MemTable`) never exposed nodes anyway.
 
 **Alternatives considered**:
 - **Full redesign of insertion (publish-once, copy-on-write)**: eliminates the mutable array entirely, but rewrites the core CAS algorithm with high risk to lock-free correctness.
@@ -329,7 +329,7 @@ All three cases are value types.
 It also makes the cases explicit in the type system, so the compiler enforces exhaustive matching.
 
 **Trade-off**: The `SearchResult` type is defined in `SkipList.fs` (the earliest compilation unit that needs it).
-Conversion to `string option` happens only at the public API boundary (`LsmTree.Get`, `ITransaction.Get`), adding a small match overhead there while the internal hot path avoids boxing entirely.
+Conversion to `string option` happens only at the `LsmTreeSearch.findValue` boundary, adding a small match overhead there while the internal hot path avoids boxing entirely.
 
 ---
 
@@ -376,14 +376,12 @@ Since `asyncFlushToSSTable`/`triggerCompaction` always set `coord.Error` **befor
 
 ---
 
-## Snapshot handle API: registered `SnapshotHandle` for compaction-safe reads
+## Snapshot handle API: registered `ISnapshotHandle` for compaction-safe reads
 
-**Choice**: `LsmTree.Snapshot()` now returns a **registered** `SnapshotHandle` (`IDisposable`) instead of a raw `int64`.
-`AcquireSnapshot()` on `LsmTreeSnapshot` registers the current sequence in a refcounted `Map<int64, int>` (reassigned under a lock).
-An immutable structure keeps the register/release logic side-effect free.
-`SnapshotHandle.Dispose()` decrements/removes it.
-`Get(key, snapshot: SnapshotHandle)` (plus `NewIterator`/`RangeScan` with `snapshot = handle`) reads through the registered sequence.
-A best-effort `Get(key, ?snapshot: int64)` overload is retained for backward compatibility.
+**Choice**: `LsmTree.Snapshot()` now returns a **registered** `ISnapshotHandle` (`IDisposable`) instead of a raw `int64`.
+`AcquireSnapshot()` on `LsmTreeSnapshot` registers the current sequence in a mutable, lock-protected refcounted `Map<int64, int>`.
+`ISnapshotHandle.Dispose()` decrements/removes it.
+`Get(key, snapshot: ISnapshotHandle)` (plus `NewIterator`/`RangeScan` with `snapshot = handle`) reads through the registered sequence.
 `NewIterator` now registers its snapshot **before** collecting range sources (previously after — an ordering hole).
 
 **Why**: The previous design was racy.
@@ -392,16 +390,15 @@ Compaction's `pruneVersions isLastLevel minSnap` could prune a version between t
 `NewIterator` had the same hole reversed: sources were snapshotted before the snapshot was registered, so a compaction between the two could prune versions the iterator was about to materialize.
 
 **Trade-off**:
-- **Breaking API change**: `Snapshot()` return type changed from `int64` to `SnapshotHandle`.
+- **Breaking API change**: `Snapshot()` return type changed from `int64` to `ISnapshotHandle`.
   Callers comparing sequences (e.g., `snapAfter > snapBefore`) must use `.Seq`.
   Existing tests were updated accordingly.
 - **Caller disposal obligation**: A handle that is never disposed (leaked) keeps `minSnap` pinned low forever → compaction cannot prune → unbounded disk growth.
   F# `use` makes this easy to get right, but it is now the caller's responsibility.
 - **Refcounting cost**: `RegisterSnapshot`/`ReleaseSnapshot` take a lock on every acquire/release.
   Negligible for point operations, but a hot path that acquires/releases snapshots at high frequency pays a small lock cost.
-- **Raw `int64` escape hatch remains**: `Get(key, ?snapshot)` and `handle.Seq` still allow unregistered reads.
-  These are documented as **best-effort** — they may still race with pruning.
-  Keeping them preserves source compatibility at the cost of a footgun.
+- **`ISnapshotHandle.Seq` is public**: The raw `int64` sequence number is accessible via `handle.Seq` for sequence comparison (e.g., `snapAfter.Seq > snapBefore.Seq`).
+  It cannot be passed to `Get` (no `int64` overload exists) and does not register a snapshot, so it cannot protect versions from pruning.
 
 **Alternatives considered**:
 - **Compaction-safe table swapping (atomic rename + hard-link/rename-retry)**: compaction never deletes a table still referenced by an active reader.
@@ -450,7 +447,7 @@ Consequences:
 **Choice**: `LsmTreeSearch.searchInTables` copies the level's `SSTable list` reference under `ssTablesLock` and performs the disk I/O (`SSTable.Get`) **outside** the lock.
 `SSTable.Get` catches `ObjectDisposedException` and returns `NotFound`, so a table disposed by a concurrent compaction after the snapshot is silently skipped and the search continues to lower levels.
 
-**Why**: Point Get previously held `ssTablesLock` (a plain `obj` monitor) for the entire `Seek` + `Read` I/O.
+**Why**: Point Get previously held `ssTablesLock` (a plain `obj` monitor) for the entire read I/O.
 This fully serialized concurrent point Gets even though reads are read-only, and a slow Get blocked flush/compaction (`addSSTable` L0 registration, `replaceLevelTables`, `triggerCompaction` flag ops).
 F# lists are immutable and array slots are only ever reassigned (never mutated).
 Copying the reference is a consistent, O(1) snapshot.
@@ -484,7 +481,7 @@ The `try/with` wraps the whole `withReadLock` call, so both the `EnterReadLock` 
 
 ## Range Scan: `ssTablesLock` snapshot + retry on disposal
 
-**Choice**: `LsmTree.tryCollectRangeSources` (driven by the public `collectRangeSources` entry) copies the level-list array under `ssTablesLock`, then performs `SSTable.GetRange` I/O **outside** the lock.
+**Choice**: `LsmTreeSearch.tryCollectRangeSources` (driven by the internal `LsmTreeSearch.collectRangeSources` entry) copies the level-list array under `ssTablesLock`, then performs `SSTable.GetRange` I/O **outside** the lock.
 `SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read (catch of `ObjectDisposedException`).
 Otherwise it returns `RangeOk entries`.
 If any table in the snapshot is detected as disposed, **or** the snapshot's list references no longer match the current ones (checked under `ssTablesLock`; F# lists are immutable, so reference equality suffices), the entire collection — MemTable + immutable + SSTable — is retried.

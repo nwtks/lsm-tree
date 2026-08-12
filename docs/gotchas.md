@@ -13,9 +13,9 @@ When testing restart (create engine → close → reopen), use `do...use tree = 
 Calling `.Close()` before a `use` block ends triggers a double-dispose.
 `LsmTree.Dispose()` guards against this with a `disposed` flag and `LockExtensions.disposeOf`, but relying on this is fragile and violates the `IDisposable` contract.
 
-### SSTable `ReaderWriterLockSlim` double‑dispose safety
+### SSTable `ReaderWriterLockSlim` double-dispose safety
 
-`SSTable.Dispose()` must release the file handles (`br`/`fs`) under a write lock.
+`SSTable.Dispose()` must dispose the `FileStream` (`fs`) under a write lock.
 `ReaderWriterLockSlim.Dispose()` cannot be called while any lock is held.
 The fix is the `shouldDispose` flag pattern:
 
@@ -24,7 +24,6 @@ let shouldDispose =
     LockExtensions.withWriteLock rwLock (fun () ->
         if not disposed then
             disposed <- true
-            br.Dispose()
             fs.Dispose()
             true
         else false)
@@ -36,8 +35,8 @@ Calling it inside deadlocks or throws.
 
 ### Full-level cascade in tests
 
-When testing compaction cascading across multiple levels, set `memTableSizeLimit` large enough (e.g., `1024 * 1024`) to prevent auto-flushes during data loading.
-Create L0 files via manual `Flush()` calls followed by `WaitForCompaction()` to let each cascade round complete before the next.
+When testing compaction cascading across multiple levels, set `compactLevelLimits` to a short array (e.g., `[| 2 |]`) so a few L0 files trigger a cascade.
+Populate keys with `Put` + `Flush()` in a loop, then call `WaitForCompaction()` **once at the end** to let the cascading compaction rounds drain.
 
 ### Background coordinator races on Dispose
 
@@ -62,7 +61,7 @@ Always `use` iterators or call `Dispose()` explicitly.
 
 ### Snapshot handle leak pins pruning
 
-`Snapshot()` returns a registered `SnapshotHandle`.
+`Snapshot()` returns a registered `ISnapshotHandle`.
 If the handle is never disposed, its sequence stays in the refcounted active-snapshot registry.
 `GetMinActiveSnapshot()` never advances past it.
 Compaction cannot prune **any** older versions — unbounded disk growth.
@@ -71,13 +70,14 @@ Handles are **refcounted**: `NewIterator` re-registers the same sequence interna
 Each acquire needs a matching release.
 Double-dispose is safe (a missing entry is a no-op).
 
-### SSTable read methods reposition the FileStream internally
+### SSTable reads use `RandomAccess.Read`, not a shared stream position
 
-`Get`, `GetRange`, and `GetAll` each re-`Seek` the shared `FileStream` at the start of their read, then read sequentially.
-`GetAll` does a single `Seek` then reads the whole data region with one `ReadExactly` into a temporary `byte[]` and parses it in memory.
-No method relies on — or preserves — a stream position between calls, so calling `GetRange` twice returns identical results.
-When changing these methods, never assume the caller left the stream positioned anywhere.
-Never skip the initial `Seek` to "optimize" a follow-up call — that is exactly the class of bug the sequential-read regression test (`sst_range_many`) guards against.
+`Get`, `GetRange`, and `GetAll` all read via `RandomAccess.Read` at explicit file offsets.
+There is no shared `FileStream` position or `BinaryReader` to corrupt.
+Each read is position-independent and thread-safe, so concurrent readers do not interfere.
+Calling `GetRange` twice returns identical results.
+When changing these methods, always read at an explicit offset.
+Never reintroduce a shared stream position (`Seek` + sequential `Read`) — that is the class of concurrency bug the `RandomAccess` refactor fixes.
 
 ### Shrinking `compactLevelLimits` refuses to start (fail-fast)
 
