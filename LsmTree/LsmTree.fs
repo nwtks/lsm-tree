@@ -87,76 +87,6 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             wal.DeleteSingle(seq, key, false)
             memTable.Delete(key, seq))
 
-    let collectMemSources fromKey toKey =
-        let mutable acc = []
-        let m = memTable.EntriesRange(fromKey, toKey)
-
-        if m.Length > 0 then
-            acc <- m :: acc
-
-        match immutableMemTable with
-        | Some imm ->
-            let i = imm.EntriesRange(fromKey, toKey)
-
-            if i.Length > 0 then
-                acc <- i :: acc
-        | None -> ()
-
-        acc
-
-    let collectSstSources fromKey toKey =
-        let mutable acc = []
-
-        for level in ssTables do
-            for sst in level do
-                match sst.GetRange(fromKey, toKey) with
-                | RangeOk entries ->
-                    if entries.Length > 0 then
-                        acc <- entries :: acc
-                | RangeDisposed -> ()
-
-        acc
-
-    let collectSstSourcesFromSnapshot fromKey toKey (snapshot: SSTable list[]) =
-        let readTable (disposed, acc) (sst: SSTable) =
-            if disposed then
-                disposed, acc
-            else
-                match sst.GetRange(fromKey, toKey) with
-                | RangeOk entries -> false, (if entries.Length > 0 then entries :: acc else acc)
-                | RangeDisposed -> true, acc
-
-        snapshot
-        |> Array.fold (fun (disposed, acc) level -> List.fold readTable (disposed, acc) level) (false, [])
-
-    let snapshotStable (snapshot: SSTable list[]) =
-        lock ssTablesLock (fun () ->
-            Array.forall2
-                (fun snapLevel curLevel -> System.Object.ReferenceEquals(snapLevel, curLevel))
-                snapshot
-                ssTables)
-
-    [<TailCall>]
-    let rec tryCollectRangeSources fromKey toKey maxRetries attempt =
-        let memSources =
-            LockExtensions.withReadLock mainLock (fun () -> collectMemSources fromKey toKey)
-
-        let snapshot = lock ssTablesLock (fun () -> Array.copy ssTables)
-        let disposed, sstSources = collectSstSourcesFromSnapshot fromKey toKey snapshot
-
-        if disposed then
-            tryCollectRangeSources fromKey toKey maxRetries (attempt + 1)
-        elif snapshotStable snapshot then
-            memSources @ sstSources |> List.rev |> List.toArray
-        elif attempt < maxRetries then
-            tryCollectRangeSources fromKey toKey maxRetries (attempt + 1)
-        else
-            let sstSources = lock ssTablesLock (fun () -> collectSstSources fromKey toKey)
-            memSources @ sstSources |> List.rev |> List.toArray
-
-    let collectRangeSources fromKey toKey =
-        tryCollectRangeSources fromKey toKey rangeScanRetries 0
-
     let applyTransactionOps commitSeq ops =
         ops
         |> List.iter (fun (k, vOpt) ->
@@ -254,7 +184,17 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
         snapshotManager.RegisterSnapshot snap
 
         try
-            let sources = collectRangeSources fromKey toKey
+            let sources =
+                LsmTreeSearch.collectRangeSources
+                    mainLock
+                    memTable
+                    immutableMemTable
+                    ssTablesLock
+                    ssTables
+                    fromKey
+                    toKey
+                    rangeScanRetries
+
             new RangeIterator(snapshotManager, sources, snap) :> IIterator
         with ex ->
             snapshotManager.ReleaseSnapshot snap

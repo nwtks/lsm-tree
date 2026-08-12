@@ -73,7 +73,6 @@ module RangeIteratorModule =
             | Some v -> true, (key, v)
             | None -> moveNext cursors snapshot
 
-[<Sealed>]
 type RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string * int64 * string option)[][], snapshot) =
     let cursors =
         sources |> Array.filter (fun e -> e.Length > 0) |> Array.map SourceCursor
