@@ -1,6 +1,6 @@
 namespace LsmTree
 
-module LsmTreeSearch =
+module internal LsmTreeSearch =
     [<TailCall>]
     let rec searchInTable key snap =
         function

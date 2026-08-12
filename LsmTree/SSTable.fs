@@ -1,13 +1,13 @@
 namespace LsmTree
 
 [<Struct>]
-type IndexEntry =
+type internal IndexEntry =
     { Key: string
       Seq: int64
       Offset: int64
       KeyByteLen: int32 }
 
-module SSTable =
+module internal SSTable =
     [<Literal>]
     let MAGIC = 0x4C534D54L
 
@@ -213,11 +213,11 @@ module SSTable =
             let entry = index.[lo + i]
             entry.Key, entry.Seq, readItem br)
 
-type RangeReadResult =
+type internal RangeReadResult =
     | RangeOk of entries: (string * int64 * string option)[]
     | RangeDisposed
 
-type SSTable(path) =
+type internal SSTable(path) =
     let fs =
         new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
 
@@ -311,7 +311,7 @@ type SSTable(path) =
                 if shouldDispose then
                     rwLock.Dispose()
 
-module SSTableWriter =
+module internal SSTableWriter =
     let writeBytes (bw: System.IO.BinaryWriter) (bytes: byte[]) =
         bw.Write bytes.Length
         bw.Write bytes

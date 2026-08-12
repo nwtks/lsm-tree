@@ -6,7 +6,7 @@ type IIterator =
     abstract MoveNext: unit -> bool
     abstract Current: (string * string)
 
-type SourceCursor(entries: (string * int64 * string option)[]) =
+type internal SourceCursor(entries: (string * int64 * string option)[]) =
     member val Entries = entries
     member val Pos = 0 with get, set
     member this.IsDone = this.Pos >= this.Entries.Length
@@ -17,7 +17,7 @@ type SourceCursor(entries: (string * int64 * string option)[]) =
 
     member this.CurrentEntry = entries.[this.Pos]
 
-module RangeIteratorModule =
+module internal RangeIteratorModule =
     [<TailCall>]
     let rec pickMinKey (cursors: SourceCursor[]) idx bestIdx =
         if idx >= cursors.Length then
@@ -73,7 +73,7 @@ module RangeIteratorModule =
             | Some v -> true, (key, v)
             | None -> moveNext cursors snapshot
 
-type RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string * int64 * string option)[][], snapshot) =
+type internal RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string * int64 * string option)[][], snapshot) =
     let cursors =
         sources |> Array.filter (fun e -> e.Length > 0) |> Array.map SourceCursor
 

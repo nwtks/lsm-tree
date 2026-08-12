@@ -1,6 +1,6 @@
 namespace LsmTree
 
-type BloomFilter(bits: byte[], numHashFunctions: int) =
+type internal BloomFilter(bits: byte[], numHashFunctions: int) =
     let bitSize = bits.Length * 8
 
     let hash (key: string) =
@@ -45,7 +45,7 @@ type BloomFilter(bits: byte[], numHashFunctions: int) =
 
     member _.Bytes = bits
 
-module BloomFilter =
+module internal BloomFilter =
     let numHashFunctions = 7
     let bitsPerItem = 10
 

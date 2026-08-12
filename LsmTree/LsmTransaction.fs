@@ -8,12 +8,12 @@ type ITransaction =
     abstract member Commit: unit -> unit
     abstract member Rollback: unit -> unit
 
-type ILsmTree =
-    abstract member Get: key: string * snapshot: SnapshotHandle -> string option
+type internal ILsmTree =
+    abstract member Get: key: string * snapshot: ISnapshotHandle -> string option
     abstract member CommitTransaction: ops: (string * string option) list -> unit
     abstract member RollbackTransaction: unit -> unit
 
-type LsmTransaction(lsm: ILsmTree, snapshot: SnapshotHandle) =
+type internal LsmTransaction(lsm: ILsmTree, snapshot: ISnapshotHandle) =
     let ops = System.Collections.Generic.Dictionary<string, string option>()
     let mutable finished = false
 

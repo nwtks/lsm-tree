@@ -1,6 +1,13 @@
 namespace LsmTree
 
-type LsmTreeSnapshot() =
+
+
+
+type ISnapshotHandle =
+    inherit System.IDisposable
+    abstract Seq: int64
+
+type internal LsmTreeSnapshot() =
     let mutable globalSeq = 0L
     let mutable activeSnapshots = Map.empty<int64, int>
     let activeSnapshotsLock = obj ()
@@ -26,7 +33,7 @@ type LsmTreeSnapshot() =
     member this.AcquireSnapshot() =
         let seq = System.Threading.Interlocked.Read(&globalSeq)
         this.RegisterSnapshot seq
-        new SnapshotHandle(this, seq)
+        new SnapshotHandle(this, seq) :> ISnapshotHandle
 
     member _.RegisterSnapshot snapshot =
         lock activeSnapshotsLock (fun () ->
@@ -50,10 +57,7 @@ type LsmTreeSnapshot() =
             else
                 Map.minKeyValue activeSnapshots |> fst)
 
-and SnapshotHandle(snapshotManager: LsmTreeSnapshot, seq: int64) =
-    member _.Seq = seq
-
-    member _.Dispose() = snapshotManager.ReleaseSnapshot seq
-
-    interface System.IDisposable with
-        member this.Dispose() = this.Dispose()
+and internal SnapshotHandle(snapshotManager: LsmTreeSnapshot, seq: int64) =
+    interface ISnapshotHandle with
+        member _.Seq = seq
+        member _.Dispose() = snapshotManager.ReleaseSnapshot seq

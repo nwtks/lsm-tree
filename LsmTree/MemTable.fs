@@ -1,6 +1,6 @@
 namespace LsmTree
 
-type MemTable() =
+type internal MemTable() =
     [<Literal>]
     let NODE_OVERHEAD = 32
 

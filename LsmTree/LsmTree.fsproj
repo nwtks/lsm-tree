@@ -4,6 +4,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="LsmTree.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Include="LockExtensions.fs" />
     <Compile Include="WAL.fs" />
     <Compile Include="SkipList.fs" />

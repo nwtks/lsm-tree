@@ -1,6 +1,6 @@
 namespace LsmTree
 
-type CompactionCoordinator() =
+type internal CompactionCoordinator() =
     let cts = new System.Threading.CancellationTokenSource()
     let mutable completedEvent = new System.Threading.ManualResetEvent true
     let mutable error: exn option = None
@@ -36,7 +36,7 @@ type CompactionCoordinator() =
                 cts.Dispose()
                 (completedEvent :> System.IDisposable).Dispose()
 
-type FlushCoordinator() =
+type internal FlushCoordinator() =
     let flushLock = obj ()
     let mutable completedEvent = new System.Threading.ManualResetEvent true
     let mutable error: exn option = None
@@ -82,7 +82,7 @@ type FlushCoordinator() =
                     disposed <- true
                     (completedEvent :> System.IDisposable).Dispose())
 
-module LsmTreeFlush =
+module internal LsmTreeFlush =
     let timestamp () =
         System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
 

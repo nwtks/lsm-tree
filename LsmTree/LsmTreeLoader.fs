@@ -1,6 +1,6 @@
 namespace LsmTree
 
-module LsmTreeLoader =
+module internal LsmTreeLoader =
     let log msg = eprintfn msg
 
     let validateCompactLevelLimits (limits: int[]) =

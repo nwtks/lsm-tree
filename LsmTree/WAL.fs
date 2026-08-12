@@ -1,6 +1,6 @@
 namespace LsmTree
 
-module WALRecovery =
+module internal WALRecovery =
     [<Literal>]
     let PUT = "PUT"
 
@@ -103,7 +103,7 @@ module WALRecovery =
         else
             Seq.empty
 
-type WAL(path: string) =
+type internal WAL(path: string) =
     let stream =
         new System.IO.FileStream(path, System.IO.FileMode.Append, System.IO.FileAccess.Write, System.IO.FileShare.Read)
 

@@ -1,7 +1,7 @@
 namespace LsmTree
 
 [<AllowNullLiteral>]
-type SkipListNode(key: string, seq: int64, value: string option, level: int) =
+type internal SkipListNode(key: string, seq: int64, value: string option, level: int) =
     let next = Array.zeroCreate<SkipListNode> level
     member _.Key = key
     member _.Seq = seq
@@ -9,12 +9,12 @@ type SkipListNode(key: string, seq: int64, value: string option, level: int) =
     member internal _.Next = next
 
 [<Struct>]
-type SearchResult =
+type internal SearchResult =
     | Found of value: string
     | Tombstone
     | NotFound
 
-module SkipList =
+module internal SkipList =
     [<Literal>]
     let MAX_LEVEL = 16
 
@@ -118,7 +118,7 @@ module SkipList =
                     let next = System.Threading.Volatile.Read(&current.Next.[0])
                     collectEntriesRange next fromKey toKey ((current.Key, current.Seq, current.Value) :: acc)
 
-type SkipList() =
+type internal SkipList() =
     let head = SkipListNode("", System.Int64.MaxValue, None, SkipList.MAX_LEVEL)
     let mutable currentLevel = 1
 

@@ -141,7 +141,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             key
             (snapshotManager.CurrentSequence())
 
-    member _.Get(key, snapshot: SnapshotHandle) =
+    member _.Get(key, snapshot: ISnapshotHandle) =
         LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key snapshot.Seq
 
     member _.Flush() =
@@ -169,7 +169,7 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
     member _.ReleaseSnapshot snapshot =
         snapshotManager.ReleaseSnapshot snapshot
 
-    member _.NewIterator(fromKey, toKey, ?snapshot: SnapshotHandle) =
+    member _.NewIterator(fromKey, toKey, ?snapshot: ISnapshotHandle) =
         if isNull fromKey then
             nullArg "fromKey"
 

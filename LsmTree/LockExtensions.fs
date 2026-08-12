@@ -1,9 +1,9 @@
 namespace LsmTree
 
-type ICoordinatorError =
+type internal ICoordinatorError =
     abstract Error: exn option with get, set
 
-module LockExtensions =
+module internal LockExtensions =
     let log msg = eprintfn msg
 
     let withReadLock (lock: System.Threading.ReaderWriterLockSlim) f =
