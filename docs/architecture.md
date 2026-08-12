@@ -186,7 +186,7 @@ Each range scan proceeds in three phases:
      `GetRange` performs two binary searches on the in-memory index (`lowerBound`/`upperBound`) to find the offset range.
      Then reads the in-range data region in one `RandomAccess.Read` under a per-SSTable read lock and parses it in memory.
      It returns a `RangeReadResult` DU (`RangeOk entries` / `RangeDisposed`).
-     If a table was disposed mid-read (`RangeDisposed`), the whole collection is retried without a retry limit.
+     If a table was disposed mid-read (`RangeDisposed`), the whole collection is retried up to `rangeScanMaxRetries` times (same as the snapshot-drift case), falling back to collecting under `ssTablesLock`.
      If the snapshot's list references no longer match (`snapshotStable` — reference equality, since F# lists are immutable), the whole collection is retried up to `rangeScanMaxRetries` times, falling back to collecting under `ssTablesLock`.
      Each key appears at most once per SSTable.
 

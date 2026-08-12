@@ -118,16 +118,22 @@ module internal LsmTreeSearch =
         let disposed, sstSources = collectSstSourcesFromSnapshot fromKey toKey snapshot
 
         if disposed then
-            tryCollectRangeSources
-                mainLock
-                memTable
-                immutableMemTable
-                ssTablesLock
-                ssTables
-                fromKey
-                toKey
-                maxRetries
-                (attempt + 1)
+            if attempt < maxRetries then
+                tryCollectRangeSources
+                    mainLock
+                    memTable
+                    immutableMemTable
+                    ssTablesLock
+                    ssTables
+                    fromKey
+                    toKey
+                    maxRetries
+                    (attempt + 1)
+            else
+                let sstSources =
+                    lock ssTablesLock (fun () -> collectSstSources ssTables fromKey toKey)
+
+                memSources @ sstSources |> List.rev |> List.toArray
         elif snapshotStable ssTablesLock ssTables snapshot then
             memSources @ sstSources |> List.rev |> List.toArray
         elif attempt < maxRetries then

@@ -87,8 +87,7 @@ In-memory k-way merge across all storage layers: MemTable, immutable MemTable, a
   For very large ranges, memory is proportional to the in-range entry count.
   Prefer bounded ranges.
 - **Disposal safety**: `SSTable.GetRange` returns `RangeDisposed` when a concurrent compaction disposes a table mid-read.
-  The whole collection is retried (unbounded for disposal, max `rangeScanMaxRetries` for snapshot drift).
-  Falls back to collecting under `ssTablesLock`.
+  The whole collection is retried up to `rangeScanMaxRetries` times for both disposal and snapshot drift, then falls back to collecting under `ssTablesLock`.
 
 ### Background Multi-Level Compaction & Automatic Pruning
 
