@@ -74,6 +74,8 @@ module internal RangeIteratorModule =
             | None -> moveNext cursors snapshot
 
 type internal RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string * int64 * string option)[][], snapshot) =
+    do snapshotManager.RegisterSnapshot snapshot
+
     let cursors =
         sources |> Array.filter (fun e -> e.Length > 0) |> Array.map SourceCursor
 
@@ -93,6 +95,9 @@ type internal RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string *
 
         currentValue
 
+    member _.Clone() =
+        new RangeIterator(snapshotManager, sources, snapshot)
+
     interface IIterator with
         member this.MoveNext() = this.MoveNext()
         member this.Current = this.Current
@@ -107,10 +112,11 @@ type internal RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string *
 
     interface System.Collections.Generic.IEnumerable<string * string> with
         member this.GetEnumerator() =
-            this :> System.Collections.Generic.IEnumerator<string * string>
+            this.Clone() :> System.Collections.Generic.IEnumerator<string * string>
 
     interface System.Collections.IEnumerable with
-        member this.GetEnumerator() = this :> System.Collections.IEnumerator
+        member this.GetEnumerator() =
+            this.Clone() :> System.Collections.IEnumerator
 
     interface System.IDisposable with
         member _.Dispose() =
