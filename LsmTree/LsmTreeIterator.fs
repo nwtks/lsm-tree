@@ -74,8 +74,6 @@ module internal RangeIteratorModule =
             | None -> moveNext cursors snapshot
 
 type internal RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string * int64 * string option)[][], snapshot) =
-    do snapshotManager.RegisterSnapshot snapshot
-
     let cursors =
         sources |> Array.filter (fun e -> e.Length > 0) |> Array.map SourceCursor
 
@@ -96,6 +94,7 @@ type internal RangeIterator(snapshotManager: LsmTreeSnapshot, sources: (string *
         currentValue
 
     member _.Clone() =
+        snapshotManager.RegisterSnapshot snapshot
         new RangeIterator(snapshotManager, sources, snapshot)
 
     interface IIterator with

@@ -472,6 +472,39 @@ let ``RangeScan with NewIterator and explicit Dispose`` () =
         assertEqual [ "a", "va" ] (results |> Seq.toList) "Iterator works")
 
 [<Fact>]
+let ``Disposed iterator releases its snapshot registration`` () =
+    withTestDir "iter_snap_release" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("k", "v1")
+        tree.Flush()
+
+        let snapMgrField =
+            typeof<LsmTree>
+                .GetField(
+                    "snapshotManager",
+                    System.Reflection.BindingFlags.NonPublic
+                    ||| System.Reflection.BindingFlags.Instance
+                )
+
+        let snapMgr = snapMgrField.GetValue tree :?> LsmTreeSnapshot
+        let minSnap () = snapMgr.GetMinActiveSnapshot()
+        let currentSeq () = snapMgr.CurrentSequence()
+
+        let it = tree.NewIterator("a", "z")
+
+        while it.MoveNext() do
+            ()
+
+        it.Dispose()
+        tree.Put("k2", "v2")
+        tree.Put("k3", "v3")
+        assertEqual (currentSeq ()) (minSnap ()) "iterator dispose releases its registration"
+
+        tree.RangeScan("a", "z") |> Seq.iter ignore
+        tree.Put("k4", "v4")
+        assertEqual (currentSeq ()) (minSnap ()) "RangeScan releases its registration")
+
+[<Fact>]
 let ``RangeScan Current before MoveNext throws`` () =
     withTestDir "rscan_current_before_move" (fun testDir ->
         use tree = new LsmTree(testDir)

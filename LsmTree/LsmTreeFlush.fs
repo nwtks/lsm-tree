@@ -95,8 +95,8 @@ module internal LsmTreeFlush =
         if memTable.SizeBytes > 0 then
             let oldMemTable = memTable
             let oldWalPath = System.IO.Path.Combine(dataDir, $"wal_{newGuid ()}.old")
-            System.IO.File.Move(walPath, oldWalPath)
             wal.Close()
+            System.IO.File.Move(walPath, oldWalPath)
             Some(MemTable(), new WAL(walPath), oldMemTable, oldWalPath)
         else
             None

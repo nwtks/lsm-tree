@@ -13,6 +13,15 @@ When testing restart (create engine → close → reopen), use `do...use tree = 
 Calling `.Close()` before a `use` block ends triggers a double-dispose.
 `LsmTree.Dispose()` guards against this with a `disposed` flag and `LockExtensions.disposeOf`, but relying on this is fragile and violates the `IDisposable` contract.
 
+### WAL rename during flush: close the handle first (Windows)
+
+`swapMemTableAndWal` renames `wal.log` → `wal_<guid>.old` on every flush.
+The WAL `FileStream` is opened with `FileShare.Read` (no `FileShare.Delete`), so on **Windows** the rename must happen **after** `wal.Close()`.
+Renaming while the handle is open throws `IOException` (sharing violation) — it only worked on Linux because POSIX `rename` ignores open handles.
+Keep the order: `wal.Close()` then `File.Move`.
+Any new code that renames an open file it owns must close it first (or open with `FileShare.Delete`).
+This only affects Windows; existing tests run on Linux and do not exercise the failure.
+
 ### SSTable `ReaderWriterLockSlim` double-dispose safety
 
 `SSTable.Dispose()` must dispose the `FileStream` (`fs`) under a write lock.
@@ -58,6 +67,14 @@ If you change these coordinators or add a new background async operation that ca
 If you forget to call `Dispose()` (or don't use `use` in F#), the snapshot remains active in `SnapshotManager`, preventing compaction from pruning stale versions.
 This can cause unbounded disk growth.
 Always `use` iterators or call `Dispose()` explicitly.
+
+### RangeIterator snapshot refcount: exactly one owner
+
+`RangeIterator`'s constructor must **not** register the snapshot itself.
+The single registration comes from `NewIterator` (before source collection); `Clone()` registers for each new enumerator, and `Dispose()` releases once.
+A historical bug registered the snapshot **twice** per iterator (once in `NewIterator`, once in the `RangeIterator` constructor) but released only once — every `NewIterator`/`RangeScan` leaked one registration, permanently pinning `GetMinActiveSnapshot` at the iterator's seq and blocking compaction pruning (unbounded disk growth).
+Regression test: `Disposed iterator releases its snapshot registration`.
+If you change iterator construction, keep the invariant: **one acquire (in `NewIterator` or `Clone`) ↔ one release (in `Dispose`)**.
 
 ### Snapshot handle leak pins pruning
 
