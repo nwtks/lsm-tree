@@ -1,9 +1,7 @@
 # F# LSM-Tree
 
 A high-performance **Log-Structured Merge-Tree** (LSM-Tree) storage engine implemented natively in F#.
-The project demonstrates the architectural concepts behind engines like LevelDB and RocksDB.
-WAL durability, lock-free SkipList mutations, immutable SSTables with in-memory indexes and Bloom filters, multi-level cascade compaction, and MVCC snapshot isolation.
-Combining F#'s functional data-processing strengths with lightweight synchronization.
+It demonstrates the architectural concepts behind engines like LevelDB and RocksDB — WAL durability, lock-free SkipList mutations, immutable SSTables with in-memory indexes and Bloom filters, multi-level cascade compaction, and MVCC snapshot isolation — combining F#'s functional data-processing strengths with lightweight synchronization.
 
 ---
 
@@ -47,7 +45,7 @@ In-memory mutations are buffered in a custom mutable **SkipList** with O(log N) 
 Immutable on-disk files produced when the MemTable is flushed.
 The on-disk layout is `[data][index][bloom][footer]` (footer: always 32 B — `indexOffset`/`bloomOffset`/`maxSeq`/`magic`, magic `0x4C534D54` = `"LSMT"`).
 
-- **In-memory index + Bloom filter**: `SSTable.load` does three sequential reads — footer (from end of file), Bloom filter, then the whole index region in one read.
+- **In-memory index + Bloom filter**: `SSTable.load` reads the footer (from end of file), the Bloom filter (byte-count header + payload), then the whole index region in one read.
   The data region is **not touched** at open time.
   `Get` does an in-memory binary search on the `IndexEntry[]`, then reads the value payload at a computed offset via `RandomAccess.Read`.
   The Bloom filter rejects non-existent keys O(1) with no disk I/O.
@@ -145,7 +143,6 @@ See [docs/trade-off.md](docs/trade-off.md) for design trade-offs and [docs/gotch
   Binary data must be base64-encoded by the caller.
 - **Single WAL file**: One live `wal.log` per instance, renamed to `wal_<guid>.old` on each flush (deleted after the SSTable is written).
   Stale `.old` files from crashes remain on disk and are scanned during recovery.
-- **`LsmTransaction.Get`**: Looks up pending writes via `Dictionary.TryGetValue` (O(1) average).
 - **No replication/clustering**: Single-node storage engine only.
 - **Empty SSTable flush race**: `MemTable.Put`/`Delete` increment `SizeBytes` **before** inserting into the SkipList.
   A flush triggered between the increment and the insert can produce an empty SSTable (no data loss — the WAL guarantees recovery).
@@ -274,6 +271,7 @@ All parameters are optional:
 | `dataDir` | `string` | (required) | Path to the data directory |
 | `memTableSizeLimit` | `int` | 1,048,576 (≈1 MB) | MemTable size threshold for flush |
 | `compactLevelLimits` | `int[]` | `[\| 4; 10; 100; 1000 \|]` | Max files per level before compaction (validated: must be non-empty, no negatives) |
+| `rangeScanMaxRetries` | `int` | 8 | Max retries when a range scan detects a table disposed/drifted by a concurrent compaction, before falling back to a locked collection |
 
 ```fsharp
 // Tune MemTable flush threshold
@@ -281,6 +279,9 @@ let db = new LsmTree("./data", memTableSizeLimit = 512 * 1024)  // 512 KB
 
 // Custom compaction level limits
 let db = new LsmTree("./data", compactLevelLimits = [| 2; 5; 50 |])
+
+// Tune range-scan retry behavior
+let db = new LsmTree("./data", rangeScanMaxRetries = 4)
 ```
 
 ### Clean Shutdown

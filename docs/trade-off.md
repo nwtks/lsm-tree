@@ -12,7 +12,6 @@ When it does occur, blocking is the correct behavior.
 A second concurrent flush would consume more memory and disk I/O without meaningful throughput gain.
 
 **Trade-off**: Burst writes that fill the MemTable faster than a single flush can write to disk will stall.
-Parallel flushes would absorb bursts better but require sequence-number gating to ensure the correct SSTable installation order.
 
 **Alternatives considered**:
 - **Synchronous flush**: predictably blocks the caller for the full SSTable write duration (tens of ms for large MemTables).
@@ -137,21 +136,12 @@ The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field
 **Trade-off**:
 - **Memory**: Range entries are materialized into arrays.
   For a full `["", "\uFFFF"]` scan over 1 million entries, ~32 MB across all sources (at the project's < 1 MB per SSTable scale, this is bounded).
+  The bulk data-region reads (`GetRange`/`GetAll`) also hold a temporary `byte[]` while parsing, so peak memory ≈ data region + parsed tuples.
+  For huge tables, chunked parsing would trade syscalls for memory.
 - **O(K) `pickMinKey` per step**: All SSTables at all levels are included as sources (L0 overlap design requires scanning all files).
   With `compactLevelLimits [|4;10;100;1000|]`, K ≤ ~1114.
   Most cursors are exhausted early, so the average case is lower, but worst-case remains O(K).
-- **One read per range, parsed in memory**: `SSTable.GetRange` reads the in-range data region from `index.[lo].Offset` to `index.[hi].Offset` (or `indexOffset` when the range extends to the end) with a single `RandomAccess.Read`, then parses entries in memory (`readRangeEntries`).
-  Entries are written back-to-back with no padding.
-  The per-entry `seq`+`keyLen`+`key` header is skipped by advancing an in-memory position (no syscall, no `Seek`, no UTF-8 decode of the discarded key).
-  Cost is one read syscall per range, regardless of the entry count.
-- **`GetAll` reads the data region in one batch**: Compaction calls `SSTable.GetAll` on every source table each round.
-  It reads the whole data region (`index.[0].Offset` → `indexOffset`) with a single `RandomAccess.Read` and parses it in memory (`readAllEntries`) — the same region-batch pattern `loadIndex` already uses.
-  This is one read syscall per table.
-- **`GetAll` peak memory ≈ data region + parsed tuples**: The temporary `byte[]` holds the entire data region (e.g. 64 MB for a 64 MB table) in addition to the materialized `(key, seq, value)` array.
-  Bounded and acceptable at this project's < 1 MB per SSTable scale.
-  For huge tables, chunked parsing would trade syscalls for memory.
-- **ReadLock duration on SSTables**: Per-SSTable read lock is held during `GetRange` (binary search + in-memory parse) and `GetAll`.
-  `Dispose` (WriteLock) waits.
+- **Per-SSTable read lock held during materialization**: `GetRange`/`GetAll` hold the per-SSTable read lock while parsing, and `Dispose` (write lock) waits for in-flight readers.
   For small ranges this is negligible.
 
 **Alternatives considered**:

@@ -141,7 +141,7 @@ The on-disk layout is unchanged, so old files still load — they just can't be 
 Point Get (`LsmTreeSearch.searchInTables`) copies the level list under `ssTablesLock` and reads **outside** the lock. `SSTable.Get` catches `ObjectDisposedException` → `NotFound` and the search falls through to the next level where compaction's merged table holds the same data (`minSnap` retention invariant).
 Range scan (`LsmTree.tryCollectRangeSources`) also snapshots under `ssTablesLock`, but **must not skip** — a scan's merge over all levels is a union with no fallthrough, so a disposed table would silently lose data.
 Instead it reads the snapshot outside the lock and **retries the whole collection** when `SSTable.GetRange` returns `RangeDisposed` or the snapshot's list references no longer match the current ones.
-After 8 retries it falls back to collecting under `ssTablesLock`.
+After `rangeScanMaxRetries` retries (default 8) it falls back to collecting under `ssTablesLock`.
 Both patterns are safe only because disposal happens strictly after list removal (`replaceLevelTables` under lock → `cleanupSSTables` outside).
 See [trade-off.md](trade-off.md) (`Range Scan: ssTablesLock snapshot + retry on disposal`).
 

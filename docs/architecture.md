@@ -67,18 +67,19 @@ Because the index carries the value length, a point `Get` reads the value payloa
   The data region is read lazily only for value payloads on `Get`/`GetRange`.
 - **Bloom filter**: packed `int32` byte count + raw bytes.
 - **`max_seq`**: highest sequence number among all entries.
-  Enables O(1) startup without scanning.
+  On load it is validated against the index's max entry seq and used to advance the engine's global sequence watermark.
+  So WAL recovery can filter out entries already absorbed into SSTables.
 
 ### Open-time loading
 
-`SSTable.load` performs three sequential reads, all via `RandomAccess.Read` (position-independent, thread-safe):
+`SSTable.load` performs a small set of sequential reads, all via `RandomAccess.Read` (position-independent, thread-safe):
 
 1. **Footer** (32 B).
    Read from `fileLen - 32` to get `indexOffset`, `bloomOffset`, `maxSeq`, `magic`.
 2. **Bloom filter**.
-   One `RandomAccess.Read` of the `int32` byte count, then one of the raw bytes.
+   Read the `int32` byte count, then the raw bytes.
 3. **Index region**.
-   One `RandomAccess.Read` of the entire region (`bloomOffset - indexOffset` bytes), parsed in memory with `BinaryPrimitives.ReadInt*LittleEndian`.
+   Read the entire region (`bloomOffset - indexOffset` bytes) in one read, parsed in memory with `BinaryPrimitives.ReadInt*LittleEndian`.
    No access to the data region is required.
 
 The data region is only touched on demand:
@@ -150,9 +151,10 @@ Stale `.tmp` files from a crash are automatically deleted on startup (`loadSSTab
 
 ### Algorithm
 
-1. **Trigger**: A MemTable flush calls `triggerCompaction`, which starts a background `async { } |> Async.Start` computation if no compaction is currently running.
+1. **Trigger**: A MemTable flush swaps the MemTable and dispatches `asyncFlushToSSTable` as a background `async { } |> Async.Start` computation.
+   That task writes the SSTable, then calls `triggerCompaction`, which runs `compact` inline (within the same background task) if no compaction is currently running.
 2. **Level selection**: Starting from L0, if `ssTables[level].Length > compactLevelLimits[level]`, **all** files at that level are selected for compaction.
-3. **Merge**: A k-way streaming merge (`mergeSortedEntries`) reads all entries from selected SSTables via `GetAll`, deduplicates by key, and applies snapshot pruning (`pruneVersions`): keeps entries with `seq >= minSnap` plus the single oldest entry with `seq < minSnap` (for non-last levels, all older entries; for the last level, that older entry only if it is a live value).
+3. **Merge**: A k-way streaming merge (`mergeSortedEntries`) reads all entries from selected SSTables via `GetAll`, deduplicates by key, and applies snapshot pruning (`pruneVersions`): keeps all entries with `seq >= minSnap`; for non-last levels it also keeps **all** older entries (`seq < minSnap`), because higher levels may still need them; for the last level it keeps only the single **most recent** entry with `seq < minSnap`, and only if it is a live value (tombstones are dropped).
 4. **Output**: A single new SSTable is written to the next level via `SSTableWriter.writeStream`.
 5. **Cascade**: Compaction recursively proceeds to the next level if it now exceeds its limit (see `compact` in `LsmTreeFlush.fs`).
 6. **Cleanup**: Old SSTable objects are disposed, files are deleted from disk, and references are removed from the in-memory list.
@@ -208,7 +210,7 @@ Each range scan proceeds in three phases:
 | Phase | Lock held | Duration |
 |---|---|---|
 | Materialize MemTable sources | `mainLock` (ReadLock) | Reference capture + SkipList traversal |
-| Materialize SSTable sources | `ssTablesLock` (snapshot copy only, then released) + per-SSTable `rwLock` (ReadLock) | Binary search + one `RandomAccess.Read` + in-memory parse **outside** `ssTablesLock`; retry whole collection on disposal/drift (max 8), then locked fallback |
+| Materialize SSTable sources | `ssTablesLock` (snapshot copy only, then released) + per-SSTable `rwLock` (ReadLock) | Binary search + one `RandomAccess.Read` + in-memory parse **outside** `ssTablesLock`; retry whole collection on disposal/drift (max `rangeScanMaxRetries`, default 8), then locked fallback |
 | Merge (`MoveNext`) | **None** | All data is in materialized arrays |
 | Iterator construction | `snapshotManager.RegisterSnapshot` | Instant |
 | Iterator dispose | `snapshotManager.ReleaseSnapshot` | Instant |
