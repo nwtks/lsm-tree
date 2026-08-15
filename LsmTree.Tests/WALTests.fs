@@ -66,11 +66,25 @@ let ``WALRecovery parseBeginCommit returns None when parts length is not 2`` () 
         "COMMIT with 3 parts returns None"
 
 [<Fact>]
+let ``WALRecovery parseCommand returns None for unknown operation`` () =
+    assertEqual None (WALRecovery.parseCommand 5L [| "FOO"; "5"; "bar" |]) "Unknown op -> None"
+
+[<Fact>]
 let ``WALRecovery parseEntry returns None for invalid Base64`` () =
     assertEqual
         None
         (WALRecovery.parseEntry "PUT 1 !!invalid!! !!base64!!")
         "parseEntry returns None for invalid base64"
+
+[<Fact>]
+let ``WALRecovery recover ignores unknown operation lines`` () =
+    withTestDir "wal_unknown_op" (fun testDir ->
+        let path = System.IO.Path.Combine(testDir, "data.wal")
+        System.IO.File.WriteAllText(path, "PUT 1 a2V5MQ== dmFsMQ==\nFOO 5 bar\n")
+
+        let recovered = WALRecovery.recover path |> Seq.toList
+        let expected = [ 1L, "key1", Some "val1" ]
+        assertEqual expected recovered "Unknown op line ignored during recovery")
 
 [<Fact>]
 let ``WALRecovery recover recovers orphaned PUT outside transaction`` () =

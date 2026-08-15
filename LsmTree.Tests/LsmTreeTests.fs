@@ -686,6 +686,33 @@ let ``RangeIterator IEnumerator members work correctly`` () =
         Assert.False(enumerator.MoveNext()))
 
 [<Fact>]
+let ``RangeIterator non-generic IEnumerator and IEnumerable work`` () =
+    withTestDir "iter_nongen_interfaces" (fun testDir ->
+        use tree = new LsmTree(testDir)
+        tree.Put("a", "va")
+        tree.Put("b", "vb")
+
+        use it = tree.NewIterator("a", "z")
+
+        let enumerator = (it :> obj) :?> System.Collections.IEnumerator
+        Assert.True(enumerator.MoveNext())
+        assertEqual ("a", "va") (enumerator.Current :?> string * string) "non-generic Current"
+        Assert.True(enumerator.MoveNext())
+        Assert.False(enumerator.MoveNext())
+
+        Assert.Throws<System.InvalidOperationException>(fun () -> enumerator.Reset() |> ignore)
+        |> ignore
+
+        let collection = (it :> obj) :?> System.Collections.IEnumerable
+        let e = collection.GetEnumerator()
+        let results = ResizeArray<string * string>()
+
+        while e.MoveNext() do
+            results.Add(e.Current :?> string * string)
+
+        assertEqual [ "a", "va"; "b", "vb" ] (results |> Seq.toList) "non-generic enumeration")
+
+[<Fact>]
 let ``RangeScan empty range when fromKey > toKey`` () =
     withTestDir "rscan_from_gt_to" (fun testDir ->
         use tree = new LsmTree(testDir)

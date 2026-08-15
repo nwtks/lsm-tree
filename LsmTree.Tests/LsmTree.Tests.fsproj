@@ -18,6 +18,8 @@
     <Compile Include="LsmTreeFlushTests.fs" />
     <Compile Include="LsmTreeTests.fs" />
     <Compile Include="LsmTreeLoaderTests.fs" />
+    <Compile Include="LsmTreeSearchTests.fs" />
+    <Compile Include="LockExtensionsTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

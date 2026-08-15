@@ -37,6 +37,14 @@ let ``LsmTreeLoader parseSstLevel handles path with directory prefix`` () =
     assertEqual 2 (LsmTreeLoader.parseSstLevel "/some/dir/L2_data.sst") "Full path with L2 -> 2"
 
 [<Fact>]
+let ``LsmTreeLoader parseSstLevel treats non-numeric level as level 0`` () =
+    assertEqual 0 (LsmTreeLoader.parseSstLevel "Lx_1.sst") "Non-numeric level -> 0"
+
+[<Fact>]
+let ``LsmTreeLoader parseSstLevel treats underscore after L without digits as level 0`` () =
+    assertEqual 0 (LsmTreeLoader.parseSstLevel "L_1.sst") "Underscore immediately after L -> 0"
+
+[<Fact>]
 let ``LsmTreeLoader loadSSTableFiles loads tables at configured levels`` () =
     withTestDir "load_sst_in_range" (fun testDir ->
         let p0 = System.IO.Path.Combine(testDir, "L0_a.sst")

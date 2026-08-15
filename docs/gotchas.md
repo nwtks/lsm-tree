@@ -145,6 +145,13 @@ After `rangeScanMaxRetries` retries (default 8) it falls back to collecting unde
 Both patterns are safe only because disposal happens strictly after list removal (`replaceLevelTables` under lock → `cleanupSSTables` outside).
 See [trade-off.md](trade-off.md) (`Range Scan: ssTablesLock snapshot + retry on disposal`).
 
+### Unstable-snapshot retry branch is race-only (coverage is best-effort)
+
+The `snapshotStable` check inside `LsmTreeSearch.tryCollectRangeSources` only returns `false` when a level list array is replaced between the snapshot copy and the check — a genuine concurrent-mutation race.
+Unit tests can deterministically exercise the **disposed-table** retry/fallback path (pass a disposed `SSTable` to `collectSstSourcesFromSnapshot` / `tryCollectRangeSources`), but the **unstable-snapshot** branches (`tryCollectRangeSources` `elif attempt < maxRetries` retry and the final `else` fallback) only fire under concurrent mutation.
+A stress test (`LsmTreeSearch tryCollectRangeSources handles concurrent level replacement`) mutates `ssTables.[0]` on a background thread while scanning, so its coverage of those lines varies run-to-run.
+Do not assert specific line coverage for those branches; treat them as best-effort.
+
 ### `SSTable.Get` on a disposed table returns `NotFound`, not an exception
 
 `SSTable.Get` catches `ObjectDisposedException` (thrown by `EnterReadLock` on a disposed `rwLock`, or by an in-flight read after disposal) and returns `NotFound`.

@@ -336,6 +336,20 @@ let ``SSTable Get returns NotFound for missing key`` () =
         (sst :> System.IDisposable).Dispose())
 
 [<Fact>]
+let ``SSTable Get returns Tombstone for key deleted and flushed`` () =
+    withTestDir "sst_get_tombstone" (fun testDataDir ->
+        use tree = new LsmTree(testDataDir)
+        tree.Put("k", "v")
+        tree.Delete "k"
+        tree.Flush()
+
+        let sstFiles = System.IO.Directory.GetFiles(testDataDir, "*.sst")
+        assertEqual 1 sstFiles.Length "flush writes a single SSTable"
+
+        use sst = new SSTable(sstFiles.[0])
+        assertEqual Tombstone (sst.Get("k", System.Int64.MaxValue)) "Get returns Tombstone for deleted key")
+
+[<Fact>]
 let ``SSTable Get returns NotFound for disposed SSTable`` () =
     withTestDir "sst_get_disposed" (fun testDataDir ->
         let path = writeSst testDataDir "L0_disposed.sst" [ "k", 1L, Some "v" ]
