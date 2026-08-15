@@ -165,3 +165,16 @@ This closes a recovery data-loss vector: a corrupt huge `max_seq` would otherwis
 **Compatibility caveat**: files whose footer `max_seq` does not equal the max entry seq now fail to load with `InvalidDataException`.
 The writer always stores `max_seq = max(0, max entry seq)`, so files written by this engine pass.
 If you hand-craft SSTables in tests, keep `max_seq` consistent with the entries.
+
+### API boundary null checks: `Get` throws `ArgumentNullException`
+
+`LsmTree.Get` (both the single-arg overload and the `(key, snapshot)` overload) now validates its arguments at the API boundary:
+- `key = null` → `ArgumentNullException("key")`
+- `snapshot = null` → `ArgumentNullException("snapshot")`
+
+Previously a null `key` surfaced as `ArgumentNullException` from `String.CompareOrdinal` deep inside the SkipList/SSTable search, and a null `snapshot` as `NullReferenceException` when reading `snapshot.Seq` — both with confusing stack traces and no parameter name.
+This matches the existing `NewIterator` null checks.
+
+**F# gotcha**: `ISnapshotHandle` is an interface type, so `null` is **not** a proper value for it in F# — `isNull snapshot` does not compile.
+Use `isNull (box snapshot)` (or `obj.ReferenceEquals(snapshot, null)`) to test for null on an interface-typed parameter.
+Callers can still pass null from C# or via `Unchecked.defaultof<ISnapshotHandle>`, so the check is not dead code.

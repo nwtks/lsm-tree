@@ -199,6 +199,30 @@ let ``LsmTree basic Put and Get operations`` () =
         assertEqual (Some "pv2") (tree.Get "pk2") "second Put/Get works")
 
 [<Fact>]
+let ``LsmTree Get with null key throws`` () =
+    withTestDir "get_null_key" (fun dir ->
+        use tree = new LsmTree(dir)
+
+        Assert.Throws<System.ArgumentNullException>(fun () -> tree.Get(null) |> ignore)
+        |> ignore)
+
+[<Fact>]
+let ``LsmTree Get with null snapshot throws`` () =
+    withTestDir "get_null_snap" (fun dir ->
+        use tree = new LsmTree(dir)
+
+        Assert.Throws<System.ArgumentNullException>(fun () -> tree.Get("k", null) |> ignore)
+        |> ignore)
+
+[<Fact>]
+let ``LsmTree Get with null key and snapshot throws`` () =
+    withTestDir "get_null_key_snap" (fun dir ->
+        use tree = new LsmTree(dir)
+
+        Assert.Throws<System.ArgumentNullException>(fun () -> tree.Get(null, null) |> ignore)
+        |> ignore)
+
+[<Fact>]
 let ``LsmTree overwrite existing key`` () =
     withTestDir "overwrite" (fun dir ->
         use tree = new LsmTree(dir)

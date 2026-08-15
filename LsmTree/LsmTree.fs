@@ -136,6 +136,9 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
     member _.Delete key = deleteDirect key
 
     member _.Get key =
+        if isNull key then
+            nullArg "key"
+
         LsmTreeSearch.findValue
             mainLock
             memTable
@@ -146,6 +149,12 @@ type LsmTree(dataDir: string, ?memTableSizeLimit: int, ?compactLevelLimits: int[
             (snapshotManager.CurrentSequence())
 
     member _.Get(key, snapshot: ISnapshotHandle) =
+        if isNull key then
+            nullArg "key"
+
+        if isNull (box snapshot) then
+            nullArg "snapshot"
+
         LsmTreeSearch.findValue mainLock memTable immutableMemTable ssTablesLock ssTables key snapshot.Seq
 
     member _.Flush() =
