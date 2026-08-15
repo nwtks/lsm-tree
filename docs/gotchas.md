@@ -153,3 +153,15 @@ Tests that assert `Get` throws after `Dispose()` will now fail.
 `SSTable.GetRange` does the same and returns `RangeDisposed` — the caller must retry the whole collection.
 Never treat it as an empty range (`RangeOk [||]` is the legitimate empty result).
 See [trade-off.md](trade-off.md) (`Point Get: ssTablesLock snapshot + skip disposed tables`).
+
+### SSTable index validation: count budget, key length, and `max_seq`
+
+`SSTable.loadIndex` now rejects an index whose `count` cannot fit in the index region (`count * MIN_INDEX_ENTRY_SIZE (20) > regionSize - 4`).
+Previously a corrupt `count` could drive `Array.init count` into an OOM (huge allocation) or `IndexOutOfRangeException` (parse past the buffer).
+`SSTable.readIndexEntry` validates `keyByteLen` (negative or past the buffer → `InvalidDataException`).
+`SSTable.load` validates the footer `max_seq` against the highest entry sequence (`validateMaxSeq`): it must be non-negative and **equal** to the max entry seq.
+This closes a recovery data-loss vector: a corrupt huge `max_seq` would otherwise advance the sequence watermark and cause WAL recovery to filter out unflushed writes (`seq > currentSeq`).
+
+**Compatibility caveat**: files whose footer `max_seq` does not equal the max entry seq now fail to load with `InvalidDataException`.
+The writer always stores `max_seq = max(0, max entry seq)`, so files written by this engine pass.
+If you hand-craft SSTables in tests, keep `max_seq` consistent with the entries.

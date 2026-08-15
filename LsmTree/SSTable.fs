@@ -26,6 +26,9 @@ module internal SSTable =
     [<Literal>]
     let BLOOM_COUNT_BYTE_SIZE = 4L
 
+    [<Literal>]
+    let MIN_INDEX_ENTRY_SIZE = 20L
+
     let validateIndexOffset fileLen offset footerSize =
         if offset < 0L || offset > fileLen - footerSize then
             System.IO.InvalidDataException $"SSTable index offset {offset} is out of range (file size: {fileLen})"
@@ -61,6 +64,15 @@ module internal SSTable =
         validateSSTableMagic magic
         validateIndexOffset fileLen indexOffset FOOTER_SIZE
         validateBloomOffset fileLen indexOffset bloomOffset FOOTER_SIZE
+
+    let validateMaxSeq maxSeq maxEntrySeq =
+        if maxSeq < 0L then
+            System.IO.InvalidDataException $"SSTable max_seq is negative: {maxSeq}" |> raise
+
+        if maxSeq <> maxEntrySeq then
+            System.IO.InvalidDataException
+                $"SSTable max_seq {maxSeq} does not match the highest entry sequence {maxEntrySeq}"
+            |> raise
 
     let readExactly handle offset (buf: byte[]) =
         let mutable total = 0
@@ -106,10 +118,18 @@ module internal SSTable =
             pos <- pos + 1
             readValue buf &pos |> Some
 
-    let readIndexEntry buf (pos: byref<int>) =
+    let readIndexEntry (buf: byte[]) (pos: byref<int>) =
+        if pos + 16 > buf.Length then
+            System.IO.InvalidDataException "SSTable index entry is truncated" |> raise
+
         let seq = readInt64 buf &pos
         let offset = readInt64 buf &pos
         let keyByteLen = readInt32 buf &pos
+
+        if keyByteLen < 0 || pos + keyByteLen > buf.Length then
+            System.IO.InvalidDataException $"SSTable index entry key length {keyByteLen} is out of range"
+            |> raise
+
         let key = System.Text.Encoding.UTF8.GetString(buf, pos, keyByteLen)
         pos <- pos + keyByteLen
 
@@ -133,18 +153,19 @@ module internal SSTable =
 
     let loadIndex handle fileLen indexOffset bloomOffset footerSize =
         validateIndexOffset fileLen indexOffset footerSize
-        let regionSize = int (bloomOffset - indexOffset)
+        let regionSize = int64 (bloomOffset - indexOffset)
 
-        if regionSize <= 4 then
+        if regionSize <= 4L then
             [||]
         else
-            let buf = Array.zeroCreate<byte> regionSize
+            let buf = Array.zeroCreate<byte> (int regionSize)
             readExactly handle indexOffset buf
             let mutable pos = 0
             let count = readInt32 buf &pos
 
-            if count < 0 then
-                System.IO.InvalidDataException $"SSTable index entry count is negative: {count}"
+            if count < 0 || int64 count * MIN_INDEX_ENTRY_SIZE > regionSize - 4L then
+                System.IO.InvalidDataException
+                    $"SSTable index entry count {count} is inconsistent with index region size {regionSize - 4L}"
                 |> raise
 
             Array.init count (fun _ -> readIndexEntry buf &pos)
@@ -166,6 +187,7 @@ module internal SSTable =
                 loadBloomFilter fs.SafeFileHandle fileLen indexOffset bloomOffset FOOTER_SIZE
 
             let index = loadIndex fs.SafeFileHandle fileLen indexOffset bloomOffset FOOTER_SIZE
+            index |> Array.fold (fun acc e -> max acc e.Seq) 0L |> validateMaxSeq maxSeq
             bloom, maxSeq, indexOffset, index
         else
             BloomFilter([||], 0), 0L, 0L, [||]

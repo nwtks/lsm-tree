@@ -8,6 +8,29 @@ let writeSst dataDir name entries =
     SSTableWriter.write path entries |> ignore
     path
 
+let readFooterInt64 (path: string) (fieldOffset: int) =
+    use fs =
+        new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read)
+
+    let fileLen = fs.Length
+    let footer = Array.zeroCreate<byte> (int SSTable.FOOTER_SIZE)
+    fs.Seek(fileLen - SSTable.FOOTER_SIZE, System.IO.SeekOrigin.Begin) |> ignore
+    fs.Read(footer, 0, footer.Length) |> ignore
+    System.BitConverter.ToInt64(footer, fieldOffset)
+
+let patchFileBytes (path: string) (offset: int64) (bytes: byte[]) =
+    use fs =
+        new System.IO.FileStream(
+            path,
+            System.IO.FileMode.Open,
+            System.IO.FileAccess.ReadWrite,
+            System.IO.FileShare.Read
+        )
+
+    fs.Seek(offset, System.IO.SeekOrigin.Begin) |> ignore
+    fs.Write(bytes, 0, bytes.Length) |> ignore
+    fs.Flush()
+
 [<Fact>]
 let ``SSTable validateIndexOffset throws when offset is out of range`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateIndexOffset 100L 100L SSTable.FOOTER_SIZE)
@@ -39,6 +62,30 @@ let ``SSTable validateBloomCount throws when count exceeds remaining space`` () 
 [<Fact>]
 let ``SSTable validateSSTableMagic throws for invalid magic number`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateSSTableMagic 0xFEEDFACEL)
+
+[<Fact>]
+let ``SSTable readIndexEntry throws when entry is truncated`` () =
+    let buf = Array.zeroCreate<byte> 10
+    let mutable pos = 0
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.readIndexEntry buf &pos |> ignore)
+
+[<Fact>]
+let ``SSTable readIndexEntry throws when key length is negative`` () =
+    let buf = Array.zeroCreate<byte> 20
+    System.Array.Copy(System.BitConverter.GetBytes(1L), 0, buf, 0, 8)
+    System.Array.Copy(System.BitConverter.GetBytes(0L), 0, buf, 8, 8)
+    System.Array.Copy(System.BitConverter.GetBytes(-1), 0, buf, 16, 4)
+    let mutable pos = 0
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.readIndexEntry buf &pos |> ignore)
+
+[<Fact>]
+let ``SSTable readIndexEntry throws when key length exceeds buffer`` () =
+    let buf = Array.zeroCreate<byte> 20
+    System.Array.Copy(System.BitConverter.GetBytes(1L), 0, buf, 0, 8)
+    System.Array.Copy(System.BitConverter.GetBytes(0L), 0, buf, 8, 8)
+    System.Array.Copy(System.BitConverter.GetBytes(5), 0, buf, 16, 4)
+    let mutable pos = 0
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.readIndexEntry buf &pos |> ignore)
 
 [<Fact>]
 let ``SSTable load returns empty for short file`` () =
@@ -95,6 +142,51 @@ let ``SSTable loadIndex handles tombstone and value entries`` () =
         assertEqual 2L index.[0].Seq "First entry seq"
         assertEqual "keep" index.[1].Key "Second entry key"
         assertEqual 1L index.[1].Seq "Second entry seq")
+
+[<Fact>]
+let ``SSTable loadIndex throws when entry count exceeds region size`` () =
+    withTestDir "sst_idx_count_overflow" (fun testDataDir ->
+        let path = writeSst testDataDir "L0_count_overflow.sst" [ "k", 1L, Some "v" ]
+        let indexOffset = readFooterInt64 path 0
+        let bloomOffset = readFooterInt64 path 8
+        patchFileBytes path indexOffset (System.BitConverter.GetBytes 100)
+
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
+
+        Assert.Throws<System.IO.InvalidDataException>(fun () ->
+            SSTable.loadIndex fs.SafeFileHandle fs.Length indexOffset bloomOffset SSTable.FOOTER_SIZE
+            |> ignore))
+
+[<Fact>]
+let ``SSTable validateMaxSeq throws when max_seq is negative`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateMaxSeq -1L 0L)
+
+[<Fact>]
+let ``SSTable validateMaxSeq throws when max_seq does not match entries`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateMaxSeq 100L 5L)
+
+[<Fact>]
+let ``SSTable load throws when footer max_seq does not match entries`` () =
+    withTestDir "sst_maxseq_mismatch" (fun testDataDir ->
+        let path = writeSst testDataDir "L0_maxseq_bad.sst" [ "k", 1L, Some "v" ]
+        let maxSeqOffset = System.IO.FileInfo(path).Length - SSTable.FOOTER_SIZE + 16L
+        patchFileBytes path maxSeqOffset (System.BitConverter.GetBytes 100L)
+
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
+
+        Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.load fs |> ignore))
 
 [<Fact>]
 let ``SSTable binSearchIndex finds existing key`` () =
