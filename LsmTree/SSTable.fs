@@ -5,7 +5,8 @@ type internal IndexEntry =
     { Key: string
       Seq: int64
       Offset: int64
-      KeyByteLen: int32 }
+      KeyByteLen: int32
+      ValueByteLen: int32 }
 
 module internal SSTable =
     [<Literal>]
@@ -21,13 +22,16 @@ module internal SSTable =
     let KEY_LEN_BYTE_SIZE = 4L
 
     [<Literal>]
+    let VALUE_HEADER_BYTE_SIZE = 5L
+
+    [<Literal>]
     let INDEX_COUNT_BYTE_SIZE = 4L
 
     [<Literal>]
     let BLOOM_COUNT_BYTE_SIZE = 4L
 
     [<Literal>]
-    let MIN_INDEX_ENTRY_SIZE = 20L
+    let MIN_INDEX_ENTRY_SIZE = 24L
 
     let validateIndexOffset fileLen offset footerSize =
         if offset < 0L || offset > fileLen - footerSize then
@@ -119,15 +123,20 @@ module internal SSTable =
             readValue buf &pos |> Some
 
     let readIndexEntry (buf: byte[]) (pos: byref<int>) =
-        if pos + 16 > buf.Length then
+        if int64 pos + MIN_INDEX_ENTRY_SIZE > int64 buf.Length then
             System.IO.InvalidDataException "SSTable index entry is truncated" |> raise
 
         let seq = readInt64 buf &pos
         let offset = readInt64 buf &pos
         let keyByteLen = readInt32 buf &pos
+        let valueByteLen = readInt32 buf &pos
 
         if keyByteLen < 0 || pos + keyByteLen > buf.Length then
             System.IO.InvalidDataException $"SSTable index entry key length {keyByteLen} is out of range"
+            |> raise
+
+        if valueByteLen < -1 then
+            System.IO.InvalidDataException $"SSTable index entry value length {valueByteLen} is out of range"
             |> raise
 
         let key = System.Text.Encoding.UTF8.GetString(buf, pos, keyByteLen)
@@ -136,7 +145,8 @@ module internal SSTable =
         { Key = key
           Seq = seq
           Offset = offset
-          KeyByteLen = keyByteLen }
+          KeyByteLen = keyByteLen
+          ValueByteLen = valueByteLen }
 
     let loadBloomFilter handle fileLen indexOffset offset footerSize =
         validateBloomOffset fileLen indexOffset offset footerSize
@@ -220,18 +230,12 @@ module internal SSTable =
             let value = readItem buf &pos
             key, seq, value)
 
-    let readItemAt handle offset =
-        let header = Array.zeroCreate<byte> 5
-        readExactly handle offset header
-
-        if header.[0] <> 0uy then
+    let readItemAt handle offset valueByteLen =
+        if valueByteLen < 0 then
             None
         else
-            let len =
-                System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(System.ReadOnlySpan<byte>(header, 1, 4))
-
-            let valueBuf = Array.zeroCreate<byte> len
-            readExactly handle (offset + 5L) valueBuf
+            let valueBuf = Array.zeroCreate<byte> valueByteLen
+            readExactly handle (offset + VALUE_HEADER_BYTE_SIZE) valueBuf
             Some(System.Text.Encoding.UTF8.GetString valueBuf)
 
     [<TailCall>]
@@ -268,7 +272,7 @@ module internal SSTable =
 
         Array.init (hi - lo) (fun i ->
             let entry = index.[lo + i]
-            pos <- pos + 8 + 4 + int entry.KeyByteLen
+            pos <- pos + int SEQ_BYTE_SIZE + int KEY_LEN_BYTE_SIZE + entry.KeyByteLen
             let value = readItem buf &pos
             entry.Key, entry.Seq, value)
 
@@ -310,7 +314,8 @@ type internal SSTable(path) =
 
                 try
                     match
-                        LockExtensions.withReadLock rwLock (fun () -> SSTable.readItemAt fs.SafeFileHandle valueOffset)
+                        LockExtensions.withReadLock rwLock (fun () ->
+                            SSTable.readItemAt fs.SafeFileHandle valueOffset entry.ValueByteLen)
                     with
                     | Some v -> Found v
                     | None -> Tombstone
@@ -374,7 +379,7 @@ module internal SSTableWriter =
         (bw: System.IO.BinaryWriter)
         (fs: System.IO.FileStream)
         (bf: BloomFilter)
-        (indexData: ResizeArray<int64 * int64 * int32 * byte[]>)
+        (indexData: ResizeArray<int64 * int64 * int32 * int32 * byte[]>)
         maxSeq
         key
         (seq: int64)
@@ -387,24 +392,29 @@ module internal SSTableWriter =
         bw.Write keyBytes.Length
         bw.Write keyBytes
 
-        match value with
-        | None -> bw.Write true
-        | Some v ->
-            bw.Write false
-            let valBytes = System.Text.Encoding.UTF8.GetBytes v
-            bw.Write valBytes.Length
-            bw.Write valBytes
+        let valueByteLen =
+            match value with
+            | None ->
+                bw.Write true
+                -1
+            | Some v ->
+                bw.Write false
+                let valBytes = System.Text.Encoding.UTF8.GetBytes v
+                bw.Write valBytes.Length
+                bw.Write valBytes
+                valBytes.Length
 
-        indexData.Add(seq, entryOffset, keyBytes.Length, keyBytes)
+        indexData.Add(seq, entryOffset, keyBytes.Length, valueByteLen, keyBytes)
         if seq > maxSeq then seq else maxSeq
 
-    let writeIndexData (bw: System.IO.BinaryWriter) (indexData: ResizeArray<int64 * int64 * int32 * byte[]>) =
+    let writeIndexData (bw: System.IO.BinaryWriter) (indexData: ResizeArray<int64 * int64 * int32 * int32 * byte[]>) =
         bw.Write indexData.Count
 
-        for seq, offset, keyByteLen, keyBytes in indexData do
+        for seq, offset, keyByteLen, valueByteLen, keyBytes in indexData do
             bw.Write seq
             bw.Write offset
             bw.Write keyByteLen
+            bw.Write valueByteLen
             bw.Write keyBytes
 
     let writeSSTableContent
@@ -414,7 +424,7 @@ module internal SSTableWriter =
         (ct: System.Threading.CancellationToken)
         (entries: seq<string * int64 * string option>)
         =
-        let indexData = ResizeArray<int64 * int64 * int32 * byte[]>()
+        let indexData = ResizeArray<int64 * int64 * int32 * int32 * byte[]>()
         let mutable maxSeq = 0L
 
         for key, seq, value in entries do

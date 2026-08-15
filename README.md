@@ -51,10 +51,11 @@ The on-disk layout is `[data][index][bloom][footer]` (footer: always 32 B — `i
   The data region is **not touched** at open time.
   `Get` does an in-memory binary search on the `IndexEntry[]`, then reads the value payload at a computed offset via `RandomAccess.Read`.
   The Bloom filter rejects non-existent keys O(1) with no disk I/O.
-- **Inline index**: `IndexEntry` is a `[<Struct>]` record (`Key`, `Seq`, `Offset`, `KeyByteLen`) stored inline in the index region.
+- **Inline index**: `IndexEntry` is a `[<Struct>]` record (`Key`, `Seq`, `Offset`, `KeyByteLen`, `ValueByteLen`) stored inline in the index region.
   Building the in-memory array needs no data-region access.
   Keys are thus stored twice (data + index).
   The overhead is bounded by Σ key length.
+  The index carries the value length, so a point `Get` reads the value payload in a single `RandomAccess.Read`.
 - **Range scan via index**: `SSTable.GetRange` uses `lowerBound`/`upperBound` binary searches to find the range.
   Then reads the in-range data region in one `RandomAccess.Read` and parses it in memory.
 - **`GetAll` (compaction)**: Reads the entire data region with one `RandomAccess.Read` and parses it in memory.

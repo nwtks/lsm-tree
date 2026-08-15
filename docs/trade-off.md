@@ -88,7 +88,7 @@ The WAL file is no longer purely transactional — recovery iterates once to fin
 
 ## SSTable read path: in-memory index + bloom filter, inline-index format
 
-**Choice**: The on-disk index region stores inline `IndexEntry` records (`seq + offset + keyByteLen + keyBytes`), not just `int64[]` offsets.
+**Choice**: The on-disk index region stores inline `IndexEntry` records (`seq + offset + keyByteLen + valueByteLen + keyBytes`), not just `int64[]` offsets.
 At open time, `SSTable.load` reads the entire index region in a single `RandomAccess.Read` and parses it in memory with `BinaryPrimitives`.
 The data region is not touched during open.
 A `Get` does a pure in-memory binary search on the index, then a single `RandomAccess.Read` for the value payload.
@@ -99,16 +99,21 @@ That meant N small reads or seeks through the data region just to build the in-m
 Inlining all index fields in a separate region consolidates open-time I/O into **one** sequential read of the index region.
 The data region is read only on demand for value payloads.
 
+**Why `valueByteLen` in the index**: The value payload length is stored in the index so a point `Get` reads the payload in **one** `RandomAccess.Read` at a known offset.
+Without it, `Get` needed two reads (a 5-byte header to learn the length, then the payload) — doubling syscalls per point Get.
+The cost is +4 bytes per index entry (and a slightly larger in-memory `IndexEntry` struct).
+
 **Trade-off**:
 - **File size**: Keys are stored twice (once in the data region, once in the index region).
   The overhead is bounded by Σ key length and is small relative to value payloads in typical workloads.
 - **Format is not self-describing across versions**: Older `.sst` files written with the `int64[] offsets` format are not readable by the current loader.
   This engine does not ship a migration path.
   Restart from an empty directory if upgrading across this format change.
+  The same applies to the `valueByteLen` addition — old files fail to load.
 
 `IndexEntry` is a `[<Struct>]` record.
 The array stores entries inline, improving CPU cache locality during binary search and avoiding a separate heap allocation per entry.
-The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field), so per-entry memory cost is the struct layout (~28 bytes) plus the key string reference.
+The SSTable class holds only `IndexEntry[]` (no separate `int64[] offsets` field), so per-entry memory cost is the struct layout (~32 bytes) plus the key string reference.
 
 **Alternatives considered**:
 - **`int64[]` offsets in index region, walk data region at open**: avoids storing keys twice.

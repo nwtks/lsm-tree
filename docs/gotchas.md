@@ -156,15 +156,26 @@ See [trade-off.md](trade-off.md) (`Point Get: ssTablesLock snapshot + skip dispo
 
 ### SSTable index validation: count budget, key length, and `max_seq`
 
-`SSTable.loadIndex` now rejects an index whose `count` cannot fit in the index region (`count * MIN_INDEX_ENTRY_SIZE (20) > regionSize - 4`).
+`SSTable.loadIndex` now rejects an index whose `count` cannot fit in the index region (`count * MIN_INDEX_ENTRY_SIZE (24) > regionSize - 4`).
 Previously a corrupt `count` could drive `Array.init count` into an OOM (huge allocation) or `IndexOutOfRangeException` (parse past the buffer).
-`SSTable.readIndexEntry` validates `keyByteLen` (negative or past the buffer → `InvalidDataException`).
+`SSTable.readIndexEntry` validates `keyByteLen` (negative or past the buffer → `InvalidDataException`) and `valueByteLen` (must be `-1` for a tombstone or `>= 0`; anything below `-1` → `InvalidDataException`).
 `SSTable.load` validates the footer `max_seq` against the highest entry sequence (`validateMaxSeq`): it must be non-negative and **equal** to the max entry seq.
 This closes a recovery data-loss vector: a corrupt huge `max_seq` would otherwise advance the sequence watermark and cause WAL recovery to filter out unflushed writes (`seq > currentSeq`).
 
 **Compatibility caveat**: files whose footer `max_seq` does not equal the max entry seq now fail to load with `InvalidDataException`.
 The writer always stores `max_seq = max(0, max entry seq)`, so files written by this engine pass.
 If you hand-craft SSTables in tests, keep `max_seq` consistent with the entries.
+
+### SSTable index carries `valueByteLen`; point Get is a single syscall
+
+The index region now stores `valueByteLen` (UTF-8 byte length of the value payload; `-1` for a tombstone) per entry, so `MIN_INDEX_ENTRY_SIZE` is `24` (seq 8 + offset 8 + keyByteLen 4 + valueByteLen 4).
+`SSTable.readItemAt` uses it to read the value payload in **one** `RandomAccess.Read` at `valueOffset + 5` (skipping the `[flag][len]` header), instead of the previous two reads (header, then value).
+A tombstone (`valueByteLen < 0`) returns `None` with **no** disk read.
+
+**Format change (no backward compatibility)**: the on-disk index layout changed.
+Old `.sst` files written before this change fail to load (`InvalidDataException` from `readIndexEntry`).
+Regenerate SSTables (delete the data directory) after upgrading.
+The data-region value format (`[flag][len][bytes]`) is unchanged — `readAllEntries`/`readRangeEntries` still parse it from the bulk buffer.
 
 ### API boundary null checks: `Get` throws `ArgumentNullException`
 

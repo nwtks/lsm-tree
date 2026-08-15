@@ -50,17 +50,19 @@ seq: int64 | key: int32 length + UTF-8 bytes | value: bool isTombstone + (if fal
 Each **IndexEntry** in the index region is encoded as:
 
 ```
-seq: int64 | offset: int64 | keyByteLen: int32 | keyBytes: byte[keyByteLen]
+seq: int64 | offset: int64 | keyByteLen: int32 | valueByteLen: int32 | keyBytes: byte[keyByteLen]
 ```
 
 The `offset` field points to the start of the corresponding entry in the data region (the `seq` field of that entry).
+`valueByteLen` is the UTF-8 byte length of the value payload (`-1` for a tombstone).
 The key bytes are stored inline in the index.
 The data region does **not** need to be accessed during SSTable open.
+Because the index carries the value length, a point `Get` reads the value payload in a **single** `RandomAccess.Read` (no header round-trip).
 
 - **Footer**: always 32 bytes (four `int64` fields).
 - **Magic**: `0x4C534D54` (`"LSMT"` in ASCII).
   Wrong magic raises `InvalidDataException`.
-- **Index**: packed `int32` count followed by `count` inline `IndexEntry` records (seq + offset + key).
+- **Index**: packed `int32` count followed by `count` inline `IndexEntry` records (seq + offset + keyByteLen + valueByteLen + key).
   All fields needed to build the in-memory `IndexEntry[]` are present here.
   The data region is read lazily only for value payloads on `Get`/`GetRange`.
 - **Bloom filter**: packed `int32` byte count + raw bytes.
@@ -256,7 +258,7 @@ A `[<Struct>]` discriminated union that distinguishes three cases without heap a
   If the target node is not found (`isNull`), it returns `NotFound`.
   Otherwise it inspects `current.Value` (`string option`): `Some v → Found v`, `None → Tombstone`.
 - `MemTable.Get` passes through the `SearchResult` from `data.Find`.
-- `SSTable.Get` returns `SearchResult`: `SSTable.readItemAt handle offset` reads the value payload via `RandomAccess.Read` and returns `string option`; `None → Tombstone`, `Some v → Found v`.
+- `SSTable.Get` returns `SearchResult`: `SSTable.readItemAt handle offset valueByteLen` reads the value payload in a single `RandomAccess.Read` (using the index's `valueByteLen`; `valueByteLen < 0` → tombstone, no read) and returns `string option`; `None → Tombstone`, `Some v → Found v`.
   If the bloom filter rejects or binary search misses, it returns `NotFound`.
 - `LsmTreeSearch.searchInTable` (internal helper) recurses on `NotFound` and short-circuits on `Found`/`Tombstone` within a single level's SSTable list.
 - `LsmTreeSearch.searchLevel` iterates across levels: on `NotFound` at level N it proceeds to level N+1; on `Found`/`Tombstone` it short-circuits immediately.

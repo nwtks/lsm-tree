@@ -71,19 +71,31 @@ let ``SSTable readIndexEntry throws when entry is truncated`` () =
 
 [<Fact>]
 let ``SSTable readIndexEntry throws when key length is negative`` () =
-    let buf = Array.zeroCreate<byte> 20
-    System.Array.Copy(System.BitConverter.GetBytes(1L), 0, buf, 0, 8)
-    System.Array.Copy(System.BitConverter.GetBytes(0L), 0, buf, 8, 8)
-    System.Array.Copy(System.BitConverter.GetBytes(-1), 0, buf, 16, 4)
+    let buf = Array.zeroCreate<byte> 24
+    System.Array.Copy(System.BitConverter.GetBytes 1L, 0, buf, 0, 8)
+    System.Array.Copy(System.BitConverter.GetBytes 0L, 0, buf, 8, 8)
+    System.Array.Copy(System.BitConverter.GetBytes -1, 0, buf, 16, 4)
+    System.Array.Copy(System.BitConverter.GetBytes 0, 0, buf, 20, 4)
     let mutable pos = 0
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.readIndexEntry buf &pos |> ignore)
 
 [<Fact>]
 let ``SSTable readIndexEntry throws when key length exceeds buffer`` () =
-    let buf = Array.zeroCreate<byte> 20
-    System.Array.Copy(System.BitConverter.GetBytes(1L), 0, buf, 0, 8)
-    System.Array.Copy(System.BitConverter.GetBytes(0L), 0, buf, 8, 8)
-    System.Array.Copy(System.BitConverter.GetBytes(5), 0, buf, 16, 4)
+    let buf = Array.zeroCreate<byte> 24
+    System.Array.Copy(System.BitConverter.GetBytes 1L, 0, buf, 0, 8)
+    System.Array.Copy(System.BitConverter.GetBytes 0L, 0, buf, 8, 8)
+    System.Array.Copy(System.BitConverter.GetBytes 5, 0, buf, 16, 4)
+    System.Array.Copy(System.BitConverter.GetBytes 0, 0, buf, 20, 4)
+    let mutable pos = 0
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.readIndexEntry buf &pos |> ignore)
+
+[<Fact>]
+let ``SSTable readIndexEntry throws when value length is invalid`` () =
+    let buf = Array.zeroCreate<byte> 25
+    System.Array.Copy(System.BitConverter.GetBytes 1L, 0, buf, 0, 8)
+    System.Array.Copy(System.BitConverter.GetBytes 0L, 0, buf, 8, 8)
+    System.Array.Copy(System.BitConverter.GetBytes 1, 0, buf, 16, 4)
+    System.Array.Copy(System.BitConverter.GetBytes -2, 0, buf, 20, 4)
     let mutable pos = 0
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.readIndexEntry buf &pos |> ignore)
 
@@ -140,8 +152,10 @@ let ``SSTable loadIndex handles tombstone and value entries`` () =
         assertEqual 2 index.Length "Should have 2 index entries"
         assertEqual "gone" index.[0].Key "First entry key"
         assertEqual 2L index.[0].Seq "First entry seq"
+        assertEqual -1 index.[0].ValueByteLen "Tombstone entry value length is -1"
         assertEqual "keep" index.[1].Key "Second entry key"
-        assertEqual 1L index.[1].Seq "Second entry seq")
+        assertEqual 1L index.[1].Seq "Second entry seq"
+        assertEqual 3 index.[1].ValueByteLen "Value entry length is 3")
 
 [<Fact>]
 let ``SSTable loadIndex throws when entry count exceeds region size`` () =
@@ -194,7 +208,8 @@ let ``SSTable binSearchIndex finds existing key`` () =
         [| { Key = "present"
              Seq = 1L
              Offset = 0L
-             KeyByteLen = 7 } |]
+             KeyByteLen = 7
+             ValueByteLen = 2 } |]
 
     let result = SSTable.binSearchIndex index "present" System.Int64.MaxValue 0 0 None
     assertEqual (Some 0) result "Existing key returns correct index"
@@ -205,11 +220,13 @@ let ``SSTable binSearchIndex respects snapshot isolation`` () =
         [| { Key = "k"
              Seq = 10L
              Offset = 0L
-             KeyByteLen = 1 }
+             KeyByteLen = 1
+             ValueByteLen = 2 }
            { Key = "k"
              Seq = 5L
              Offset = 10L
-             KeyByteLen = 1 } |]
+             KeyByteLen = 1
+             ValueByteLen = 2 } |]
 
     assertEqual None (SSTable.binSearchIndex index "k" 3L 0 1 None) "Snapshot below all seqs returns None"
     assertEqual (Some 1) (SSTable.binSearchIndex index "k" 7L 0 1 None) "Snapshot between seqs finds older version"
@@ -221,7 +238,8 @@ let ``SSTable binSearchIndex returns None for missing key`` () =
         [| { Key = "present"
              Seq = 1L
              Offset = 0L
-             KeyByteLen = 7 } |]
+             KeyByteLen = 7
+             ValueByteLen = 2 } |]
 
     let result = SSTable.binSearchIndex index "missing" System.Int64.MaxValue 0 0 None
     assertEqual None result "Missing key returns None"
@@ -251,6 +269,38 @@ let ``SSTable readAllEntries preserves tombstone entries`` () =
         assertEqual ("k1", 1L, Some "v1") entries.[0] "First entry is k1=v1"
         assertEqual ("k2", 2L, None) entries.[1] "Second entry is k2=tombstone"
         assertEqual ("k3", 3L, Some "v3") entries.[2] "Third entry is k3=v3")
+
+[<Fact>]
+let ``SSTable readItemAt reads value in one call and returns None for tombstone`` () =
+    withTestDir "sst_readitem" (fun testDataDir ->
+        let path =
+            writeSst testDataDir "L0_readitem.sst" [ "gone", 2L, None; "keep", 1L, Some "hello" ]
+
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
+
+        let _, _, _, index = SSTable.load fs
+
+        let valueOffset (e: IndexEntry) =
+            e.Offset
+            + SSTable.SEQ_BYTE_SIZE
+            + SSTable.KEY_LEN_BYTE_SIZE
+            + int64 e.KeyByteLen
+
+        assertEqual
+            (Some "hello")
+            (SSTable.readItemAt fs.SafeFileHandle (valueOffset index.[1]) index.[1].ValueByteLen)
+            "Live value read in one call"
+
+        assertEqual
+            None
+            (SSTable.readItemAt fs.SafeFileHandle (valueOffset index.[0]) index.[0].ValueByteLen)
+            "Tombstone returns None without reading")
 
 [<Fact>]
 let ``SSTable Get returns NotFound for empty SSTable`` () =
