@@ -64,6 +64,14 @@ let ``SSTable validateSSTableMagic throws for invalid magic number`` () =
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateSSTableMagic 0xFEEDFACEL)
 
 [<Fact>]
+let ``SSTable validateMaxSeq throws when max_seq is negative`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateMaxSeq -1L 0L)
+
+[<Fact>]
+let ``SSTable validateMaxSeq throws when max_seq does not match entries`` () =
+    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateMaxSeq 100L 5L)
+
+[<Fact>]
 let ``SSTable readIndexEntry throws when entry is truncated`` () =
     let buf = Array.zeroCreate<byte> 10
     let mutable pos = 0
@@ -98,41 +106,6 @@ let ``SSTable readIndexEntry throws when value length is invalid`` () =
     System.Array.Copy(System.BitConverter.GetBytes -2, 0, buf, 20, 4)
     let mutable pos = 0
     Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.readIndexEntry buf &pos |> ignore)
-
-[<Fact>]
-let ``SSTable load returns empty for short file`` () =
-    withTestDir "sst_short_file" (fun testDataDir ->
-        let path = System.IO.Path.Combine(testDataDir, "short.sst")
-        System.IO.File.WriteAllBytes(path, [| 0uy .. 9uy |])
-
-        use fs =
-            new System.IO.FileStream(
-                path,
-                System.IO.FileMode.Open,
-                System.IO.FileAccess.Read,
-                System.IO.FileShare.Read
-            )
-
-        let _, maxSeq, _, index = SSTable.load fs
-        assertEqual [||] index "Short file should have empty index"
-        assertEqual 0L maxSeq "Short file should have maxSeq 0")
-
-[<Fact>]
-let ``SSTable load and loadIndex handle empty SSTable`` () =
-    withTestDir "sst_empty" (fun testDataDir ->
-        let path = writeSst testDataDir "L0_empty.sst" []
-
-        use fs =
-            new System.IO.FileStream(
-                path,
-                System.IO.FileMode.Open,
-                System.IO.FileAccess.Read,
-                System.IO.FileShare.Read
-            )
-
-        let _, maxSeq, _, index = SSTable.load fs
-        assertEqual [||] index "Empty SSTable should have empty index"
-        assertEqual 0L maxSeq "Empty SSTable maxSeq = 0")
 
 [<Fact>]
 let ``SSTable loadIndex handles tombstone and value entries`` () =
@@ -178,12 +151,39 @@ let ``SSTable loadIndex throws when entry count exceeds region size`` () =
             |> ignore))
 
 [<Fact>]
-let ``SSTable validateMaxSeq throws when max_seq is negative`` () =
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateMaxSeq -1L 0L)
+let ``SSTable load returns empty for short file`` () =
+    withTestDir "sst_short_file" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "short.sst")
+        System.IO.File.WriteAllBytes(path, [| 0uy .. 9uy |])
+
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
+
+        let _, maxSeq, _, index = SSTable.load fs
+        assertEqual [||] index "Short file should have empty index"
+        assertEqual 0L maxSeq "Short file should have maxSeq 0")
 
 [<Fact>]
-let ``SSTable validateMaxSeq throws when max_seq does not match entries`` () =
-    Assert.Throws<System.IO.InvalidDataException>(fun () -> SSTable.validateMaxSeq 100L 5L)
+let ``SSTable load and loadIndex handle empty SSTable`` () =
+    withTestDir "sst_empty" (fun testDataDir ->
+        let path = writeSst testDataDir "L0_empty.sst" []
+
+        use fs =
+            new System.IO.FileStream(
+                path,
+                System.IO.FileMode.Open,
+                System.IO.FileAccess.Read,
+                System.IO.FileShare.Read
+            )
+
+        let _, maxSeq, _, index = SSTable.load fs
+        assertEqual [||] index "Empty SSTable should have empty index"
+        assertEqual 0L maxSeq "Empty SSTable maxSeq = 0")
 
 [<Fact>]
 let ``SSTable load throws when footer max_seq does not match entries`` () =
@@ -303,6 +303,22 @@ let ``SSTable readItemAt reads value in one call and returns None for tombstone`
             "Tombstone returns None without reading")
 
 [<Fact>]
+let ``SSTable constructor throws for invalid file`` () =
+    withTestDir "sst_invalid_file" (fun testDataDir ->
+        let path = System.IO.Path.Combine(testDataDir, "corrupt.sst")
+        let data = Array.create 32 0uy
+        System.IO.File.WriteAllBytes(path, data)
+
+        let exceptionThrown =
+            try
+                use _ = new SSTable(path)
+                false
+            with _ ->
+                true
+
+        Assert.True(exceptionThrown, "SSTable constructor should throw for invalid file"))
+
+[<Fact>]
 let ``SSTable Get returns NotFound for empty SSTable`` () =
     withTestDir "sst_get_empty" (fun testDataDir ->
         let path = writeSst testDataDir "L0_empty.sst" []
@@ -347,6 +363,18 @@ let ``SSTable GetAll reads data region in one batch and repeats identically`` ()
         assertEqual ("b", 2L, None) first.[1] "Second entry is tombstone"
         assertEqual ("c", 3L, Some "vc") first.[2] "Third entry is c"
         assertEqual first second "Repeated GetAll returns identical results")
+
+[<Fact>]
+let ``SSTable GetAll on disposed SSTable returns empty array`` () =
+    withTestDir "sst_getall_disposed" (fun testDataDir ->
+        let path =
+            writeSst testDataDir "L0_getall.sst" [ "a", 1L, Some "va"; "b", 2L, Some "vb" ]
+
+        let sst = new SSTable(path)
+        (sst :> System.IDisposable).Dispose()
+
+        let result = sst.GetAll()
+        assertEqual 0 result.Length "GetAll on disposed SSTable returns empty array")
 
 [<Fact>]
 let ``SSTable GetRange returns entries within range`` () =
@@ -450,18 +478,6 @@ let ``SSTable double dispose does not throw`` () =
         let sst = new SSTable(sstPath)
         (sst :> System.IDisposable).Dispose()
         (sst :> System.IDisposable).Dispose())
-
-[<Fact>]
-let ``SSTable GetAll on disposed SSTable returns empty array`` () =
-    withTestDir "sst_getall_disposed" (fun testDataDir ->
-        let path =
-            writeSst testDataDir "L0_getall.sst" [ "a", 1L, Some "va"; "b", 2L, Some "vb" ]
-
-        let sst = new SSTable(path)
-        (sst :> System.IDisposable).Dispose()
-
-        let result = sst.GetAll()
-        assertEqual 0 result.Length "GetAll on disposed SSTable returns empty array")
 
 [<Fact>]
 let ``SSTableWriter writes inline index and roundtrips`` () =

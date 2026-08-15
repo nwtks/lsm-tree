@@ -33,14 +33,6 @@ let ``BloomFilter Add and MightContain for specific keys`` () =
     assertEqual true (bf.MightContain "cherry") "cherry should be found"
 
 [<Fact>]
-let ``BloomFilter empty filter always returns true for MightContain`` () =
-    let bf = BloomFilter([||], 0)
-    assertEqual true (bf.MightContain "any") "Empty BloomFilter true"
-
-    let bf2 = BloomFilter.create 0
-    assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
-
-[<Fact>]
 let ``BloomFilter handles empty string key`` () =
     let bf = BloomFilter.create 10
     bf.Add ""
@@ -53,6 +45,14 @@ let ``BloomFilter duplicate adds do not corrupt filter`` () =
     bf.Add "dup"
     bf.Add "dup"
     assertEqual true (bf.MightContain "dup") "Key added multiple times should still be found"
+
+[<Fact>]
+let ``BloomFilter empty filter always returns true for MightContain`` () =
+    let bf = BloomFilter([||], 0)
+    assertEqual true (bf.MightContain "any") "Empty BloomFilter true"
+
+    let bf2 = BloomFilter.create 0
+    assertEqual true (bf2.MightContain "any") "BloomFilter created with 0 size"
 
 [<Fact>]
 let ``BloomFilter false positive rate is below 2 percent`` () =
